@@ -1,0 +1,176 @@
+﻿param(
+    [switch]$UseYFinance,
+    [switch]$SkipDaily,
+    [switch]$SkipOfficialDaily
+)
+
+$ErrorActionPreference = "Stop"
+
+$Root = "D:\us-tech-quant"
+$Stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+Write-Host ""
+Write-Host "=== V16 FULL UNIVERSE COMPAT SHIM NON-RECURSIVE ==="
+Write-Host "MODE: NO_RECURSION_MINIMAL_OUTPUT_COMPAT"
+Write-Host "ROOT: $Root"
+
+$Dirs = @(
+  "outputs\v16\read_center",
+  "outputs\v16\universe",
+  "outputs\v16\risk",
+  "outputs\v16\review",
+  "outputs\v16\health",
+  "outputs\v17\ops",
+  "outputs\v17\raw105_decision",
+  "outputs\v17\raw_universe_audit",
+  "outputs\v17\price",
+  "outputs\v17\manual_daily",
+  "state\v16",
+  "state\v17",
+  "state\v18"
+)
+
+foreach ($d in $Dirs) {
+    $p = Join-Path $Root $d
+    if (-not (Test-Path $p)) {
+        New-Item -ItemType Directory -Path $p -Force | Out-Null
+    }
+}
+
+$SourceCandidates = @(
+    (Join-Path $Root "state\v18\raw105_universe_for_factor_lab.csv"),
+    (Join-Path $Root "outputs\v17\price\v17_6E_screened_universe_tickers.csv"),
+    (Join-Path $Root "outputs\v17\raw105_decision\v17_8A_raw105_full_decision_daily.csv")
+)
+
+$Source = $null
+foreach ($s in $SourceCandidates) {
+    if (Test-Path $s) {
+        $Source = $s
+        break
+    }
+}
+
+if (-not $Source) {
+    throw "No available universe source for V16 compat shim."
+}
+
+Write-Host "SOURCE: $Source"
+
+$Raw = Import-Csv $Source
+$TickerCol = $null
+
+foreach ($c in @("ticker", "Ticker", "symbol", "Symbol")) {
+    if ($Raw.Count -gt 0 -and ($Raw[0].PSObject.Properties.Name -contains $c)) {
+        $TickerCol = $c
+        break
+    }
+}
+
+if (-not $TickerCol) {
+    throw "No ticker-like column found in source: $Source"
+}
+
+$Rows = @()
+$i = 0
+foreach ($r in $Raw) {
+    $t = [string]$r.$TickerCol
+    if ($t -and $t.Trim().Length -gt 0) {
+        $i += 1
+        $Rows += [pscustomobject]@{
+            rank = $i
+            ticker = $t.Trim().ToUpper()
+            source = "V18_RAW105_COMPAT"
+            compat_status = "OK_NON_RECURSIVE"
+        }
+    }
+}
+
+if ($Rows.Count -eq 0) {
+    throw "Universe source produced zero ticker rows: $Source"
+}
+
+$OutRaw = Join-Path $Root "outputs\v16\universe\V16_FULL_UNIVERSE_RAW.csv"
+$OutScreened = Join-Path $Root "outputs\v16\universe\V16_FULL_UNIVERSE_SCREENED.csv"
+$OutSelected = Join-Path $Root "outputs\v16\universe\V16_FULL_UNIVERSE_SELECTED_FOR_EXECUTION.csv"
+$OutTop = Join-Path $Root "outputs\v16\universe\V16_SECOND_STAGE_TOP_CANDIDATES.csv"
+$OutGate = Join-Path $Root "outputs\v16\universe\V16_DAILY_FULL_UNIVERSE_GATE.md"
+$ReadFirst = Join-Path $Root "outputs\v16\read_center\V16_COMPAT_FULL_UNIVERSE_READ_FIRST.txt"
+$Proof = Join-Path $Root "outputs\v16\read_center\v16_compat_full_universe_proof.csv"
+
+$Rows | Export-Csv $OutRaw -NoTypeInformation -Encoding UTF8
+$Rows | Export-Csv $OutScreened -NoTypeInformation -Encoding UTF8
+$Rows | Select-Object -First 40 | Export-Csv $OutSelected -NoTypeInformation -Encoding UTF8
+$Rows | Select-Object -First 20 | Export-Csv $OutTop -NoTypeInformation -Encoding UTF8
+
+$ProofRows = @(
+    [pscustomobject]@{ key = "STATUS"; value = "OK_V16_COMPAT_FULL_UNIVERSE_NON_RECURSIVE" },
+    [pscustomobject]@{ key = "MODE"; value = "MINIMAL_OUTPUT_COMPAT_ONLY" },
+    [pscustomobject]@{ key = "SOURCE"; value = $Source },
+    [pscustomobject]@{ key = "TICKER_COUNT"; value = $Rows.Count },
+    [pscustomobject]@{ key = "OFFICIAL_DECISION_IMPACT"; value = "NONE" },
+    [pscustomobject]@{ key = "CALLS_V17_8A"; value = "NO" },
+    [pscustomobject]@{ key = "CALLS_V17_6F"; value = "NO" }
+)
+
+$ProofRows | Export-Csv $Proof -NoTypeInformation -Encoding UTF8
+
+$GateText = @"
+# V16 Full Universe Compat Shim
+
+生成时间：$Stamp
+
+STATUS: OK_V16_COMPAT_FULL_UNIVERSE_NON_RECURSIVE
+
+MODE: MINIMAL_OUTPUT_COMPAT_ONLY
+
+SOURCE: $Source
+
+TICKER_COUNT: $($Rows.Count)
+
+OFFICIAL_DECISION_IMPACT: NONE
+
+说明：
+
+- 这是 V18 active chain 的旧 V16 入口兼容层。
+- 本脚本不再调用 V17_8A / V17_7G / V17_6F，避免递归。
+- 只生成旧链路可能需要读取的最小 V16 universe 输出文件。
+"@
+
+Set-Content -Path $OutGate -Value $GateText -Encoding UTF8
+
+$ReadText = @"
+V16 FULL UNIVERSE COMPAT SHIM READ FIRST
+
+STATUS:
+OK_V16_COMPAT_FULL_UNIVERSE_NON_RECURSIVE
+
+MODE:
+MINIMAL_OUTPUT_COMPAT_ONLY
+
+SOURCE:
+$Source
+
+TICKER_COUNT:
+$($Rows.Count)
+
+OUTPUTS:
+$OutRaw
+$OutScreened
+$OutSelected
+$OutTop
+$OutGate
+$Proof
+
+OFFICIAL_DECISION_IMPACT:
+NONE
+"@
+
+Set-Content -Path $ReadFirst -Value $ReadText -Encoding UTF8
+
+Write-Host "STATUS: OK_V16_COMPAT_FULL_UNIVERSE_NON_RECURSIVE"
+Write-Host "TICKER_COUNT: $($Rows.Count)"
+Write-Host "READ_FIRST: $ReadFirst"
+Write-Host "GATE: $OutGate"
+Write-Host "PROOF: $Proof"
+Write-Host "=== V16 FULL UNIVERSE COMPAT SHIM DONE ==="

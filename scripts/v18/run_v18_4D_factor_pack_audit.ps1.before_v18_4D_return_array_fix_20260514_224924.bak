@@ -1,0 +1,294 @@
+﻿param(
+    [string]$Root = "D:\us-tech-quant"
+)
+
+$ErrorActionPreference = "Stop"
+
+$Stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+$OutDir = Join-Path $Root "outputs\v18\factor_audit"
+$OpsDir = Join-Path $Root "outputs\v18\ops"
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+$RuntimeAuditScript = Join-Path $Root "scripts\v18\run_v18_4C_runtime_dependency_audit.ps1"
+$RuntimeGraph = Join-Path $OpsDir "V18_4C_CURRENT_RUNTIME_DEPENDENCY_GRAPH.csv"
+
+if (Test-Path $RuntimeAuditScript) {
+    Write-Host ""
+    Write-Host "=== REFRESH V18.4C RUNTIME AUDIT ==="
+    powershell -NoProfile -ExecutionPolicy Bypass -File $RuntimeAuditScript | Out-Host
+}
+
+$RuntimeFiles = @()
+if (Test-Path $RuntimeGraph) {
+    $RuntimeFiles = @(
+        Import-Csv -LiteralPath $RuntimeGraph |
+            Where-Object { $_.exists -eq "True" -and $_.callee -match '\.(ps1|py|bat|cmd)$' } |
+            Select-Object -ExpandProperty callee -Unique
+    )
+}
+
+$FactorDefs = @(
+    [pscustomobject]@{
+        code = "F001"
+        name = "BASE_OR_LEGACY_FACTOR"
+        family = "legacy"
+        expected_role = "existing_shadow_or_legacy_factor"
+        expected_formula = "Existing pre-V18.3D factor; audit by source hit."
+    },
+    [pscustomobject]@{
+        code = "F002"
+        name = "SELECTED_CURRENT_FACTOR"
+        family = "current_selected"
+        expected_role = "currently selected factor in recent daily output"
+        expected_formula = "Selected factor according to V18.3C/V18.3D output."
+    },
+    [pscustomobject]@{
+        code = "F006"
+        name = "SHORT_REV_5D"
+        family = "worldquant_style"
+        expected_role = "shadow_factor_pack"
+        expected_formula = "- rank(5-day return), short-term reversal style."
+    },
+    [pscustomobject]@{
+        code = "F007"
+        name = "PULLBACK_IN_UPTREND"
+        family = "worldquant_style"
+        expected_role = "shadow_factor_pack"
+        expected_formula = "long-term trend score minus short-term overheat score."
+    },
+    [pscustomobject]@{
+        code = "F008"
+        name = "VOLUME_ABNORMAL_5_20"
+        family = "worldquant_style"
+        expected_role = "shadow_factor_pack"
+        expected_formula = "5-day average volume / 20-day average volume."
+    },
+    [pscustomobject]@{
+        code = "F009"
+        name = "VOLUME_PRICE_CONFIRM"
+        family = "worldquant_style"
+        expected_role = "shadow_factor_pack"
+        expected_formula = "volume anomaly multiplied by price direction / confirmation."
+    },
+    [pscustomobject]@{
+        code = "F010"
+        name = "XSEC_COMPOSITE_RANK"
+        family = "worldquant_style"
+        expected_role = "shadow_factor_pack"
+        expected_formula = "cross-sectional composite rank: momentum + pullback + volume - volatility/overheat penalty."
+    },
+    [pscustomobject]@{
+        code = "F011"
+        name = "TS_MOMENTUM_60_120"
+        family = "worldquant_style"
+        expected_role = "shadow_factor_pack"
+        expected_formula = "60-day and 120-day time-series momentum style factor."
+    }
+)
+
+function Search-FactorHits {
+    param(
+        [string]$Root,
+        [string]$Pattern,
+        [string[]]$Extensions,
+        [string[]]$BaseDirs
+    )
+
+    $hits = New-Object System.Collections.Generic.List[object]
+
+    foreach ($base in $BaseDirs) {
+        if (-not (Test-Path $base)) { continue }
+
+        Get-ChildItem -LiteralPath $base -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object {
+                $ext = $_.Extension.ToLowerInvariant()
+                $Extensions -contains $ext -and
+                $_.FullName -notmatch "\\archive\\" -and
+                $_.FullName -notmatch "\\.venv\\" -and
+                $_.FullName -notmatch "\\venv\\"
+            } |
+            ForEach-Object {
+                $file = $_.FullName
+                try {
+                    $m = Select-String -LiteralPath $file -Pattern $Pattern -SimpleMatch -ErrorAction SilentlyContinue | Select-Object -First 3
+                    if ($m) {
+                        $hits.Add([pscustomobject]@{
+                            file = $file
+                            line = ($m | Select-Object -First 1).LineNumber
+                            sample = (($m | Select-Object -First 1).Line.Trim())
+                        }) | Out-Null
+                    }
+                } catch {
+                    # skip unreadable file
+                }
+            }
+    }
+
+    return @($hits)
+}
+
+$ScriptBaseDirs = @(
+    (Join-Path $Root "scripts")
+)
+
+$OutputBaseDirs = @(
+    (Join-Path $Root "outputs\v18")
+)
+
+$ScriptExtensions = @(".ps1", ".py", ".bat", ".cmd")
+$OutputExtensions = @(".csv", ".md", ".txt", ".json")
+
+$Rows = New-Object System.Collections.Generic.List[object]
+
+foreach ($f in $FactorDefs) {
+    $patterns = @($f.code, $f.name)
+
+    $scriptHits = @()
+    $outputHits = @()
+
+    foreach ($p in $patterns) {
+        $scriptHits += Search-FactorHits -Root $Root -Pattern $p -Extensions $ScriptExtensions -BaseDirs $ScriptBaseDirs
+        $outputHits += Search-FactorHits -Root $Root -Pattern $p -Extensions $OutputExtensions -BaseDirs $OutputBaseDirs
+    }
+
+    $scriptFiles = @($scriptHits | Select-Object -ExpandProperty file -Unique)
+    $outputFiles = @($outputHits | Select-Object -ExpandProperty file -Unique)
+
+    $runtimeHitFiles = @()
+    foreach ($sf in $scriptFiles) {
+        if ($RuntimeFiles -contains $sf) {
+            $runtimeHitFiles += $sf
+        }
+    }
+
+    $installedStatus = "NOT_FOUND"
+    if ($scriptFiles.Count -gt 0 -or $outputFiles.Count -gt 0) {
+        $installedStatus = "FOUND"
+    }
+
+    $runtimeStatus = "NOT_IN_RUNTIME_GRAPH"
+    if ($runtimeHitFiles.Count -gt 0) {
+        $runtimeStatus = "IN_RUNTIME_GRAPH"
+    }
+
+    $officialImpact = "UNKNOWN"
+    if ($f.family -eq "worldquant_style") {
+        $officialImpact = "NONE_SHADOW_ONLY_UNLESS_PROMOTED"
+    }
+    if ($f.code -eq "F002") {
+        $officialImpact = "SELECTED_FACTOR_BUT_OFFICIAL_IMPACT_DEPENDS_ON_PROMOTION_RULES"
+    }
+
+    $promotionStatus = "UNKNOWN"
+    if ($f.family -eq "worldquant_style" -or $f.code -eq "F002") {
+        $promotionStatus = "WAIT_FORWARD_OUTCOME"
+    }
+
+    $Rows.Add([pscustomobject]@{
+        factor_code = $f.code
+        factor_name = $f.name
+        family = $f.family
+        expected_role = $f.expected_role
+        expected_formula = $f.expected_formula
+        installed_status = $installedStatus
+        runtime_status = $runtimeStatus
+        script_hit_count = $scriptFiles.Count
+        output_hit_count = $outputFiles.Count
+        runtime_script_hit_count = $runtimeHitFiles.Count
+        official_decision_impact = $officialImpact
+        promotion_status = $promotionStatus
+        script_hit_files = (($scriptFiles | Sort-Object) -join "; ")
+        output_hit_files = (($outputFiles | Sort-Object) -join "; ")
+    }) | Out-Null
+}
+
+$Csv = Join-Path $OutDir "V18_4D_FACTOR_PACK_AUDIT_$Stamp.csv"
+$Md = Join-Path $OutDir "V18_4D_FACTOR_PACK_AUDIT_$Stamp.md"
+$CurrentCsv = Join-Path $OutDir "V18_4D_CURRENT_FACTOR_PACK_AUDIT.csv"
+$CurrentMd = Join-Path $OutDir "V18_4D_CURRENT_FACTOR_PACK_AUDIT.md"
+
+$Rows | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $Csv
+Copy-Item -Force $Csv $CurrentCsv
+
+$runtimeCodeCount = $RuntimeFiles.Count
+$missingRefCount = ""
+if (Test-Path $RuntimeGraph) {
+    $missingRefCount = @(
+        Import-Csv -LiteralPath $RuntimeGraph |
+            Where-Object { $_.exists -eq "False" }
+    ).Count
+}
+
+$worldquantRows = @($Rows | Where-Object { $_.family -eq "worldquant_style" })
+$worldquantFound = @($worldquantRows | Where-Object { $_.installed_status -eq "FOUND" }).Count
+$worldquantRuntime = @($worldquantRows | Where-Object { $_.runtime_status -eq "IN_RUNTIME_GRAPH" }).Count
+
+$mdLines = New-Object System.Collections.Generic.List[string]
+
+$mdLines.Add("# V18.4D Factor Pack Audit") | Out-Null
+$mdLines.Add("") | Out-Null
+$mdLines.Add("生成时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')") | Out-Null
+$mdLines.Add("") | Out-Null
+
+$mdLines.Add("## 1. 结论") | Out-Null
+$mdLines.Add("") | Out-Null
+$mdLines.Add("- RUNTIME_CODE_COUNT: ``$runtimeCodeCount``") | Out-Null
+$mdLines.Add("- MISSING_REFERENCE_COUNT: ``$missingRefCount``") | Out-Null
+$mdLines.Add("- WORLDQUANT_STYLE_FACTOR_COUNT_EXPECTED: ``$($worldquantRows.Count)``") | Out-Null
+$mdLines.Add("- WORLDQUANT_STYLE_FACTOR_FOUND_COUNT: ``$worldquantFound``") | Out-Null
+$mdLines.Add("- WORLDQUANT_STYLE_FACTOR_RUNTIME_HIT_COUNT: ``$worldquantRuntime``") | Out-Null
+$mdLines.Add("- OFFICIAL_DECISION_IMPACT: ``NONE_UNLESS_PROMOTED``") | Out-Null
+$mdLines.Add("- NEXT_ACTION: ``VERIFY_FACTOR_OUTPUT_COLUMNS_AND_FORWARD_TRACKING``") | Out-Null
+$mdLines.Add("") | Out-Null
+
+$mdLines.Add("## 2. 因子状态表") | Out-Null
+$mdLines.Add("") | Out-Null
+$mdLines.Add("| factor | name | family | installed | runtime | official impact | promotion |") | Out-Null
+$mdLines.Add("|---|---|---|---|---|---|---|") | Out-Null
+
+foreach ($r in $Rows) {
+    $mdLines.Add("| $($r.factor_code) | $($r.factor_name) | $($r.family) | $($r.installed_status) | $($r.runtime_status) | $($r.official_decision_impact) | $($r.promotion_status) |") | Out-Null
+}
+
+$mdLines.Add("") | Out-Null
+$mdLines.Add("## 3. WorldQuant 风格因子解释") | Out-Null
+$mdLines.Add("") | Out-Null
+
+foreach ($r in $worldquantRows) {
+    $mdLines.Add("### $($r.factor_code) $($r.factor_name)") | Out-Null
+    $mdLines.Add("") | Out-Null
+    $mdLines.Add("- Expected formula: ``$($r.expected_formula)``") | Out-Null
+    $mdLines.Add("- Installed status: ``$($r.installed_status)``") | Out-Null
+    $mdLines.Add("- Runtime status: ``$($r.runtime_status)``") | Out-Null
+    $mdLines.Add("- Official decision impact: ``$($r.official_decision_impact)``") | Out-Null
+    $mdLines.Add("") | Out-Null
+}
+
+$mdLines.Add("## 4. 解释") | Out-Null
+$mdLines.Add("") | Out-Null
+$mdLines.Add("V18.4D 只做因子审计，不改变任何交易逻辑。") | Out-Null
+$mdLines.Add("") | Out-Null
+$mdLines.Add("如果 WorldQuant 风格因子显示 FOUND 且 IN_RUNTIME_GRAPH，说明它们已经在当前运行链路相关脚本中。") | Out-Null
+$mdLines.Add("") | Out-Null
+$mdLines.Add("如果 FOUND 但 NOT_IN_RUNTIME_GRAPH，说明它们存在于文件或输出中，但未被当前最终链路调用。") | Out-Null
+$mdLines.Add("") | Out-Null
+$mdLines.Add("如果 NOT_FOUND，说明该因子名称或代码没有被当前脚本/输出检索到，需要回到 V18.3D factor pack 重新确认。") | Out-Null
+$mdLines.Add("") | Out-Null
+$mdLines.Add("当前原则：WorldQuant 风格因子先保持 shadow，不直接改变 official buy decision，等 forward outcome 足够后再 promotion。") | Out-Null
+
+$mdLines -join "`r`n" | Set-Content -Encoding UTF8 -Path $Md
+Copy-Item -Force $Md $CurrentMd
+
+Write-Host ""
+Write-Host "=== V18.4D FACTOR PACK AUDIT READY ==="
+Write-Host "RUNTIME_CODE_COUNT: $runtimeCodeCount"
+Write-Host "MISSING_REFERENCE_COUNT: $missingRefCount"
+Write-Host "WORLDQUANT_STYLE_FACTOR_COUNT_EXPECTED: $($worldquantRows.Count)"
+Write-Host "WORLDQUANT_STYLE_FACTOR_FOUND_COUNT: $worldquantFound"
+Write-Host "WORLDQUANT_STYLE_FACTOR_RUNTIME_HIT_COUNT: $worldquantRuntime"
+Write-Host ""
+Write-Host "READ:"
+Write-Host $CurrentMd
+Write-Host "CSV:"
+Write-Host $CurrentCsv

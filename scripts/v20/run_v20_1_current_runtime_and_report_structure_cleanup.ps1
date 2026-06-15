@@ -1,0 +1,1 @@
+python "$PSScriptRoot/v20_1_current_runtime_and_report_structure_cleanup.py"

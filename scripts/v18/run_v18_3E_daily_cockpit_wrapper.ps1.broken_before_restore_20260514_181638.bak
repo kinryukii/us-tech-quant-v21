@@ -1,0 +1,199 @@
+﻿$ErrorActionPreference = "Stop"
+$Root = "D:\us-tech-quant"
+$OpsDir = Join-Path $Root "outputs\v18\ops"
+$OutDir = Join-Path $Root "outputs\v18\cockpit"
+New-Item -ItemType Directory -Force -Path $OpsDir, $OutDir | Out-Null
+$RunTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+$Stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+function FirstExisting([string[]]$Paths) {
+    foreach ($p in $Paths) {
+        if ($p -and (Test-Path $p)) { return $p }
+    }
+    return $null
+}
+
+function RunStep([string]$Name, [string]$Path, [string]$LogPath) {
+    Write-Host ("RUN_STEP: " + $Name)
+    if (-not $Path -or -not (Test-Path $Path)) {
+        throw ("Missing script for " + $Name)
+    }
+    $OutText = & powershell -NoProfile -ExecutionPolicy Bypass -File $Path 2>&1
+    $OutText | Set-Content -LiteralPath $LogPath -Encoding UTF8
+    if ($LASTEXITCODE -ne 0) {
+        throw ($Name + " failed. Log: " + $LogPath)
+    }
+    return $LogPath
+}
+
+function GetFileText([string[]]$Paths) {
+    $buf = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $Paths) {
+        if ($p -and (Test-Path $p)) {
+            $buf.Add("") | Out-Null
+            $buf.Add(("--- FILE: " + $p + " ---")) | Out-Null
+            $buf.Add((Get-Content -LiteralPath $p -Raw -Encoding UTF8)) | Out-Null
+        }
+    }
+    return ([string]::Join("`n", $buf))
+}
+
+function GetKey([string]$Text, [string]$Key, [string]$Default = "UNKNOWN") {
+    if (-not $Text) { return $Default }
+    $pattern = "(?m)^\s*" + [regex]::Escape($Key) + "\s*:\s*(.+?)\s*$"
+    $m = [regex]::Match($Text, $pattern)
+    if ($m.Success) { return $m.Groups[1].Value.Trim() }
+    return $Default
+}
+
+function GetSelectedFactor([string]$Text) {
+    $keys = @("SELECTED_FACTOR", "SHADOW_FACTOR_SELECTED", "SELECTED_FACTOR_ID", "SHADOW_FACTOR_ID", "FACTOR_SELECTED")
+    foreach ($k in $keys) {
+        $v = GetKey $Text $k
+        if ($v -and $v -ne "UNKNOWN" -and $v.Trim() -ne "") { return $v.Trim() }
+    }
+    $m = [regex]::Match($Text, "(?im)^.*(SELECTED_FACTOR|SHADOW_FACTOR_SELECTED|SHADOW_FACTOR_ID|FACTOR_SELECTED|selected factor|selected_factor).*?(F\d{3}).*$")
+    if ($m.Success) { return $m.Groups[2].Value.Trim() }
+    return "UNKNOWN"
+}
+
+Write-Host ""
+Write-Host "=== V18.3E-R2 DAILY COCKPIT WRAPPER START ==="
+Write-Host ("ROOT: " + $Root)
+
+$OfficialScript = FirstExisting @(
+    (Join-Path $Root "scripts\run_v17_8D_raw105_current_only_daily.ps1")
+)
+
+$ShadowScript = FirstExisting @(
+    (Join-Path $Root "scripts\v18\run_v18_3C_factor_shadow_daily_wrapper.ps1")
+)
+)
+
+$PackScript = FirstExisting @(
+    (Join-Path $Root "scripts\v18\run_v18_3D_R2_factor_pack_current_only_daily.ps1")
+)
+
+$OfficialLog = Join-Path $OpsDir ("V18_3E_R2_step1_v17_8D_official_" + $Stamp + ".log")
+$ShadowLog = Join-Path $OpsDir ("V18_3E_R2_step2_v18_3C_shadow_" + $Stamp + ".log")
+$PackLog = Join-Path $OpsDir ("V18_3E_R2_step3_v18_3D_R2_factor_pack_" + $Stamp + ".log")
+
+Write-Host "STEP 1: run V17.8D official daily quietly"
+RunStep "V17.8D official RAW105 daily" $OfficialScript $OfficialLog | Out-Null
+
+Write-Host "STEP 2: run V18.3C shadow daily quietly"
+RunStep "V18.3C shadow daily" $ShadowScript $ShadowLog | Out-Null
+
+Write-Host "STEP 3: run V18.3D-R2 factor pack daily quietly"
+RunStep "V18.3D-R2 factor pack daily" $PackScript $PackLog | Out-Null
+
+$OfficialText = GetFileText @(
+    (Join-Path $Root "outputs\v17\raw105_decision\V17_8D_READ_FIRST.txt"),
+    (Join-Path $Root "outputs\v17\raw105_decision\V17_8D_CURRENT_RAW105_DECISION_PANEL.txt"),
+    (Join-Path $Root "outputs\v17\raw105_decision\V17_8D_CURRENT_RAW105_DECISION_PANEL.md"),
+    $OfficialLog
+)
+
+$ShadowText = GetFileText @(
+    (Join-Path $Root "outputs\v18\factor_shadow\V18_3C_R1_READ_FIRST.txt"),
+    (Join-Path $Root "outputs\v18\factor_shadow\V18_3C_READ_FIRST.txt"),
+    (Join-Path $Root "outputs\v18\factor_shadow\V18_3B_R2_READ_FIRST.txt"),
+    (Join-Path $Root "outputs\v18\factor_shadow\V18_3B_R2_SHADOW_OFFICIAL_COMPARE_REPORT.md"),
+    $ShadowLog
+)
+
+$PackText = GetFileText @(
+    (Join-Path $Root "outputs\v18\factor_pack\V18_3D_R2_READ_FIRST.txt"),
+    (Join-Path $Root "outputs\v18\factor_pack\V18_CURRENT_FACTOR_PACK_OFFICIAL_OVERLAP.md"),
+    (Join-Path $Root "outputs\v18\factor_pack\V18_CURRENT_FACTOR_PACK_TOP30.md"),
+    $PackLog
+)
+
+$FinalAction = GetKey $OfficialText "FINAL_ACTION"
+$TodaySafe = GetKey $OfficialText "TODAY_SAFE"
+$OfficialAction = GetKey $OfficialText "OFFICIAL_ACTION"
+$BudgetAction = GetKey $OfficialText "BUDGET_ACTION"
+$BuyPermission = GetKey $OfficialText "BUY_PERMISSION"
+$ActionableBuyCount = GetKey $OfficialText "ACTIONABLE_BUY_COUNT_TODAY"
+$WorthReviewCount = GetKey $OfficialText "WORTH_REVIEW_BUT_LOCKED_COUNT"
+
+$ShadowStatus = GetKey $ShadowText "V18_3C_R1_STATUS" (GetKey $ShadowText "V18_3C_STATUS")
+$ShadowFactor = GetSelectedFactor $ShadowText
+$ShadowOverlapCount = GetKey $ShadowText "SHADOW_TOP30_AND_OFFICIAL_REVIEW_COUNT"
+$ShadowOverlapNames = GetKey $ShadowText "SHADOW_TOP30_AND_OFFICIAL_REVIEW_NAMES"
+
+$PackStatus = GetKey $PackText "V18_3D_R2_STATUS"
+$PackOverlapCount = GetKey $PackText "SHADOW_TOP30_AND_OFFICIAL_REVIEW_COUNT"
+$PackOverlapNames = GetKey $PackText "SHADOW_TOP30_AND_OFFICIAL_REVIEW_NAMES"
+$PackOfficialReviewCount = GetKey $PackText "OFFICIAL_REVIEW_COUNT"
+$PackOfficialReviewNames = GetKey $PackText "OFFICIAL_REVIEW_NAMES"
+$PackNotTop30Names = GetKey $PackText "OFFICIAL_REVIEW_NOT_SHADOW_TOP30_NAMES"
+
+$AllText = $OfficialText + "`n" + $ShadowText + "`n" + $PackText
+$DecisionImpact = GetKey $AllText "OFFICIAL_DECISION_IMPACT" "NONE"
+$PromotionAction = GetKey $AllText "PROMOTION_ACTION" "NONE"
+
+$Status = "OK_DAILY_COCKPIT_READY"
+if (($FinalAction -eq "UNKNOWN") -or ($PackStatus -eq "UNKNOWN") -or ($ShadowFactor -eq "UNKNOWN")) {
+    $Status = "WARN_DAILY_COCKPIT_READY_WITH_PARSE_GAPS"
+}
+
+$ReadFirst = Join-Path $OutDir "V18_3E_R2_READ_FIRST.txt"
+$CurrentTxt = Join-Path $OutDir "V18_3E_CURRENT_DAILY_COCKPIT.txt"
+$CurrentMd = Join-Path $OutDir "V18_3E_CURRENT_DAILY_COCKPIT.md"
+$GlobalMd = Join-Path $OutDir "V18_CURRENT_DAILY_COCKPIT.md"
+
+$Summary = @(
+    "=== V18.3E-R2 DAILY COCKPIT ===",
+    "",
+    ("V18_3E_R2_STATUS: " + $Status),
+    ("RUN_TIME: " + $RunTime),
+    "",
+    "=== OFFICIAL V17.8D DECISION ===",
+    ("FINAL_ACTION: " + $FinalAction),
+    ("TODAY_SAFE: " + $TodaySafe),
+    ("OFFICIAL_ACTION: " + $OfficialAction),
+    ("BUDGET_ACTION: " + $BudgetAction),
+    ("BUY_PERMISSION: " + $BuyPermission),
+    ("ACTIONABLE_BUY_COUNT_TODAY: " + $ActionableBuyCount),
+    ("WORTH_REVIEW_BUT_LOCKED_COUNT: " + $WorthReviewCount),
+    "",
+    "=== V18.3C SHADOW FACTOR ===",
+    ("V18_3C_STATUS: " + $ShadowStatus),
+    ("SELECTED_FACTOR: " + $ShadowFactor),
+    ("V18_3C_OVERLAP_COUNT: " + $ShadowOverlapCount),
+    ("V18_3C_OVERLAP_NAMES: " + $ShadowOverlapNames),
+    "",
+    "=== V18.3D-R2 FACTOR PACK ===",
+    ("V18_3D_R2_STATUS: " + $PackStatus),
+    ("OFFICIAL_REVIEW_COUNT: " + $PackOfficialReviewCount),
+    ("OFFICIAL_REVIEW_NAMES: " + $PackOfficialReviewNames),
+    ("V18_3D_R2_OVERLAP_COUNT: " + $PackOverlapCount),
+    ("V18_3D_R2_OVERLAP_NAMES: " + $PackOverlapNames),
+    ("OFFICIAL_REVIEW_NOT_FACTOR_PACK_TOP30: " + $PackNotTop30Names),
+    "",
+    "=== SAFETY ===",
+    ("OFFICIAL_DECISION_IMPACT: " + $DecisionImpact),
+    ("PROMOTION_ACTION: " + $PromotionAction),
+    "",
+    "=== LOGS ===",
+    ("OFFICIAL_LOG: " + $OfficialLog),
+    ("SHADOW_LOG: " + $ShadowLog),
+    ("FACTOR_PACK_LOG: " + $PackLog),
+    "",
+    ("READ_FIRST: " + $ReadFirst),
+    ("CURRENT_MD: " + $CurrentMd),
+    ("GLOBAL_CURRENT_MD: " + $GlobalMd)
+)
+
+$Summary | Set-Content -LiteralPath $ReadFirst -Encoding UTF8
+$Summary | Set-Content -LiteralPath $CurrentTxt -Encoding UTF8
+$Summary | Set-Content -LiteralPath $CurrentMd -Encoding UTF8
+$Summary | Set-Content -LiteralPath $GlobalMd -Encoding UTF8
+
+Write-Host ""
+Write-Host "=== V18.3E-R2 READ FIRST ==="
+Get-Content -LiteralPath $ReadFirst -Encoding UTF8
+Write-Host ""
+Write-Host "=== V18.3E-R2 DAILY COCKPIT WRAPPER DONE ==="
+

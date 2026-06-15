@@ -1,0 +1,13 @@
+$ErrorActionPreference = "Stop"
+
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+$StageScript = Join-Path $ScriptDir "v20_108_r11_strict_equity_shadow_dynamic_weighted_rerank_readiness_bridge.py"
+
+Push-Location $RepoRoot
+try {
+    python $StageScript
+}
+finally {
+    Pop-Location
+}

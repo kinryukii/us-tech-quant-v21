@@ -1,0 +1,507 @@
+﻿from __future__ import annotations
+
+import argparse
+import csv
+import datetime as dt
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+
+def now_text() -> str:
+    return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def norm(s: str) -> str:
+    return str(s or "").strip().lower().replace(" ", "_").replace("-", "_").replace("/", "_")
+
+
+def ensure_dir(p: Path) -> None:
+    p.mkdir(parents=True, exist_ok=True)
+
+
+def read_csv(path: Path) -> Tuple[List[Dict[str, str]], List[str]]:
+    if not path.exists():
+        return [], []
+    with path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        fields = list(reader.fieldnames or [])
+    return rows, fields
+
+
+def write_csv(path: Path, rows: List[Dict], fields: List[str]) -> None:
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow(r)
+
+
+def find_col(fields: List[str], names: List[str]) -> Optional[str]:
+    nmap = {norm(f): f for f in fields}
+
+    for name in names:
+        nn = norm(name)
+        if nn in nmap:
+            return nmap[nn]
+
+    for name in names:
+        nn = norm(name)
+        if len(nn) < 4:
+            continue
+        for f in fields:
+            if nn in norm(f):
+                return f
+
+    return None
+
+
+def detect_source_paths(root: Path) -> List[Path]:
+    paths = [
+        root / "state/v18/simulation/V18_CURRENT_SIM_CANDIDATE_TRACKER.csv",
+        root / "outputs/v18/simulation/V18_CURRENT_SIM_CANDIDATE_TRACKER.csv",
+        root / "outputs/v18/simulation/V18_CURRENT_SIM_CANDIDATE_TRACKER_TODAY.csv",
+    ]
+    return [p for p in paths if p.exists()]
+
+
+def choose_source(root: Path) -> Tuple[Optional[Path], List[Dict[str, str]], List[str], List[Dict[str, str]]]:
+    source_rows = []
+
+    best_path = None
+    best_rows: List[Dict[str, str]] = []
+    best_fields: List[str] = []
+    best_score = (-1, -1)
+
+    for p in detect_source_paths(root):
+        rows, fields = read_csv(p)
+
+        forward_cells = 0
+        for f in fields:
+            nf = norm(f)
+            if "forward" in nf or "fwd" in nf or "return_1d" in nf or "return_5d" in nf or "return_10d" in nf or "return_20d" in nf:
+                forward_cells += sum(1 for r in rows if str(r.get(f, "")).strip() != "")
+
+        score = (len(rows), forward_cells)
+
+        source_rows.append({
+            "path": str(p),
+            "rows": str(len(rows)),
+            "columns": str(len(fields)),
+            "forward_nonblank_cells": str(forward_cells),
+        })
+
+        if score > best_score:
+            best_score = score
+            best_path = p
+            best_rows = rows
+            best_fields = fields
+
+    return best_path, best_rows, best_fields, source_rows
+
+
+def detect_label_cols(fields: List[str]) -> Dict[int, Optional[str]]:
+    aliases = {
+        1: ["forward_return_1d", "fwd_1d", "fwd_return_1d", "return_1d", "return_1d_pct", "forward_1d_return"],
+        5: ["forward_return_5d", "fwd_5d", "fwd_return_5d", "return_5d", "return_5d_pct", "forward_5d_return"],
+        10: ["forward_return_10d", "fwd_10d", "fwd_return_10d", "return_10d", "return_10d_pct", "forward_10d_return"],
+        20: ["forward_return_20d", "fwd_20d", "fwd_return_20d", "return_20d", "return_20d_pct", "forward_20d_return"],
+    }
+    out: Dict[int, Optional[str]] = {}
+    for h, names in aliases.items():
+        out[h] = find_col(fields, names)
+    return out
+
+
+def parse_date(x: str) -> Optional[dt.date]:
+    s = str(x or "").strip()
+    if not s:
+        return None
+
+    # Keep date part if datetime-like.
+    s = s.replace("/", "-")
+    if "T" in s:
+        s = s.split("T")[0]
+    if " " in s:
+        s = s.split(" ")[0]
+
+    formats = [
+        "%Y-%m-%d",
+        "%Y%m%d",
+        "%m-%d-%Y",
+        "%d-%m-%Y",
+    ]
+
+    for fmt in formats:
+        try:
+            return dt.datetime.strptime(s, fmt).date()
+        except Exception:
+            pass
+
+    return None
+
+
+def business_days_elapsed(start: Optional[dt.date], end: dt.date) -> Optional[int]:
+    if start is None:
+        return None
+    if end <= start:
+        return 0
+
+    cur = start + dt.timedelta(days=1)
+    count = 0
+    while cur <= end:
+        if cur.weekday() < 5:
+            count += 1
+        cur += dt.timedelta(days=1)
+    return count
+
+
+def is_nonblank(x: str) -> bool:
+    s = str(x or "").strip()
+    return s != "" and s.lower() not in ("nan", "none", "null", "na", "n/a")
+
+
+def detect_date_col(fields: List[str]) -> Optional[str]:
+    return find_col(fields, [
+        "snapshot_date",
+        "candidate_date",
+        "signal_date",
+        "as_of_date",
+        "trade_date",
+        "date",
+        "price_date",
+        "latest_price_date",
+    ])
+
+
+def detect_ticker_col(fields: List[str]) -> Optional[str]:
+    return find_col(fields, ["ticker", "symbol", "asset", "name"])
+
+
+def maturity_status(nonblank: int, mature_blank: int, not_mature_blank: int, min_count: int, date_col: Optional[str]) -> str:
+    if nonblank >= min_count:
+        return "READY_FOR_FACTOR_BACKTEST"
+
+    if date_col is None:
+        return "WAIT_NO_DATE_COLUMN_FOR_CALENDAR_MATURITY"
+
+    if mature_blank > 0:
+        return "MATURE_BUT_FORWARD_RETURN_NOT_FILLED"
+
+    if not_mature_blank > 0:
+        return "WAIT_FOR_FORWARD_HORIZON_TO_MATURE"
+
+    return "WAIT_FOR_MORE_SAMPLES"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=r"D:\us-tech-quant")
+    ap.add_argument("--min-count", type=int, default=20)
+    ap.add_argument("--as-of-date", default="")
+    args = ap.parse_args()
+
+    root = Path(args.root)
+    out_dir = root / "outputs/v18/factor_research"
+    ensure_dir(out_dir)
+
+    as_of = parse_date(args.as_of_date) if args.as_of_date else dt.date.today()
+
+    maturity_path = out_dir / "V18_10B_R1_CURRENT_FORWARD_RETURN_MATURITY.csv"
+    pending_path = out_dir / "V18_10B_R1_CURRENT_FORWARD_RETURN_PENDING_ROWS.csv"
+    source_audit_path = out_dir / "V18_10B_R1_CURRENT_FORWARD_RETURN_SOURCE_AUDIT.csv"
+    report_path = out_dir / "V18_10B_R1_CURRENT_FORWARD_RETURN_MATURITY_REPORT.md"
+    read_first_path = out_dir / "V18_10B_R1_READ_FIRST.txt"
+
+    source_path, rows, fields, source_audit = choose_source(root)
+
+    date_col = detect_date_col(fields)
+    ticker_col = detect_ticker_col(fields)
+    label_cols = detect_label_cols(fields)
+
+    maturity_rows: List[Dict[str, str]] = []
+    pending_rows: List[Dict[str, str]] = []
+
+    for horizon in [1, 5, 10, 20]:
+        label_col = label_cols.get(horizon)
+
+        total_rows = len(rows)
+        nonblank = 0
+        blank = 0
+        calendar_mature = 0
+        calendar_not_mature = 0
+        mature_blank = 0
+        not_mature_blank = 0
+        missing_date = 0
+
+        for idx, r in enumerate(rows):
+            label_value = r.get(label_col, "") if label_col else ""
+            has_label = is_nonblank(label_value)
+
+            if has_label:
+                nonblank += 1
+            else:
+                blank += 1
+
+            signal_date = parse_date(r.get(date_col, "")) if date_col else None
+            elapsed = business_days_elapsed(signal_date, as_of)
+
+            if elapsed is None:
+                missing_date += 1
+                row_maturity = "UNKNOWN_MISSING_DATE"
+            elif elapsed >= horizon:
+                calendar_mature += 1
+                row_maturity = "CALENDAR_MATURE"
+            else:
+                calendar_not_mature += 1
+                row_maturity = "NOT_YET_MATURE"
+
+            if not has_label:
+                if row_maturity == "CALENDAR_MATURE":
+                    mature_blank += 1
+                elif row_maturity == "NOT_YET_MATURE":
+                    not_mature_blank += 1
+
+                pending_rows.append({
+                    "row_index": str(idx),
+                    "ticker": r.get(ticker_col, "") if ticker_col else "",
+                    "horizon": f"{horizon}D",
+                    "label_column": label_col or "",
+                    "label_status": "BLANK",
+                    "date_column": date_col or "",
+                    "signal_date": r.get(date_col, "") if date_col else "",
+                    "as_of_date": str(as_of),
+                    "business_days_elapsed": "" if elapsed is None else str(elapsed),
+                    "calendar_maturity_status": row_maturity,
+                    "recommended_action": "RUN_FORWARD_FILLER" if row_maturity == "CALENDAR_MATURE" else "WAIT_MATURITY",
+                })
+
+        ready = nonblank >= args.min_count
+        status = maturity_status(
+            nonblank=nonblank,
+            mature_blank=mature_blank,
+            not_mature_blank=not_mature_blank,
+            min_count=args.min_count,
+            date_col=date_col,
+        )
+
+        maturity_rows.append({
+            "horizon": f"{horizon}D",
+            "label_column": label_col or "",
+            "source_rows": str(total_rows),
+            "label_nonblank_count": str(nonblank),
+            "label_blank_count": str(blank),
+            "calendar_mature_count": str(calendar_mature),
+            "calendar_not_mature_count": str(calendar_not_mature),
+            "mature_but_label_blank_count": str(mature_blank),
+            "not_yet_mature_blank_count": str(not_mature_blank),
+            "missing_date_count": str(missing_date),
+            "min_count_required": str(args.min_count),
+            "ready_for_factor_backtest": "YES" if ready else "NO",
+            "maturity_status": status,
+        })
+
+    write_csv(maturity_path, maturity_rows, [
+        "horizon",
+        "label_column",
+        "source_rows",
+        "label_nonblank_count",
+        "label_blank_count",
+        "calendar_mature_count",
+        "calendar_not_mature_count",
+        "mature_but_label_blank_count",
+        "not_yet_mature_blank_count",
+        "missing_date_count",
+        "min_count_required",
+        "ready_for_factor_backtest",
+        "maturity_status",
+    ])
+
+    write_csv(pending_path, pending_rows, [
+        "row_index",
+        "ticker",
+        "horizon",
+        "label_column",
+        "label_status",
+        "date_column",
+        "signal_date",
+        "as_of_date",
+        "business_days_elapsed",
+        "calendar_maturity_status",
+        "recommended_action",
+    ])
+
+    write_csv(source_audit_path, source_audit, [
+        "path",
+        "rows",
+        "columns",
+        "forward_nonblank_cells",
+    ])
+
+    ready_count = sum(1 for r in maturity_rows if r["ready_for_factor_backtest"] == "YES")
+    all_label_nonblank = sum(int(r["label_nonblank_count"]) for r in maturity_rows)
+    all_mature_blank = sum(int(r["mature_but_label_blank_count"]) for r in maturity_rows)
+
+    report = []
+    report.append("# V18.10B-R1 Forward Return Maturity Monitor")
+    report.append("")
+    report.append(f"Generated: `{now_text()}`")
+    report.append("")
+    report.append("## 1. Status")
+    report.append("")
+    report.append("- STATUS: `OK_FORWARD_RETURN_MATURITY_MONITOR_READY`")
+    report.append("- MODE: `SHADOW_ONLY_MATURITY_GUARD`")
+    report.append("- OFFICIAL_DECISION_IMPACT: `NONE`")
+    report.append("- AUTO_WEIGHT_CHANGE: `DISABLED`")
+    report.append("- AUTO_PROMOTION: `DISABLED`")
+    report.append("- AUTO_TRADE: `DISABLED`")
+    report.append("")
+    report.append("## 2. Source")
+    report.append("")
+    report.append(f"- SELECTED_SOURCE: `{source_path}`")
+    report.append(f"- SOURCE_ROWS: `{len(rows)}`")
+    report.append(f"- DATE_COLUMN: `{date_col or ''}`")
+    report.append(f"- TICKER_COLUMN: `{ticker_col or ''}`")
+    report.append(f"- AS_OF_DATE: `{as_of}`")
+    report.append(f"- MIN_COUNT_REQUIRED: `{args.min_count}`")
+    report.append("")
+    report.append("## 3. Maturity summary")
+    report.append("")
+    report.append("| horizon | label_column | nonblank | mature_blank | not_yet_mature_blank | ready | status |")
+    report.append("|---|---|---:|---:|---:|---|---|")
+    for r in maturity_rows:
+        report.append(
+            f"| {r['horizon']} | {r['label_column']} | {r['label_nonblank_count']} | "
+            f"{r['mature_but_label_blank_count']} | {r['not_yet_mature_blank_count']} | "
+            f"{r['ready_for_factor_backtest']} | {r['maturity_status']} |"
+        )
+    report.append("")
+    report.append("## 4. Interpretation")
+    report.append("")
+    report.append("- `READY_FOR_FACTOR_BACKTEST`: enough nonblank labels exist for that horizon.")
+    report.append("- `WAIT_FOR_FORWARD_HORIZON_TO_MATURE`: candidates are too new; do not judge factors yet.")
+    report.append("- `MATURE_BUT_FORWARD_RETURN_NOT_FILLED`: the horizon appears mature, but labels are still blank; rerun forward filler.")
+    report.append("- `WAIT_NO_DATE_COLUMN_FOR_CALENDAR_MATURITY`: date column was not found, so only nonblank label count can be trusted.")
+    report.append("")
+    report.append("## 5. Outputs")
+    report.append("")
+    report.append(f"- MATURITY: `{maturity_path}`")
+    report.append(f"- PENDING_ROWS: `{pending_path}`")
+    report.append(f"- SOURCE_AUDIT: `{source_audit_path}`")
+    report.append(f"- REPORT: `{report_path}`")
+    report.append(f"- READ_FIRST: `{read_first_path}`")
+    report.append("")
+    report.append("## 6. Next step")
+    report.append("")
+    if ready_count == 0:
+        if all_mature_blank > 0:
+            report.append("Some horizons appear mature but labels are blank. Run V18.9B forward return filler with `-UseYFinance`, then rerun V18.10B.")
+        else:
+            report.append("No horizon has enough mature labels yet. Continue daily candidate tracking and forward return filling.")
+    else:
+        report.append("At least one horizon is ready. Rerun V18.10B factor effectiveness backtest and review summary.")
+    report.append("")
+
+    report_path.write_text("\n".join(report), encoding="utf-8")
+
+    read_first = f"""V18.10B-R1 FORWARD RETURN MATURITY MONITOR READ FIRST
+
+STATUS:
+OK_FORWARD_RETURN_MATURITY_MONITOR_READY
+
+MODE:
+SHADOW_ONLY_MATURITY_GUARD
+
+OFFICIAL_DECISION_IMPACT:
+NONE
+
+AUTO_WEIGHT_CHANGE:
+DISABLED
+
+AUTO_PROMOTION:
+DISABLED
+
+AUTO_TRADE:
+DISABLED
+
+SELECTED_SOURCE:
+{source_path}
+
+SOURCE_ROWS:
+{len(rows)}
+
+DATE_COLUMN:
+{date_col or ""}
+
+TICKER_COLUMN:
+{ticker_col or ""}
+
+AS_OF_DATE:
+{as_of}
+
+MIN_COUNT_REQUIRED:
+{args.min_count}
+
+READY_HORIZON_COUNT:
+{ready_count}
+
+TOTAL_LABEL_NONBLANK_COUNT:
+{all_label_nonblank}
+
+TOTAL_MATURE_BUT_LABEL_BLANK_COUNT:
+{all_mature_blank}
+
+MATURITY:
+{maturity_path}
+
+PENDING_ROWS:
+{pending_path}
+
+SOURCE_AUDIT:
+{source_audit_path}
+
+REPORT:
+{report_path}
+
+READ_FIRST:
+{read_first_path}
+
+NEXT_STEP:
+If READY_HORIZON_COUNT is 0, do not adjust weights.
+If TOTAL_MATURE_BUT_LABEL_BLANK_COUNT is greater than 0, run:
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\\us-tech-quant\\scripts\\v18\\run_v18_9B_forward_return_filler.ps1" -UseYFinance
+
+Then rerun:
+powershell -NoProfile -ExecutionPolicy Bypass -File "D:\\us-tech-quant\\scripts\\v18\\run_v18_10B_factor_effectiveness_backtest.ps1"
+"""
+    read_first_path.write_text(read_first, encoding="utf-8")
+
+    print("")
+    print("=== V18.10B-R1 FORWARD RETURN MATURITY MONITOR READY ===")
+    print("STATUS: OK_FORWARD_RETURN_MATURITY_MONITOR_READY")
+    print("MODE: SHADOW_ONLY_MATURITY_GUARD")
+    print("OFFICIAL_DECISION_IMPACT: NONE")
+    print("AUTO_WEIGHT_CHANGE: DISABLED")
+    print("AUTO_PROMOTION: DISABLED")
+    print("AUTO_TRADE: DISABLED")
+    print(f"SELECTED_SOURCE: {source_path}")
+    print(f"SOURCE_ROWS: {len(rows)}")
+    print(f"DATE_COLUMN: {date_col or ''}")
+    print(f"TICKER_COLUMN: {ticker_col or ''}")
+    print(f"AS_OF_DATE: {as_of}")
+    print(f"MIN_COUNT_REQUIRED: {args.min_count}")
+    print(f"READY_HORIZON_COUNT: {ready_count}")
+    print(f"TOTAL_LABEL_NONBLANK_COUNT: {all_label_nonblank}")
+    print(f"TOTAL_MATURE_BUT_LABEL_BLANK_COUNT: {all_mature_blank}")
+    print(f"MATURITY: {maturity_path}")
+    print(f"PENDING_ROWS: {pending_path}")
+    print(f"SOURCE_AUDIT: {source_audit_path}")
+    print(f"REPORT: {report_path}")
+    print(f"READ_FIRST: {read_first_path}")
+    print("")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

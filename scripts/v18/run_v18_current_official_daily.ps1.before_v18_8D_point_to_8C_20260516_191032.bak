@@ -1,0 +1,24 @@
+﻿param(
+    [string]$Root = "D:\us-tech-quant"
+)
+
+$ErrorActionPreference = "Stop"
+
+$Target = Join-Path $Root "scripts\v18\run_v18_7D_official_daily_fast_main_with_technical.ps1"
+
+if (-not (Test-Path $Target)) {
+    throw "CURRENT_OFFICIAL_TARGET_MISSING: $Target"
+}
+
+Write-Host ""
+Write-Host "=== V18 CURRENT OFFICIAL DAILY START ==="
+Write-Host "TARGET: $Target"
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Target -Root $Root
+$ExitCode = $LASTEXITCODE
+
+Write-Host ""
+Write-Host "=== V18 CURRENT OFFICIAL DAILY DONE ==="
+Write-Host "EXIT_CODE: $ExitCode"
+
+exit $ExitCode

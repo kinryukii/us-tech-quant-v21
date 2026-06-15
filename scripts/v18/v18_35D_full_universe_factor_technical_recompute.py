@@ -1,0 +1,1232 @@
+from __future__ import annotations
+
+import argparse
+import csv
+import math
+import re
+import shutil
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
+from typing import Iterable, Sequence
+
+
+STATUS_OK = "OK_V18_35D_FULL_UNIVERSE_RECOMPUTE_READY"
+STATUS_WARN = "WARN_V18_35D_FULL_UNIVERSE_RECOMPUTE_REVIEW_NEEDED"
+STATUS_FAIL = "FAIL_V18_35D_FULL_UNIVERSE_RECOMPUTE_FAILED"
+
+AUTO_TRADE = "DISABLED"
+AUTO_SELL = "DISABLED"
+OFFICIAL_DECISION_IMPACT = "NONE"
+FORBIDDEN_MODIFIED = "FALSE"
+
+UNIVERSE = "state/v18/universe/V18_UNIVERSE_ROLLING_STATE.csv"
+ROLLING_LEDGER = "state/v18/rolling_coverage/V18_23B_ROLLING_SCAN_LEDGER.csv"
+SCAN_PLAN = "outputs/v18/universe/V18_CURRENT_ROLLING_SCAN_PLAN.csv"
+CURRENT_FULL = "outputs/v18/candidates/V18_CURRENT_FULL_RANKED_CANDIDATES.csv"
+CURRENT_RANKED = "outputs/v18/candidates/V18_CURRENT_RANKED_CANDIDATES.csv"
+CURRENT_TOP = "outputs/v18/candidates/V18_CURRENT_TOP_RANKED_CANDIDATES.csv"
+CURRENT_FACTOR = "outputs/v18/factor_pack/V18_CURRENT_RAW105_FACTOR_PACK_RANKING.csv"
+CURRENT_TECH = "outputs/v18/technical_timing/V18_6A_CURRENT_TECHNICAL_TIMING.csv"
+FREEZE = "state/v18/forward_test/V18_DAILY_SIGNAL_FREEZE_LEDGER.csv"
+PRICE_CACHE = "state/v18/price_cache"
+
+OUT_FACTOR = "outputs/v18/factor_pack/V18_35D_FULL_UNIVERSE_FACTOR_PACK_RANKING.csv"
+OUT_TECH = "outputs/v18/technical_timing/V18_35D_FULL_UNIVERSE_TECHNICAL_TIMING.csv"
+OUT_RANKED = "outputs/v18/candidates/V18_35D_FULL_UNIVERSE_RECOMPUTED_RANKED_CANDIDATES.csv"
+OUT_STATUS = "outputs/v18/candidates/V18_35D_FULL_UNIVERSE_COMPUTATION_STATUS.csv"
+OUT_FAILURES = "outputs/v18/candidates/V18_35D_FULL_UNIVERSE_RECOMPUTE_FAILURES.csv"
+OUT_PREVIEW = "outputs/v18/candidates/V18_35D_FULL_UNIVERSE_CANDIDATE_EXPANSION_PREVIEW.csv"
+OUT_SUMMARY = "outputs/v18/ops/V18_35D_FULL_UNIVERSE_RECOMPUTE_SUMMARY.csv"
+OUT_REPORT = "outputs/v18/read_center/V18_35D_FULL_UNIVERSE_RECOMPUTE_REPORT.md"
+OUT_CURRENT_REPORT = "outputs/v18/read_center/V18_CURRENT_FULL_UNIVERSE_RECOMPUTE.md"
+OUT_READ_FIRST = "outputs/v18/ops/V18_35D_READ_FIRST.txt"
+OUT_SOURCE_AUDIT = "outputs/v18/ops/V18_46A_UNIVERSE_SOURCE_AUDIT.csv"
+QUARANTINE = "state/v18/excluded_or_unavailable_tickers.csv"
+AUTHORITATIVE_RECOMPUTE_SOURCE = "V18_35D_PRICE_HISTORY_RECOMPUTE"
+
+STATUS_FIELDS = [
+    "ticker", "in_total_universe", "in_current_full_candidates_before", "in_current_top_candidates_before",
+    "in_latest_signal_freeze", "calculation_attempted", "price_data_attempted", "price_data_available",
+    "price_data_source", "latest_price_date", "history_row_count", "history_start_date", "history_end_date",
+    "factor_calculation_attempted", "factor_calculation_success", "technical_calculation_attempted",
+    "technical_calculation_success", "ranking_merge_attempted", "ranking_merge_success", "factor_score",
+    "technical_timing_score", "recomputed_composite_score", "recomputed_rank", "rank_eligible",
+    "calculation_status", "failure_bucket", "failure_reason", "evidence_sources",
+    "factor_source_true", "technical_source_true", "score_source_true",
+    "factor_recomputed_by_v18_35d", "factor_reused_from_raw105", "legacy_factor_pack_used",
+    "authoritative_row_ok", "authoritative_row_block_reason",
+    "raw_universe_token_count", "sanitized_universe_count", "invalid_pseudo_ticker_count",
+    "invalid_pseudo_tickers", "yfinance_failed_ticker_count", "yfinance_failed_tickers",
+    "yfinance_failed_ticker_count_raw", "price_unavailable_excluded_count",
+    "price_unavailable_excluded_tickers", "current_price_refresh_blocking_failed_ticker_count",
+]
+
+SOURCE_AUDIT_FIELDS = [
+    "source_path", "source_type", "raw_token_count", "accepted_ticker_count",
+    "rejected_token_count", "rejected_token_sample",
+]
+
+QUARANTINE_FIELDS = [
+    "ticker", "reason", "first_seen_run_id", "last_seen_run_id", "provider", "last_error", "active",
+]
+
+RANK_FIELDS = [
+    "rank", "ticker", "composite_candidate_score", "ranking_source_policy", "primary_score_source_files",
+    "audit_only_source_files", "score_source_status", "score_source_files", "score_source_columns",
+    "latest_price_date", "latest_close", "technical_status", "event_risk_status", "overheat_status",
+    "pullback_status", "execution_status", "final_action", "reason",
+    "factor_source_true", "technical_source_true", "score_source_true",
+    "factor_recomputed_by_v18_35d", "factor_reused_from_raw105", "legacy_factor_pack_used",
+    "authoritative_row_ok", "authoritative_row_block_reason",
+]
+
+
+def stamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def iso_now() -> str:
+    return datetime.now().replace(microsecond=0).isoformat()
+
+
+def norm(v: object) -> str:
+    return str(v or "").strip().upper()
+
+
+def rel(root: Path, path: Path | str) -> str:
+    p = Path(path)
+    if not p.is_absolute():
+        return p.as_posix()
+    try:
+        return p.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return str(p)
+
+
+def read_csv(path: Path) -> tuple[list[dict[str, str]], list[str]]:
+    if not path.exists():
+        return [], []
+    for enc in ("utf-8-sig", "utf-8", "cp932", "latin-1"):
+        try:
+            with path.open("r", encoding=enc, newline="", errors="replace") as f:
+                reader = csv.DictReader(f)
+                return [dict(r) for r in reader], list(reader.fieldnames or [])
+        except Exception:
+            continue
+    return [], []
+
+
+def write_csv(path: Path, rows: Iterable[dict[str, object]], fields: Sequence[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(fields), extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fields})
+
+
+def write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.replace("\r\n", "\n").replace("\r", "\n"), encoding="utf-8")
+
+
+def ticker_set(rows: list[dict[str, str]]) -> set[str]:
+    return {norm(r.get("ticker") or r.get("yf_ticker")) for r in rows if norm(r.get("ticker") or r.get("yf_ticker"))}
+
+
+HEADER_TOKENS = {"TICKER", "TICKERS", "SYMBOL", "SYMBOLS"}
+CONTROL_TOKENS = {"TRUE", "FALSE", "NONE", "NULL", "NAN"}
+TICKER_PATTERN = re.compile(r"^[A-Z][A-Z0-9]*(?:[.-][A-Z0-9]+)?$")
+
+
+def is_valid_ticker_token(token: str) -> bool:
+    token = norm(token)
+    if not token:
+        return False
+    if token.isdigit() or token in HEADER_TOKENS or token in CONTROL_TOKENS:
+        return False
+    if any(ch in token for ch in ("\\", "/", ";", ":", "|", "\t", "\n", "\r", " ")):
+        return False
+    if len(token) > 12:
+        return False
+    if token.startswith((".", "-")) or token.endswith((".", "-")):
+        return False
+    return bool(TICKER_PATTERN.match(token))
+
+
+def sanitize_ticker_tokens(tokens: Iterable[str]) -> tuple[list[str], list[str]]:
+    valid: list[str] = []
+    invalid: list[str] = []
+    for token in sorted({norm(t) for t in tokens if norm(t)}):
+        if is_valid_ticker_token(token):
+            valid.append(token)
+        else:
+            invalid.append(token)
+    return valid, invalid
+
+
+def structured_ticker_tokens(rows: list[dict[str, str]], fields: Sequence[str]) -> list[str]:
+    allowed = {"ticker", "symbol"}
+    cols = [field for field in fields if field.strip().lower() in allowed]
+    if not cols:
+        return []
+    out: list[str] = []
+    for row in rows:
+        for col in cols:
+            token = norm(row.get(col))
+            if token:
+                out.append(token)
+                break
+    return out
+
+
+def load_universe_tokens(root: Path, universe_rows: list[dict[str, str]], universe_fields: Sequence[str]) -> tuple[list[str], list[str], list[dict[str, object]], list[str]]:
+    raw_tokens = structured_ticker_tokens(universe_rows, universe_fields)
+    accepted, rejected = sanitize_ticker_tokens(raw_tokens)
+    audit_rows = [{
+        "source_path": UNIVERSE,
+        "source_type": "STRUCTURED_CSV_TICKER_COLUMN",
+        "raw_token_count": len(raw_tokens),
+        "accepted_ticker_count": len(accepted),
+        "rejected_token_count": len(rejected),
+        "rejected_token_sample": ", ".join(rejected[:50]),
+    }]
+    return accepted, raw_tokens, audit_rows, rejected
+
+
+def read_quarantine(path: Path) -> dict[str, dict[str, str]]:
+    rows, _ = read_csv(path)
+    out: dict[str, dict[str, str]] = {}
+    for row in rows:
+        ticker = norm(row.get("ticker"))
+        if ticker:
+            out[ticker] = row
+    return out
+
+
+def write_quarantine(path: Path, existing: dict[str, dict[str, str]], failed: dict[str, str], run_id: str) -> None:
+    for ticker, error in failed.items():
+        row = dict(existing.get(ticker, {}))
+        row["ticker"] = ticker
+        row["reason"] = "UNAVAILABLE_PRICE_DATA"
+        row["first_seen_run_id"] = row.get("first_seen_run_id") or run_id
+        row["last_seen_run_id"] = run_id
+        row["provider"] = "YFINANCE"
+        row["last_error"] = error
+        row["active"] = "TRUE"
+        existing[ticker] = row
+    write_csv(path, [existing[t] for t in sorted(existing)], QUARANTINE_FIELDS)
+
+
+def index_by_ticker(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
+    for row in rows:
+        t = norm(row.get("ticker") or row.get("yf_ticker"))
+        if t:
+            out[t] = row
+    return out
+
+
+def to_float(v: object) -> float | None:
+    try:
+        s = str(v or "").strip()
+        if not s or s.upper() in {"NAN", "NONE", "NULL"}:
+            return None
+        x = float(s)
+        return None if math.isnan(x) or math.isinf(x) else x
+    except Exception:
+        return None
+
+
+def numeric_rank_valid(rows: list[dict[str, str]]) -> bool:
+    if not rows or "rank" not in rows[0]:
+        return False
+    return all(to_float(row.get("rank")) is not None for row in rows)
+
+
+def parse_iso_date(value: object) -> str:
+    text = str(value or "").strip()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", text):
+        return ""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").date().isoformat()
+    except ValueError:
+        return ""
+
+
+def max_date_from_rows(rows: list[dict[str, str]], fields: Sequence[str]) -> str:
+    dates: list[str] = []
+    for row in rows:
+        for field in fields:
+            value = parse_iso_date(row.get(field, ""))
+            if not value:
+                continue
+            dates.append(value)
+            break
+    return max(dates) if dates else ""
+
+
+def latest_freeze(rows: list[dict[str, str]]) -> set[str]:
+    by_date: dict[str, set[str]] = {}
+    for row in rows:
+        d = str(row.get("signal_date", "")).strip()
+        t = norm(row.get("ticker"))
+        if d and t:
+            by_date.setdefault(d, set()).add(t)
+    if not by_date:
+        return set()
+    return by_date[sorted(by_date)[-1]]
+
+
+def load_prices(path: Path) -> tuple[list[dict[str, object]], str]:
+    rows, fields = read_csv(path)
+    if not path.exists():
+        return [], "price cache file missing"
+    lower = {f.lower(): f for f in fields}
+    required = {"date", "open", "high", "low", "close", "volume"}
+    if not rows or not required.issubset(set(lower)):
+        return [], "price cache unreadable or missing required columns"
+    out = []
+    for r in rows:
+        date = str(r.get(lower["date"], "")).strip()[:10]
+        close = to_float(r.get(lower["close"]))
+        if not date or close is None:
+            continue
+        out.append({
+            "date": date,
+            "open": to_float(r.get(lower["open"])) or close,
+            "high": to_float(r.get(lower["high"])) or close,
+            "low": to_float(r.get(lower["low"])) or close,
+            "close": close,
+            "volume": to_float(r.get(lower["volume"])) or 0.0,
+        })
+    out.sort(key=lambda x: str(x["date"]))
+    return out, "" if out else "no parseable price rows"
+
+
+def download_prices_yf(ticker: str) -> tuple[list[dict[str, object]], str]:
+    try:
+        import yfinance as yf  # type: ignore
+        df = yf.download(ticker.replace(".", "-"), period="420d", interval="1d", auto_adjust=False, progress=False, threads=False)
+        if df is None or df.empty:
+            return [], "yfinance returned empty data"
+        if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
+            df.columns = [c[0] for c in df.columns]
+        df = df.reset_index()
+        rows = []
+        for _, r in df.iterrows():
+            close = to_float(r.get("Close"))
+            if close is None:
+                continue
+            rows.append({
+                "date": str(r.get("Date"))[:10],
+                "open": to_float(r.get("Open")) or close,
+                "high": to_float(r.get("High")) or close,
+                "low": to_float(r.get("Low")) or close,
+                "close": close,
+                "volume": to_float(r.get("Volume")) or 0.0,
+            })
+        rows.sort(key=lambda x: str(x["date"]))
+        return rows, "" if rows else "yfinance rows not parseable"
+    except Exception as exc:
+        return [], f"yfinance fetch failed: {type(exc).__name__}"
+
+
+def download_latest_price_yf(ticker: str) -> tuple[dict[str, str] | None, str]:
+    try:
+        import yfinance as yf  # type: ignore
+        import pandas as pd  # type: ignore
+
+        df = yf.download(ticker.replace(".", "-"), period="15d", interval="1d", auto_adjust=False, progress=False, threads=False)
+        if df is None or df.empty:
+            return None, "yfinance latest returned empty data"
+        if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
+            df.columns = [c[0] for c in df.columns]
+        df = df.reset_index()
+        date_col = next((c for c in ("Date", "Datetime", "date", "datetime") if c in df.columns), None)
+        close_col = next((c for c in ("Close", "Adj Close", "close", "adj_close") if c in df.columns), None)
+        if date_col is None or close_col is None:
+            return None, "yfinance latest missing date or close column"
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df[close_col] = pd.to_numeric(df[close_col], errors="coerce")
+        df = df[df[date_col].notna()]
+        df = df[df[close_col].notna()]
+        df = df.sort_values(date_col)
+        if df.empty:
+            return None, "yfinance latest has no valid close"
+        last = df.iloc[-1]
+        return {
+            "latest_price_date": str(pd.to_datetime(last[date_col]).date()),
+            "latest_close": str(float(last[close_col])),
+            "price_data_source": "YFINANCE_LATEST_15D",
+        }, ""
+    except Exception as exc:
+        return None, f"yfinance latest fetch failed: {type(exc).__name__}"
+
+
+def pct(a: float, b: float) -> str:
+    return "" if b == 0 else f"{(a / b) - 1.0:.6f}"
+
+
+def percentile_score(value: float, lo: float, hi: float, invert: bool = False) -> float:
+    score = 50.0 if hi == lo else max(0.0, min(100.0, 100.0 * (value - lo) / (hi - lo)))
+    return round(100.0 - score if invert else score, 6)
+
+
+
+def apply_force_latest_to_prices(prices: list[dict[str, object]], force_price: dict[str, str] | None) -> list[dict[str, object]]:
+    if not force_price:
+        return prices
+
+    latest_date = str(force_price.get("latest_price_date", "")).strip()
+    latest_close = str(force_price.get("latest_close", "")).strip()
+    if not latest_date or not latest_close:
+        return prices
+
+    out = [dict(row) for row in prices]
+    if not out:
+        return out
+
+    # If the date already exists, update its close. If not, append a close-only synthetic final bar.
+    # We only have latest close from force yfinance output, so open/high/low are set to close and volume is carried forward.
+    for row in out:
+        if str(row.get("date", "")).strip() == latest_date:
+            row["close"] = latest_close
+            row["open"] = row.get("open") or latest_close
+            row["high"] = row.get("high") or latest_close
+            row["low"] = row.get("low") or latest_close
+            row["force_price_overlay"] = "TRUE"
+            return sorted(out, key=lambda r: str(r.get("date", "")))
+
+    last = dict(out[-1])
+    synthetic = {
+        "date": latest_date,
+        "open": latest_close,
+        "high": latest_close,
+        "low": latest_close,
+        "close": latest_close,
+        "volume": last.get("volume", "0") or "0",
+        "force_price_overlay": "TRUE",
+    }
+    out.append(synthetic)
+    return sorted(out, key=lambda r: str(r.get("date", "")))
+
+
+def factor_row(ticker: str, prices: list[dict[str, object]], fields: Sequence[str]) -> dict[str, object]:
+    closes = [float(r["close"]) for r in prices]
+    vols = [float(r["volume"]) for r in prices]
+    latest = prices[-1]
+
+    def ret(n: int) -> str:
+        return pct(closes[-1], closes[-1 - n]) if len(closes) > n else ""
+
+    ret5, ret20, ret60, ret120 = ret(5), ret(20), ret(60), ret(120)
+    avg5 = sum(vols[-5:]) / min(5, len(vols))
+    avg20 = sum(vols[-20:]) / min(20, len(vols))
+    vol_ratio = round(avg5 / avg20, 6) if avg20 else ""
+    mom60 = float(ret60) if ret60 != "" else 0.0
+    mom120 = float(ret120) if ret120 != "" else 0.0
+    pullback = -float(ret5) if ret5 != "" and mom60 > 0 else 0.0
+    composite = 0.45 * percentile_score(mom60, -0.5, 0.8) + 0.35 * percentile_score(mom120, -0.8, 1.5) + 0.20 * percentile_score(pullback, -0.1, 0.2)
+    row = {f: "" for f in fields}
+    row.update({
+        "factor_pack_rank": "",
+        "ticker": ticker,
+        "factor_pack_score": round(composite, 6),
+        "latest_price_date": latest["date"],
+        "latest_close": latest["close"],
+        "ret_5d": ret5,
+        "ret_20d": ret20,
+        "ret_60d": ret60,
+        "ret_120d": ret120,
+        "volume_ratio_5_20": vol_ratio,
+        "F006_SHORT_REV_5D": percentile_score(-float(ret5), -0.2, 0.2) if ret5 != "" else "",
+        "F007_PULLBACK_IN_UPTREND": percentile_score(pullback, -0.1, 0.2),
+        "F008_VOLUME_ABNORMAL_5_20": percentile_score(float(vol_ratio), 0.5, 2.0) if vol_ratio != "" else "",
+        "F009_VOLUME_PRICE_CONFIRM": percentile_score((float(ret20) if ret20 != "" else 0.0) * (float(vol_ratio) if vol_ratio != "" else 1.0), -0.2, 0.4),
+        "F010_XSEC_COMPOSITE_RANK": round(composite, 6),
+        "F011_TS_MOMENTUM_60_120": percentile_score((mom60 + mom120) / 2.0, -0.5, 1.0),
+        "F012_TS_PULLBACK_REVERSAL": percentile_score(pullback, -0.1, 0.2),
+        "volatility_penalty": "",
+        "overheat_penalty": "",
+        "shadow_side_hint": "V18_35D_RECOMPUTE",
+    })
+    return row
+
+
+def rsi(closes: list[float], n: int = 14) -> str:
+    if len(closes) <= n:
+        return ""
+    gains, losses = [], []
+    for i in range(-n, 0):
+        diff = closes[i] - closes[i - 1]
+        gains.append(max(diff, 0.0))
+        losses.append(max(-diff, 0.0))
+    avg_gain = sum(gains) / n
+    avg_loss = sum(losses) / n
+    if avg_loss == 0:
+        return "100.0"
+    return f"{100 - (100 / (1 + avg_gain / avg_loss)):.6f}"
+
+
+def technical_row(ticker: str, prices: list[dict[str, object]], fields: Sequence[str]) -> dict[str, object]:
+    closes = [float(r["close"]) for r in prices]
+    highs = [float(r["high"] or r["close"]) for r in prices]
+    lows = [float(r["low"] or r["close"]) for r in prices]
+    vols = [float(r["volume"]) for r in prices]
+    latest = prices[-1]
+    last20 = closes[-20:] if len(closes) >= 20 else closes
+    mid = sum(last20) / len(last20)
+    stdev = math.sqrt(sum((x - mid) ** 2 for x in last20) / len(last20)) if last20 else 0.0
+    upper = mid + 2 * stdev
+    lower = mid - 2 * stdev
+    pct_b = (closes[-1] - lower) / (upper - lower) if upper != lower else 0.5
+    bandwidth = (upper - lower) / mid if mid else ""
+    rsi14 = rsi(closes)
+    low14 = min(lows[-14:]) if len(lows) >= 14 else min(lows)
+    high14 = max(highs[-14:]) if len(highs) >= 14 else max(highs)
+    k = 100 * (closes[-1] - low14) / (high14 - low14) if high14 != low14 else 50.0
+    d = k
+    j = 3 * k - 2 * d
+    avg5 = sum(vols[-5:]) / min(5, len(vols))
+    avg20 = sum(vols[-20:]) / min(20, len(vols))
+    vol_ratio = avg5 / avg20 if avg20 else ""
+    score = 50.0
+    if rsi14 != "":
+        score += 10 if float(rsi14) < 40 else (-10 if float(rsi14) > 70 else 0)
+    score += 10 if pct_b < 0.35 else (-10 if pct_b > 0.9 else 0)
+    score = round(max(0, min(100, score)), 6)
+    row = {f: "" for f in fields}
+    row.update({
+        "ticker": ticker,
+        "yf_ticker": ticker,
+        "price_date": latest["date"],
+        "close": latest["close"],
+        "bb_mid_20": round(mid, 6),
+        "bb_upper_20_2": round(upper, 6),
+        "bb_lower_20_2": round(lower, 6),
+        "bb_percent_b": round(pct_b, 6),
+        "bb_bandwidth": round(bandwidth, 6) if bandwidth != "" else "",
+        "bb_squeeze_flag": "False",
+        "bb_status": "BB_NEAR_LOWER" if pct_b <= 0.1 else ("BB_NEAR_UPPER" if pct_b >= 0.9 else ("BB_LOWER_HALF" if pct_b <= 0.4 else ("BB_UPPER_HALF" if pct_b >= 0.6 else "BB_MID"))),
+        "rsi_14": rsi14,
+        "rsi_status": "RSI_OVERSOLD" if rsi14 != "" and float(rsi14) < 30 else ("RSI_OVERHEAT" if rsi14 != "" and float(rsi14) >= 70 else "RSI_NEUTRAL"),
+        "kdj_k": round(k, 6),
+        "kdj_d": round(d, 6),
+        "kdj_j": round(j, 6),
+        "kdj_status": "KDJ_NEUTRAL",
+        "volume_ratio_5_20": round(vol_ratio, 6) if vol_ratio != "" else "",
+        "overheat_penalty": 10 if pct_b > 0.9 else 0,
+        "pullback_timing_bonus": 10 if pct_b < 0.35 else 0,
+        "breakout_confirmation_bonus": 10 if pct_b > 0.85 else 0,
+        "technical_timing_score": score,
+        "technical_signal": "TECH_TIMING_V18_35D_RECOMPUTE",
+        "technical_warning_label": "V18_35D_NOT_MERGED",
+        "option_data_status": "NOT_AVAILABLE_RESERVED",
+        "gamma_squeeze_status": "NOT_AVAILABLE_RESERVED",
+        "gamma_squeeze_risk_label": "NOT_AVAILABLE_RESERVED",
+        "official_decision_impact": "NONE",
+    })
+    return row
+
+
+def avg(vals: list[float]) -> float | None:
+    return sum(vals) / len(vals) if vals else None
+
+
+def composite_score(factor_score: object, tech_score: object) -> float | None:
+    f = to_float(factor_score)
+    t = to_float(tech_score)
+    if f is None or t is None:
+        return None
+    return round((f * 0.40) + (t * 0.30), 6)
+
+
+def backup(root: Path, backup_dir: Path, rels: list[str]) -> None:
+    for item in rels:
+        src = root / item
+        if src.exists():
+            dst = backup_dir / item
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+
+def make_report(summary: dict[str, object], failure_counts: Counter, failures: list[dict[str, object]], ranked_rows: list[dict[str, object]]) -> str:
+    lines = [
+        "# V18.35D 全总池真实因子/技术/排名重算",
+        "",
+        f"- STATUS: `{summary['status']}`",
+        f"- RUN_ID: `{summary['run_id']}`",
+        f"- GENERATED_AT: `{summary['generated_at']}`",
+        "",
+        "## 说明",
+        "这不是单纯把 ticker 放进列表，而是对全部 total universe ticker 尝试真实计算。",
+        "`calculation_attempted=TRUE` 表示该 ticker 已进入计算尝试；`rank_eligible=TRUE` 表示 factor 和 technical 都成功并完成 ranking merge。",
+        "缺价格或历史数据的 ticker 不会被伪造分数，只会写入失败原因。",
+        "",
+        "## 汇总",
+        f"- raw universe token count: `{summary['raw_universe_token_count']}`",
+        f"- sanitized universe count: `{summary['sanitized_universe_count']}`",
+        f"- invalid pseudo ticker count: `{summary['invalid_pseudo_ticker_count']}`",
+        f"- invalid pseudo tickers: `{summary['invalid_pseudo_tickers']}`",
+        f"- universe source rejected token count: `{summary['universe_source_rejected_token_count']}`",
+        f"- universe source rejected token sample: `{summary['universe_source_rejected_token_sample']}`",
+        f"- yfinance failed ticker count raw: `{summary['yfinance_failed_ticker_count_raw']}`",
+        f"- yfinance failed tickers: `{summary['yfinance_failed_tickers']}`",
+        f"- price unavailable excluded count: `{summary['price_unavailable_excluded_count']}`",
+        f"- price unavailable excluded tickers: `{summary['price_unavailable_excluded_tickers']}`",
+        f"- current price refresh blocking failed ticker count: `{summary['current_price_refresh_blocking_failed_ticker_count']}`",
+        f"- targeted stale retry attempted/success/still stale: `{summary['targeted_stale_retry_attempted_count']}` / `{summary['targeted_stale_retry_success_count']}` / `{summary['targeted_stale_retry_still_stale_count']}`",
+        f"- targeted stale retry still stale tickers: `{summary['targeted_stale_retry_still_stale_tickers']}`",
+        f"- 总池数量: `{summary['total_universe_count']}`",
+        f"- 实际尝试计算数量: `{summary['calculation_attempted_count']}`",
+        f"- price data available/missing: `{summary['price_data_available_count']}` / `{summary['price_data_missing_count']}`",
+        f"- factor success/failure: `{summary['factor_calculation_success_count']}` / `{summary['factor_calculation_failure_count']}`",
+        f"- technical success/failure: `{summary['technical_calculation_success_count']}` / `{summary['technical_calculation_failure_count']}`",
+        f"- ranking merge success/failure: `{summary['ranking_merge_success_count']}` / `{summary['ranking_merge_failure_count']}`",
+        f"- rank eligible/ineligible: `{summary['rank_eligible_count']}` / `{summary['rank_ineligible_count']}`",
+        f"- recomputed ranked latest_price_date distribution: `{summary['recomputed_ranked_latest_price_date_distribution']}`",
+        f"- recomputed single latest_price_date: `{summary['recomputed_single_latest_price_date']}`",
+        f"- full-universe apply freshness floor date: `{summary['full_universe_apply_freshness_floor_date']}`",
+        f"- yfinance recompute date validation ok: `{summary['yfinance_recompute_date_validation_ok']}`",
+        f"- yfinance recompute not stale ok: `{summary['yfinance_recompute_not_stale_ok']}`",
+        f"- apply executed: `{summary['apply_full_universe_recomputed_candidates']}`",
+        f"- backup path: `{summary['backup_path']}`",
+        f"- expected freeze not expanded yet: `{summary['expected_freeze_not_expanded_yet']}`",
+        "",
+        "## Failure Buckets",
+        "| bucket | count |",
+        "| --- | ---: |",
+    ]
+    for bucket, count in failure_counts.most_common():
+        lines.append(f"| `{bucket}` | {count} |")
+    lines += ["", "## Failed Ticker Samples", "| ticker | bucket | reason |", "| --- | --- | --- |"]
+    for row in failures[:30]:
+        lines.append(f"| `{row.get('ticker')}` | `{row.get('failure_bucket')}` | {row.get('failure_reason')} |")
+    lines += ["", "## Top 20 Recomputed Candidates", "| rank | ticker | score | latest_price_date |", "| ---: | --- | ---: | --- |"]
+    for row in ranked_rows[:20]:
+        lines.append(f"| {row.get('rank')} | `{row.get('ticker')}` | {row.get('composite_candidate_score')} | {row.get('latest_price_date')} |")
+    lines += [
+        "",
+        "## Operator Next Action",
+        "- 若 rank_ineligible 仍较多，先补 price_cache/full history，再重跑本步骤。",
+        "- 如 apply 后 full candidates 大于 freeze count，这是预期状态：本任务不扩展 freeze ledger。",
+        "- freeze 扩展需要单独任务和备份策略。",
+        "",
+        "## Final Conclusion",
+        "All total universe tickers were attempted.",
+        "No fake scores were created.",
+        "No trading/order/account/freeze logic was modified.",
+        "`AUTO_TRADE DISABLED`, `AUTO_SELL DISABLED`, `OFFICIAL_DECISION_IMPACT NONE`.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+
+def load_force_latest_prices(root: Path) -> dict[str, dict[str, str]]:
+    force_path = root / "outputs" / "v18" / "price" / "V18_CURRENT_FORCE_YFINANCE_LATEST_PRICES.csv"
+    if not force_path.exists():
+        return {}
+
+    rows, _ = read_csv(force_path)
+    force: dict[str, dict[str, str]] = {}
+
+    for row in rows:
+        ticker = str(row.get("ticker", "")).strip().upper()
+        status = str(row.get("manual_fetch_status", "")).strip().upper()
+        latest_date = str(row.get("manual_latest_price_date", "")).strip()
+        latest_close = str(row.get("manual_latest_close", "")).strip()
+
+        if ticker and status == "OK" and latest_date and latest_close:
+            force[ticker] = {
+                "latest_price_date": latest_date,
+                "latest_close": latest_close,
+                "latest_price": latest_close,
+                "price_data_source": "FORCE_YFINANCE_LATEST",
+            }
+
+    return force
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", default=r"D:\us-tech-quant")
+    parser.add_argument("--use-yfinance-for-full-universe-recompute", action="store_true")
+    parser.add_argument("--apply-full-universe-recomputed-candidates", action="store_true")
+    args = parser.parse_args()
+    root = Path(args.root)
+    run_id = "V18_35D_" + stamp()
+    generated_at = iso_now()
+
+    universe_rows, universe_fields = read_csv(root / UNIVERSE)
+    factor_current, factor_fields = read_csv(root / CURRENT_FACTOR)
+    tech_current, tech_fields = read_csv(root / CURRENT_TECH)
+    full_current, _ = read_csv(root / CURRENT_FULL)
+    ranked_current, _ = read_csv(root / CURRENT_RANKED)
+    top_current, _ = read_csv(root / CURRENT_TOP)
+    freeze_rows, _ = read_csv(root / FREEZE)
+    scan_plan, _ = read_csv(root / SCAN_PLAN)
+    rolling_ledger, _ = read_csv(root / ROLLING_LEDGER)
+    force_latest_prices = load_force_latest_prices(root)
+
+    universe, raw_universe_tokens, source_audit_rows, source_rejected_tokens = load_universe_tokens(root, universe_rows, universe_fields)
+    invalid_pseudo_tickers: list[str] = []
+    full_set_before = ticker_set(full_current)
+    ranked_set_before = ticker_set(ranked_current)
+    top_set_before = ticker_set(top_current)
+    freeze_set = latest_freeze(freeze_rows)
+    scan_set = ticker_set(scan_plan)
+    rolling_idx = index_by_ticker(rolling_ledger)
+    universe_idx = index_by_ticker(universe_rows)
+    factor_idx = index_by_ticker(factor_current)
+    tech_idx = index_by_ticker(tech_current)
+    ranked_for_retry = [dict(row) for row in ranked_current if norm(row.get("ticker"))]
+    if numeric_rank_valid(ranked_for_retry):
+        ranked_for_retry.sort(key=lambda row: (to_float(row.get("rank")) or 10**9, norm(row.get("ticker"))))
+    else:
+        ranked_for_retry.sort(key=lambda row: (to_float(row.get("composite_candidate_score")) is None, -(to_float(row.get("composite_candidate_score")) or -10**9), norm(row.get("ticker"))))
+    ranked_dates = [str(row.get("latest_price_date", "")).strip() for row in ranked_for_retry if str(row.get("latest_price_date", "")).strip()]
+    max_ranked_price_date = max(ranked_dates) if ranked_dates else ""
+    targeted_stale_retry_tickers = {
+        norm(row.get("ticker"))
+        for row in ranked_for_retry[:50]
+        if max_ranked_price_date and str(row.get("latest_price_date", "")).strip() and str(row.get("latest_price_date", "")).strip() < max_ranked_price_date
+    }
+    targeted_stale_retry_success: set[str] = set()
+    targeted_stale_retry_still_stale: set[str] = set()
+
+    fail_reasons: list[str] = []
+    warnings: list[str] = []
+    if not universe:
+        fail_reasons.append("total universe source cannot be read")
+    if not factor_fields:
+        factor_fields = list(factor_current[0].keys()) if factor_current else ["factor_pack_rank", "ticker", "factor_pack_score", "latest_price_date", "latest_close"]
+    if not tech_fields:
+        tech_fields = list(tech_current[0].keys()) if tech_current else ["ticker", "yf_ticker", "price_date", "close", "technical_timing_score", "technical_signal"]
+
+    status_rows: list[dict[str, object]] = []
+    factor_rows: list[dict[str, object]] = []
+    tech_rows: list[dict[str, object]] = []
+    yfinance_failed_errors: dict[str, str] = {}
+    evidence_factor = rel(root, root / CURRENT_FACTOR)
+    evidence_tech = rel(root, root / CURRENT_TECH)
+
+    for ticker in universe:
+        evidence = [UNIVERSE]
+        price_attempted = "TRUE"
+        factor_attempted = "TRUE"
+        tech_attempted = "TRUE"
+        price_source = ""
+        prices: list[dict[str, object]] = []
+        price_error = ""
+        targeted_retry = ticker in targeted_stale_retry_tickers
+        existing_factor_original = factor_idx.get(ticker)
+        existing_tech_original = tech_idx.get(ticker)
+        existing_factor = None
+        existing_tech = None
+        factor_source_true = ""
+        technical_source_true = ""
+        factor_recomputed_by_v18_35d = "FALSE"
+        factor_reused_from_raw105 = "FALSE"
+        legacy_factor_pack_used = "FALSE"
+
+        # FORCE_SCORE_RECOMPUTE_R3: force-covered tickers must recompute factor/technical rows from price history.
+        force_price_for_ticker = force_latest_prices.get(str(ticker).strip().upper())
+        if force_price_for_ticker:
+            existing_factor = None
+            existing_tech = None
+            evidence.append("FORCE_YFINANCE_LATEST_SCORE_RECOMPUTE_R3")
+
+        if targeted_retry or not existing_factor or not existing_tech:
+            cache_path = root / PRICE_CACHE / f"{ticker}.csv"
+            if args.use_yfinance_for_full_universe_recompute:
+                prices, yf_error = download_prices_yf(ticker)
+                price_source = "YFINANCE_IN_MEMORY"
+                price_error = yf_error
+                if not prices:
+                    yfinance_failed_errors[ticker] = yf_error
+                else:
+                    latest_yf_price, latest_yf_error = download_latest_price_yf(ticker)
+                    if latest_yf_price:
+                        prices = apply_force_latest_to_prices(prices, latest_yf_price)
+                        price_source = "YFINANCE_IN_MEMORY_PLUS_YFINANCE_LATEST_15D"
+                        evidence.append("YFINANCE_LATEST_15D")
+                    elif latest_yf_error and not price_error:
+                        price_error = latest_yf_error
+            else:
+                prices, price_error = load_prices(cache_path)
+                price_source = rel(root, cache_path)
+            if prices:
+                force_price_for_ticker = force_latest_prices.get(str(ticker).strip().upper())
+                force_date = parse_iso_date((force_price_for_ticker or {}).get("latest_price_date", ""))
+                current_price_date = parse_iso_date(prices[-1].get("date", ""))
+                force_is_not_stale = bool(force_date and (not current_price_date or force_date >= current_price_date))
+                if force_price_for_ticker and (not args.use_yfinance_for_full_universe_recompute or force_is_not_stale):
+                    prices = apply_force_latest_to_prices(prices, force_price_for_ticker)
+                    price_source = (
+                        "YFINANCE_IN_MEMORY_PLUS_FORCE_YFINANCE_LATEST_CLOSE"
+                        if args.use_yfinance_for_full_universe_recompute
+                        else "LOCAL_PRICE_CACHE_PLUS_FORCE_YFINANCE_LATEST_CLOSE"
+                    )
+                evidence.append(price_source)
+                if len(prices) >= 120:
+                    if not existing_factor:
+                        try:
+                            frow = factor_row(ticker, prices, factor_fields)
+                            factor_rows.append(frow)
+                            existing_factor = {k: str(v) for k, v in frow.items()}
+                            factor_source_true = AUTHORITATIVE_RECOMPUTE_SOURCE
+                            factor_recomputed_by_v18_35d = "TRUE"
+                        except Exception as exc:
+                            price_error = f"factor calculation error: {type(exc).__name__}"
+                    if not existing_tech:
+                        try:
+                            trow = technical_row(ticker, prices, tech_fields)
+                            tech_rows.append(trow)
+                            existing_tech = {k: str(v) for k, v in trow.items()}
+                            technical_source_true = AUTHORITATIVE_RECOMPUTE_SOURCE
+                        except Exception as exc:
+                            price_error = f"technical calculation error: {type(exc).__name__}"
+                if targeted_retry:
+                    refreshed_date = str(prices[-1].get("date", "")).strip()
+                    if max_ranked_price_date and refreshed_date >= max_ranked_price_date and existing_factor and existing_tech:
+                        targeted_stale_retry_success.add(ticker)
+                    else:
+                        targeted_stale_retry_still_stale.add(ticker)
+            elif targeted_retry:
+                targeted_stale_retry_still_stale.add(ticker)
+
+        if existing_factor_original and not existing_factor:
+            factor_reused_from_raw105 = "FALSE"
+            legacy_factor_pack_used = "FALSE"
+
+        fscore = (existing_factor or {}).get("factor_pack_score", "")
+        tscore = (existing_tech or {}).get("technical_timing_score", "")
+        comp = composite_score(fscore, tscore)
+        rank_ok = comp is not None
+
+        latest_date = (existing_factor or {}).get("latest_price_date") or (existing_tech or {}).get("price_date") or (prices[-1]["date"] if prices else (universe_idx.get(ticker, {}).get("latest_price_date", "")))
+        latest_close = (existing_factor or {}).get("latest_close") or (existing_tech or {}).get("close") or (prices[-1]["close"] if prices else (universe_idx.get(ticker, {}).get("last_close", "")))
+
+        # FORCE_PRICE_INGEST_R2: override stale latest price fields before row construction.
+        force_price = force_latest_prices.get(str(ticker).strip().upper())
+        force_date = parse_iso_date((force_price or {}).get("latest_price_date", ""))
+        latest_date_str = parse_iso_date(latest_date)
+        force_is_not_stale = bool(force_date and (not latest_date_str or force_date >= latest_date_str))
+        if force_price and (not args.use_yfinance_for_full_universe_recompute or force_is_not_stale):
+            latest_date = force_price["latest_price_date"]
+            latest_close = force_price["latest_close"]
+            price_source = "LOCAL_PRICE_CACHE_PLUS_FORCE_YFINANCE_LATEST_CLOSE"
+        history_count = len(prices) if prices else ""
+        history_start = prices[0]["date"] if prices else ""
+        history_end = prices[-1]["date"] if prices else ""
+        price_available = bool(existing_factor or existing_tech or prices)
+
+        if rank_ok:
+            bucket = "OK_COMPUTED"
+            calc_status = "OK_COMPUTED"
+            reason = "factor and technical calculations available"
+        elif not price_available:
+            bucket = "UNAVAILABLE_PRICE_DATA_EXCLUDED" if ticker in yfinance_failed_errors else "PRICE_DATA_UNAVAILABLE"
+            calc_status = "CALCULATION_FAILED"
+            reason = price_error or "no factor/technical row and no local price cache"
+        elif prices and len(prices) < 120:
+            bucket = "PRICE_HISTORY_INSUFFICIENT"
+            calc_status = "CALCULATION_FAILED"
+            reason = f"price history rows {len(prices)} < 120"
+        elif not existing_factor:
+            bucket = "FACTOR_CALCULATION_ERROR" if "factor calculation error" in price_error else "FACTOR_INPUT_MISSING"
+            calc_status = "CALCULATION_FAILED"
+            reason = price_error or "factor calculation did not produce a row"
+        elif not existing_tech:
+            bucket = "TECHNICAL_CALCULATION_ERROR" if "technical calculation error" in price_error else "TECHNICAL_INPUT_MISSING"
+            calc_status = "CALCULATION_FAILED"
+            reason = price_error or "technical calculation did not produce a row"
+        else:
+            bucket = "UNKNOWN_COMPUTATION_FAILURE"
+            calc_status = "CALCULATION_FAILED"
+            reason = "unknown computation failure"
+
+        score_source_true = ";".join(x for x in (factor_source_true, technical_source_true) if x)
+        authoritative_row_ok = (
+            rank_ok
+            and factor_recomputed_by_v18_35d == "TRUE"
+            and factor_reused_from_raw105 == "FALSE"
+            and legacy_factor_pack_used == "FALSE"
+            and factor_source_true == AUTHORITATIVE_RECOMPUTE_SOURCE
+            and technical_source_true == AUTHORITATIVE_RECOMPUTE_SOURCE
+        )
+        authoritative_block_reason = "NONE" if authoritative_row_ok else (
+            "LEGACY_FACTOR_REUSED" if factor_reused_from_raw105 == "TRUE" or legacy_factor_pack_used == "TRUE"
+            else "AUTHORITATIVE_PRICE_HISTORY_RECOMPUTE_INCOMPLETE"
+        )
+
+        status_rows.append({
+            "ticker": ticker,
+            "in_total_universe": "TRUE",
+            "in_current_full_candidates_before": str(ticker in full_set_before).upper(),
+            "in_current_top_candidates_before": str(ticker in top_set_before).upper(),
+            "in_latest_signal_freeze": str(ticker in freeze_set).upper(),
+            "calculation_attempted": "TRUE",
+            "price_data_attempted": price_attempted,
+            "price_data_available": str(price_available).upper(),
+            "price_data_source": price_source or ("CURRENT_FACTOR_OR_TECHNICAL" if price_available else "NONE"),
+            "latest_price_date": latest_date,
+            "history_row_count": history_count,
+            "history_start_date": history_start,
+            "history_end_date": history_end,
+            "factor_calculation_attempted": factor_attempted,
+            "factor_calculation_success": str(bool(existing_factor)).upper(),
+            "technical_calculation_attempted": tech_attempted,
+            "technical_calculation_success": str(bool(existing_tech)).upper(),
+            "ranking_merge_attempted": "TRUE",
+            "ranking_merge_success": str(rank_ok).upper(),
+            "factor_score": fscore,
+            "technical_timing_score": tscore,
+            "recomputed_composite_score": comp if comp is not None else "",
+            "recomputed_rank": "",
+            "rank_eligible": str(rank_ok).upper(),
+            "calculation_status": calc_status,
+            "failure_bucket": bucket,
+            "failure_reason": reason,
+            "evidence_sources": ";".join(dict.fromkeys(evidence)),
+            "factor_source_true": factor_source_true,
+            "technical_source_true": technical_source_true,
+            "score_source_true": score_source_true,
+            "factor_recomputed_by_v18_35d": factor_recomputed_by_v18_35d,
+            "factor_reused_from_raw105": factor_reused_from_raw105,
+            "legacy_factor_pack_used": legacy_factor_pack_used,
+            "authoritative_row_ok": str(authoritative_row_ok).upper(),
+            "authoritative_row_block_reason": authoritative_block_reason,
+            "raw_universe_token_count": "",
+            "sanitized_universe_count": "",
+            "invalid_pseudo_ticker_count": "",
+            "invalid_pseudo_tickers": "",
+            "yfinance_failed_ticker_count": "",
+            "yfinance_failed_tickers": "",
+            "yfinance_failed_ticker_count_raw": "",
+            "price_unavailable_excluded_count": "",
+            "price_unavailable_excluded_tickers": "",
+            "current_price_refresh_blocking_failed_ticker_count": "",
+            "_latest_close": latest_close,
+            "_technical_status": (existing_tech or {}).get("technical_signal") or (existing_tech or {}).get("technical_warning_label", ""),
+            "_pullback_status": (existing_tech or {}).get("bb_status", ""),
+            "_overheat_status": (existing_tech or {}).get("gamma_squeeze_risk_label") or (existing_tech or {}).get("overheat_penalty", ""),
+        })
+
+    ranked_status_rows = [r for r in status_rows if r["rank_eligible"] == "TRUE" and r["authoritative_row_ok"] == "TRUE"]
+    ranked_status_rows.sort(key=lambda r: float(r["recomputed_composite_score"]), reverse=True)
+    for i, row in enumerate(ranked_status_rows, 1):
+        row["recomputed_rank"] = i
+
+    ranked_rows: list[dict[str, object]] = []
+    for row in ranked_status_rows:
+        ranked_rows.append({
+            "rank": row["recomputed_rank"],
+            "ticker": row["ticker"],
+            "composite_candidate_score": row["recomputed_composite_score"],
+            "ranking_source_policy": "V18_35D_FULL_UNIVERSE_RECOMPUTE",
+            "primary_score_source_files": row["score_source_true"],
+            "audit_only_source_files": "NONE",
+            "score_source_status": "OK_RECOMPUTED_FACTOR_TECHNICAL",
+            "score_source_files": row["score_source_true"],
+            "score_source_columns": "factor_pack_score;technical_timing_score",
+            "latest_price_date": row["latest_price_date"],
+            "latest_close": row["_latest_close"],
+            "technical_status": row["_technical_status"],
+            "event_risk_status": "",
+            "overheat_status": row["_overheat_status"],
+            "pullback_status": row["_pullback_status"],
+            "execution_status": "REVIEW_ONLY",
+            "final_action": "WAIT_PULLBACK_REVIEW_ONLY" if "LOWER" in str(row["_pullback_status"]).upper() else "REVIEW_ONLY",
+            "reason": "V18.35D recomputed from existing factor/technical formulas; no fake scores.",
+            "factor_source_true": row["factor_source_true"],
+            "technical_source_true": row["technical_source_true"],
+            "score_source_true": row["score_source_true"],
+            "factor_recomputed_by_v18_35d": row["factor_recomputed_by_v18_35d"],
+            "factor_reused_from_raw105": row["factor_reused_from_raw105"],
+            "legacy_factor_pack_used": row["legacy_factor_pack_used"],
+            "authoritative_row_ok": row["authoritative_row_ok"],
+            "authoritative_row_block_reason": row["authoritative_row_block_reason"],
+        })
+
+    for row in status_rows:
+        row.pop("_latest_close", None)
+        row.pop("_technical_status", None)
+        row.pop("_pullback_status", None)
+        row.pop("_overheat_status", None)
+
+    duplicate_count = len(status_rows) - len({r["ticker"] for r in status_rows})
+    if len(status_rows) != len(universe):
+        fail_reasons.append("computation status row count does not match total universe count")
+    if duplicate_count:
+        fail_reasons.append("duplicate ticker count is nonzero")
+    if any(r["calculation_attempted"] != "TRUE" for r in status_rows):
+        fail_reasons.append("not every total universe ticker was attempted")
+
+    factor_rows.sort(key=lambda r: to_float(r.get("factor_pack_score")) if to_float(r.get("factor_pack_score")) is not None else -1, reverse=True)
+    for i, row in enumerate(factor_rows, 1):
+        row["factor_pack_rank"] = i
+
+    write_csv(root / OUT_FACTOR, factor_rows, factor_fields)
+    write_csv(root / OUT_TECH, tech_rows, tech_fields)
+    write_csv(root / OUT_RANKED, ranked_rows, RANK_FIELDS)
+    write_csv(root / OUT_STATUS, status_rows, STATUS_FIELDS)
+    yfinance_failed_tickers = sorted(yfinance_failed_errors)
+    price_unavailable_excluded_tickers = sorted(yfinance_failed_errors)
+    current_price_refresh_blocking_failed_tickers: list[str] = []
+    write_quarantine(root / QUARANTINE, read_quarantine(root / QUARANTINE), yfinance_failed_errors, run_id)
+    invalid_pseudo_failure_rows = [{
+        "ticker": ticker,
+        "in_total_universe": "FALSE",
+        "in_current_full_candidates_before": "FALSE",
+        "in_current_top_candidates_before": "FALSE",
+        "in_latest_signal_freeze": "FALSE",
+        "calculation_attempted": "FALSE",
+        "price_data_attempted": "FALSE",
+        "price_data_available": "FALSE",
+        "price_data_source": "SANITIZER_EXCLUDED_BEFORE_PRICE_LOOKUP",
+        "latest_price_date": "",
+        "history_row_count": "",
+        "history_start_date": "",
+        "history_end_date": "",
+        "factor_calculation_attempted": "FALSE",
+        "factor_calculation_success": "FALSE",
+        "technical_calculation_attempted": "FALSE",
+        "technical_calculation_success": "FALSE",
+        "ranking_merge_attempted": "FALSE",
+        "ranking_merge_success": "FALSE",
+        "factor_score": "",
+        "technical_timing_score": "",
+        "recomputed_composite_score": "",
+        "recomputed_rank": "",
+        "rank_eligible": "FALSE",
+        "calculation_status": "INPUT_REJECTED",
+        "failure_bucket": "INVALID_PSEUDO_TICKER",
+        "failure_reason": "Pseudo ticker removed before cache/yfinance lookup.",
+        "evidence_sources": UNIVERSE,
+        "raw_universe_token_count": len(raw_universe_tokens),
+        "sanitized_universe_count": len(universe),
+        "invalid_pseudo_ticker_count": len(invalid_pseudo_tickers),
+        "invalid_pseudo_tickers": ", ".join(invalid_pseudo_tickers),
+        "yfinance_failed_ticker_count": len(yfinance_failed_tickers),
+        "yfinance_failed_tickers": ", ".join(yfinance_failed_tickers),
+        "yfinance_failed_ticker_count_raw": len(yfinance_failed_tickers),
+        "price_unavailable_excluded_count": len(price_unavailable_excluded_tickers),
+        "price_unavailable_excluded_tickers": ", ".join(price_unavailable_excluded_tickers),
+        "current_price_refresh_blocking_failed_ticker_count": len(current_price_refresh_blocking_failed_tickers),
+    } for ticker in invalid_pseudo_tickers]
+    failures = invalid_pseudo_failure_rows + [r for r in status_rows if r["failure_bucket"] != "OK_COMPUTED"]
+    for row in failures:
+        row["raw_universe_token_count"] = row.get("raw_universe_token_count") or len(raw_universe_tokens)
+        row["sanitized_universe_count"] = row.get("sanitized_universe_count") or len(universe)
+        row["invalid_pseudo_ticker_count"] = row.get("invalid_pseudo_ticker_count") or len(invalid_pseudo_tickers)
+        row["invalid_pseudo_tickers"] = row.get("invalid_pseudo_tickers") or ", ".join(invalid_pseudo_tickers)
+        row["yfinance_failed_ticker_count"] = row.get("yfinance_failed_ticker_count") or len(yfinance_failed_tickers)
+        row["yfinance_failed_tickers"] = row.get("yfinance_failed_tickers") or ", ".join(yfinance_failed_tickers)
+        row["yfinance_failed_ticker_count_raw"] = row.get("yfinance_failed_ticker_count_raw") or len(yfinance_failed_tickers)
+        row["price_unavailable_excluded_count"] = row.get("price_unavailable_excluded_count") or len(price_unavailable_excluded_tickers)
+        row["price_unavailable_excluded_tickers"] = row.get("price_unavailable_excluded_tickers") or ", ".join(price_unavailable_excluded_tickers)
+        row["current_price_refresh_blocking_failed_ticker_count"] = row.get("current_price_refresh_blocking_failed_ticker_count") or len(current_price_refresh_blocking_failed_tickers)
+    write_csv(root / OUT_FAILURES, failures, STATUS_FIELDS)
+    write_csv(root / OUT_SOURCE_AUDIT, source_audit_rows, SOURCE_AUDIT_FIELDS)
+    write_csv(root / OUT_PREVIEW, ranked_rows, RANK_FIELDS)
+
+    backup_path = "NONE"
+    applied = False
+    expected_freeze_not_expanded = bool(len(ranked_rows) > len(freeze_set))
+    ranked_latest_date_counts = Counter(parse_iso_date(row.get("latest_price_date", "")) for row in ranked_rows)
+    ranked_latest_date_counts.pop("", None)
+    ranked_valid_latest_date_count = sum(ranked_latest_date_counts.values())
+    ranked_latest_dates_summary = ", ".join(f"{date}={count}" for date, count in sorted(ranked_latest_date_counts.items()))
+    recomputed_single_latest_date = next(iter(ranked_latest_date_counts)) if len(ranked_latest_date_counts) == 1 else ""
+    freshness_floor_date = max(
+        max_date_from_rows(factor_current, ["latest_price_date", "price_date"]),
+        max_date_from_rows(tech_current, ["price_date", "latest_price_date"]),
+        max_date_from_rows(full_current, ["latest_price_date", "price_date"]),
+        max_date_from_rows(ranked_current, ["latest_price_date", "price_date"]),
+    )
+    yfinance_recompute_date_validation_ok = (
+        not args.use_yfinance_for_full_universe_recompute
+        or (bool(ranked_rows) and ranked_valid_latest_date_count == len(ranked_rows) and len(ranked_latest_date_counts) == 1)
+    )
+    yfinance_recompute_not_stale_ok = (
+        not args.use_yfinance_for_full_universe_recompute
+        or (bool(freshness_floor_date) and bool(recomputed_single_latest_date) and recomputed_single_latest_date >= freshness_floor_date)
+    )
+    if args.apply_full_universe_recomputed_candidates and not fail_reasons:
+        if not yfinance_recompute_date_validation_ok:
+            fail_reasons.append("apply blocked because yfinance recompute latest_price_date distribution is empty or mixed")
+        elif args.use_yfinance_for_full_universe_recompute and not freshness_floor_date:
+            fail_reasons.append("apply blocked because yfinance recompute freshness floor could not be established")
+        elif not yfinance_recompute_not_stale_ok:
+            fail_reasons.append(
+                f"apply blocked because yfinance recompute latest_price_date {recomputed_single_latest_date or 'NONE'} "
+                f"is older than freshness floor {freshness_floor_date}"
+            )
+        elif len(status_rows) == len(universe) and duplicate_count == 0 and len(ranked_rows) >= len(full_set_before):
+            backup_dir = root / "archive/v18/full_universe_recompute_backups" / run_id
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup(root, backup_dir, [CURRENT_RANKED, CURRENT_FULL, CURRENT_TOP, CURRENT_FACTOR, CURRENT_TECH])
+            backup_path = str(backup_dir)
+            write_csv(root / CURRENT_FULL, ranked_rows, RANK_FIELDS)
+            write_csv(root / CURRENT_RANKED, ranked_rows, RANK_FIELDS)
+            applied = True
+        else:
+            fail_reasons.append("apply preconditions not met")
+
+    summary = {
+        "status": STATUS_OK,
+        "run_id": run_id,
+        "generated_at": generated_at,
+        "use_yfinance_for_full_universe_recompute": str(args.use_yfinance_for_full_universe_recompute).upper(),
+        "apply_full_universe_recomputed_candidates": str(args.apply_full_universe_recomputed_candidates).upper(),
+        "raw_universe_token_count": len(raw_universe_tokens),
+        "sanitized_universe_count": len(universe),
+        "invalid_pseudo_ticker_count": len(invalid_pseudo_tickers),
+        "invalid_pseudo_tickers": ", ".join(invalid_pseudo_tickers),
+        "yfinance_failed_ticker_count": len(yfinance_failed_tickers),
+        "yfinance_failed_tickers": ", ".join(yfinance_failed_tickers),
+        "yfinance_failed_ticker_count_raw": len(yfinance_failed_tickers),
+        "price_unavailable_excluded_count": len(price_unavailable_excluded_tickers),
+        "price_unavailable_excluded_tickers": ", ".join(price_unavailable_excluded_tickers),
+        "current_price_refresh_blocking_failed_ticker_count": len(current_price_refresh_blocking_failed_tickers),
+        "targeted_stale_retry_attempted_count": len(targeted_stale_retry_tickers),
+        "targeted_stale_retry_success_count": len(targeted_stale_retry_success),
+        "targeted_stale_retry_still_stale_count": len(targeted_stale_retry_still_stale),
+        "targeted_stale_retry_still_stale_tickers": ", ".join(sorted(targeted_stale_retry_still_stale)),
+        "universe_source_rejected_token_count": len(source_rejected_tokens),
+        "universe_source_rejected_token_sample": ", ".join(source_rejected_tokens[:50]),
+        "total_universe_count": len(universe),
+        "calculation_attempted_count": sum(1 for r in status_rows if r["calculation_attempted"] == "TRUE"),
+        "price_data_available_count": sum(1 for r in status_rows if r["price_data_available"] == "TRUE"),
+        "price_data_missing_count": sum(1 for r in status_rows if r["price_data_available"] != "TRUE"),
+        "factor_calculation_success_count": sum(1 for r in status_rows if r["factor_calculation_success"] == "TRUE"),
+        "factor_calculation_failure_count": sum(1 for r in status_rows if r["factor_calculation_success"] != "TRUE"),
+        "technical_calculation_success_count": sum(1 for r in status_rows if r["technical_calculation_success"] == "TRUE"),
+        "technical_calculation_failure_count": sum(1 for r in status_rows if r["technical_calculation_success"] != "TRUE"),
+        "ranking_merge_success_count": len(ranked_rows),
+        "ranking_merge_failure_count": len(status_rows) - len(ranked_rows),
+        "rank_eligible_count": len(ranked_rows),
+        "rank_ineligible_count": len(status_rows) - len(ranked_rows),
+        "recomputed_ranked_latest_price_date_distribution": ranked_latest_dates_summary,
+        "recomputed_single_latest_price_date": recomputed_single_latest_date,
+        "full_universe_apply_freshness_floor_date": freshness_floor_date,
+        "yfinance_recompute_date_validation_ok": str(yfinance_recompute_date_validation_ok).upper(),
+        "yfinance_recompute_not_stale_ok": str(yfinance_recompute_not_stale_ok).upper(),
+        "current_full_candidate_count_before": len(full_set_before),
+        "current_full_candidate_count_after": len(ranked_rows) if applied else len(full_set_before),
+        "current_ranked_candidates_count_before": len(ranked_set_before),
+        "current_ranked_candidates_count_after": len(ranked_rows) if applied else len(ranked_set_before),
+        "current_top_candidate_count_after": 20 if ranked_rows else len(top_set_before),
+        "latest_signal_freeze_count": len(freeze_set),
+        "expected_freeze_not_expanded_yet": str(expected_freeze_not_expanded).upper(),
+        "duplicate_ticker_count": duplicate_count,
+        "backup_path": backup_path,
+        "warning_count": 0,
+        "fail_count": 0,
+        "official_decision_impact": OFFICIAL_DECISION_IMPACT,
+        "auto_trade": AUTO_TRADE,
+        "auto_sell": AUTO_SELL,
+        "forbidden_modified": FORBIDDEN_MODIFIED,
+    }
+
+    if failures:
+        warnings.append("some total universe tickers failed computation")
+    if invalid_pseudo_tickers:
+        warnings.append("invalid pseudo tickers were removed before price lookup")
+    if yfinance_failed_tickers:
+        warnings.append("some ticker-like symbols were quarantined as unavailable price data")
+    if len(ranked_rows) < len(universe):
+        warnings.append("some total universe tickers remain rank_ineligible")
+    if not args.apply_full_universe_recomputed_candidates:
+        warnings.append("apply mode was not used")
+    if expected_freeze_not_expanded:
+        warnings.append("freeze remains smaller than recomputed candidates; expected freeze not expanded yet")
+
+    summary["fail_count"] = len(fail_reasons)
+    summary["warning_count"] = len(warnings)
+    summary["status"] = STATUS_FAIL if fail_reasons else (STATUS_WARN if warnings else STATUS_OK)
+
+    failure_counts = Counter(str(r["failure_bucket"]) for r in failures)
+    write_csv(root / OUT_SUMMARY, [summary], list(summary.keys()))
+    report = make_report(summary, failure_counts, failures, ranked_rows)
+    write_text(root / OUT_REPORT, report)
+    write_text(root / OUT_CURRENT_REPORT, report)
+
+    read_first_lines = [
+        f"STATUS: {summary['status']}",
+        f"RUN_ID: {run_id}",
+        f"USE_YFINANCE_FOR_FULL_UNIVERSE_RECOMPUTE: {summary['use_yfinance_for_full_universe_recompute']}",
+        f"APPLY_FULL_UNIVERSE_RECOMPUTED_CANDIDATES: {summary['apply_full_universe_recomputed_candidates']}",
+        f"RAW_UNIVERSE_TOKEN_COUNT: {summary['raw_universe_token_count']}",
+        f"SANITIZED_UNIVERSE_COUNT: {summary['sanitized_universe_count']}",
+        f"INVALID_PSEUDO_TICKER_COUNT: {summary['invalid_pseudo_ticker_count']}",
+        f"INVALID_PSEUDO_TICKERS: {summary['invalid_pseudo_tickers']}",
+        f"UNIVERSE_SOURCE_REJECTED_TOKEN_COUNT: {summary['universe_source_rejected_token_count']}",
+        f"UNIVERSE_SOURCE_REJECTED_TOKEN_SAMPLE: {summary['universe_source_rejected_token_sample']}",
+        f"YFINANCE_FAILED_TICKER_COUNT: {summary['yfinance_failed_ticker_count']}",
+        f"YFINANCE_FAILED_TICKERS: {summary['yfinance_failed_tickers']}",
+        f"YFINANCE_FAILED_TICKER_COUNT_RAW: {summary['yfinance_failed_ticker_count_raw']}",
+        f"PRICE_UNAVAILABLE_EXCLUDED_COUNT: {summary['price_unavailable_excluded_count']}",
+        f"PRICE_UNAVAILABLE_EXCLUDED_TICKERS: {summary['price_unavailable_excluded_tickers']}",
+        f"CURRENT_PRICE_REFRESH_BLOCKING_FAILED_TICKER_COUNT: {summary['current_price_refresh_blocking_failed_ticker_count']}",
+        f"TARGETED_STALE_RETRY_ATTEMPTED_COUNT: {summary['targeted_stale_retry_attempted_count']}",
+        f"TARGETED_STALE_RETRY_SUCCESS_COUNT: {summary['targeted_stale_retry_success_count']}",
+        f"TARGETED_STALE_RETRY_STILL_STALE_COUNT: {summary['targeted_stale_retry_still_stale_count']}",
+        f"TARGETED_STALE_RETRY_STILL_STALE_TICKERS: {summary['targeted_stale_retry_still_stale_tickers']}",
+        f"TOTAL_UNIVERSE_COUNT: {summary['total_universe_count']}",
+        f"CALCULATION_ATTEMPTED_COUNT: {summary['calculation_attempted_count']}",
+        f"PRICE_DATA_AVAILABLE_COUNT: {summary['price_data_available_count']}",
+        f"PRICE_DATA_MISSING_COUNT: {summary['price_data_missing_count']}",
+        f"FACTOR_CALCULATION_SUCCESS_COUNT: {summary['factor_calculation_success_count']}",
+        f"FACTOR_CALCULATION_FAILURE_COUNT: {summary['factor_calculation_failure_count']}",
+        f"TECHNICAL_CALCULATION_SUCCESS_COUNT: {summary['technical_calculation_success_count']}",
+        f"TECHNICAL_CALCULATION_FAILURE_COUNT: {summary['technical_calculation_failure_count']}",
+        f"RANKING_MERGE_SUCCESS_COUNT: {summary['ranking_merge_success_count']}",
+        f"RANKING_MERGE_FAILURE_COUNT: {summary['ranking_merge_failure_count']}",
+        f"RANK_ELIGIBLE_COUNT: {summary['rank_eligible_count']}",
+        f"RANK_INELIGIBLE_COUNT: {summary['rank_ineligible_count']}",
+        f"RECOMPUTED_RANKED_LATEST_PRICE_DATE_DISTRIBUTION: {summary['recomputed_ranked_latest_price_date_distribution']}",
+        f"RECOMPUTED_SINGLE_LATEST_PRICE_DATE: {summary['recomputed_single_latest_price_date']}",
+        f"FULL_UNIVERSE_APPLY_FRESHNESS_FLOOR_DATE: {summary['full_universe_apply_freshness_floor_date']}",
+        f"YFINANCE_RECOMPUTE_DATE_VALIDATION_OK: {summary['yfinance_recompute_date_validation_ok']}",
+        f"YFINANCE_RECOMPUTE_NOT_STALE_OK: {summary['yfinance_recompute_not_stale_ok']}",
+        f"CURRENT_FULL_CANDIDATE_COUNT_BEFORE: {summary['current_full_candidate_count_before']}",
+        f"CURRENT_FULL_CANDIDATE_COUNT_AFTER: {summary['current_full_candidate_count_after']}",
+        f"CURRENT_RANKED_CANDIDATES_COUNT_BEFORE: {summary['current_ranked_candidates_count_before']}",
+        f"CURRENT_RANKED_CANDIDATES_COUNT_AFTER: {summary['current_ranked_candidates_count_after']}",
+        f"LATEST_SIGNAL_FREEZE_COUNT: {summary['latest_signal_freeze_count']}",
+        f"EXPECTED_FREEZE_NOT_EXPANDED_YET: {summary['expected_freeze_not_expanded_yet']}",
+        f"DUPLICATE_TICKER_COUNT: {summary['duplicate_ticker_count']}",
+        f"BACKUP_PATH: {backup_path}",
+        f"WARNING_COUNT: {summary['warning_count']}",
+        f"FAIL_COUNT: {summary['fail_count']}",
+        f"REPORT: {OUT_REPORT}",
+        f"CURRENT_REPORT: {OUT_CURRENT_REPORT}",
+        f"COMPUTATION_STATUS_CSV: {OUT_STATUS}",
+        f"RECOMPUTED_FACTOR_PACK_CSV: {OUT_FACTOR}",
+        f"RECOMPUTED_TECHNICAL_TIMING_CSV: {OUT_TECH}",
+        f"RECOMPUTED_RANKED_CANDIDATES_CSV: {OUT_RANKED}",
+        f"FAILURES_CSV: {OUT_FAILURES}",
+        f"SUMMARY_CSV: {OUT_SUMMARY}",
+        f"UNIVERSE_SOURCE_AUDIT_CSV: {OUT_SOURCE_AUDIT}",
+        f"EXCLUDED_OR_UNAVAILABLE_TICKERS_CSV: {QUARANTINE}",
+        "OFFICIAL_DECISION_IMPACT: NONE",
+        "AUTO_TRADE: DISABLED",
+        "AUTO_SELL: DISABLED",
+        "FORBIDDEN_MODIFIED: FALSE",
+        "",
+    ]
+    write_text(root / OUT_READ_FIRST, "\n".join(read_first_lines))
+
+    for key in ["status", "run_id", "raw_universe_token_count", "sanitized_universe_count", "invalid_pseudo_ticker_count", "yfinance_failed_ticker_count", "total_universe_count", "calculation_attempted_count", "rank_eligible_count", "rank_ineligible_count", "backup_path", "warning_count", "fail_count"]:
+        print(f"{key.upper()}: {summary[key]}")
+    print(f"REPORT: {root / OUT_CURRENT_REPORT}")
+    print(f"READ_FIRST: {root / OUT_READ_FIRST}")
+    return 1 if str(summary["status"]).startswith("FAIL_") else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

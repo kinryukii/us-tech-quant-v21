@@ -1,0 +1,48 @@
+param(
+    [string]$Root = "D:\us-tech-quant",
+    [switch]$Quarantine
+)
+
+$ErrorActionPreference = "Stop"
+
+$Py = Join-Path $Root "scripts\v18\v18_cleanup_quarantine.py"
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
+
+if (-not (Test-Path $Python)) {
+    $Python = "python"
+}
+
+if (-not (Test-Path $Py)) {
+    throw "MISSING_CLEANUP_QUARANTINE_SCRIPT: $Py"
+}
+
+$Mode = if ($Quarantine) { "QUARANTINE" } else { "DRY_RUN" }
+
+Write-Host ""
+Write-Host "=== V18 CLEANUP QUARANTINE START ==="
+Write-Host "ROOT: $Root"
+Write-Host "MODE: $Mode"
+Write-Host "QUARANTINE_ENABLED: $([bool]$Quarantine)"
+Write-Host "DELETE_ENABLED: False"
+Write-Host "OFFICIAL_DECISION_IMPACT: NONE"
+Write-Host "PYTHON: $Python"
+Write-Host "SCRIPT: $Py"
+Write-Host ""
+
+& $Python -m py_compile $Py
+if ($LASTEXITCODE -ne 0) {
+    throw "PY_COMPILE_FAILED: $Py"
+}
+
+$ArgsList = @($Py)
+if ($Quarantine) {
+    $ArgsList += "--quarantine"
+}
+
+& $Python @ArgsList
+if ($LASTEXITCODE -ne 0) {
+    throw "V18_CLEANUP_QUARANTINE_FAILED"
+}
+
+Write-Host ""
+Write-Host "=== V18 CLEANUP QUARANTINE DONE ==="

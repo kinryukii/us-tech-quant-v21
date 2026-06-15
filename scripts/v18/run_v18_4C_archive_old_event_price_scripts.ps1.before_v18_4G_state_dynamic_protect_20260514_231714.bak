@@ -1,0 +1,117 @@
+﻿param(
+    [string]$Root = "D:\us-tech-quant",
+    [switch]$DryRun
+)
+
+$ErrorActionPreference = "Stop"
+
+$ScriptRoot = Join-Path $Root "scripts"
+$OutDir = Join-Path $Root "outputs\v18\ops"
+$CurrentGraph = Join-Path $OutDir "V18_4C_CURRENT_RUNTIME_DEPENDENCY_GRAPH.csv"
+
+if (-not (Test-Path $CurrentGraph)) {
+    throw "Dependency graph not found. Run run_v18_4C_runtime_dependency_audit.ps1 first."
+}
+
+$deps = Import-Csv -LiteralPath $CurrentGraph
+$protected = @{}
+
+foreach ($d in $deps) {
+    if ($d.exists -eq "True" -and $d.callee) {
+        $protected[[System.IO.Path]::GetFullPath($d.callee).ToLowerInvariant()] = $true
+    }
+}
+
+# Always protect current V18.4 core scripts and new V18.4C scripts.
+$extraProtectPatterns = @(
+    "*run_v18_4B_R1_final_daily_wrapper.ps1",
+    "*run_v18_4B_factor_outcome_summary_promotion_rules.ps1",
+    "*v18_4B_factor_outcome_summary_promotion_rules.py",
+    "*run_v18_4A_R1_daily_integrated_wrapper.ps1",
+    "*run_v18_4A_factor_forward_outcome_tracker.ps1",
+    "*v18_4A_factor_forward_outcome_tracker.py",
+    "*run_v18_4C_*"
+)
+
+$candidatePatterns = @(
+    "*event*.ps1",
+    "*event*.py",
+    "*calendar*.ps1",
+    "*calendar*.py",
+    "*price*.ps1",
+    "*price*.py",
+    "*freshness*.ps1",
+    "*freshness*.py",
+    "*update*.ps1",
+    "*update*.py"
+)
+
+$allCandidates = New-Object System.Collections.Generic.List[object]
+
+foreach ($pat in $candidatePatterns) {
+    Get-ChildItem -Path $ScriptRoot -Recurse -File -Include $pat -ErrorAction SilentlyContinue | ForEach-Object {
+        $full = $_.FullName
+        $lower = $full.ToLowerInvariant()
+
+        $isProtected = $false
+
+        if ($protected.ContainsKey($lower)) {
+            $isProtected = $true
+        }
+
+        foreach ($pp in $extraProtectPatterns) {
+            if ($_.Name -like $pp) { $isProtected = $true }
+        }
+
+        if ($full -match "\\archive\\" -or $full -match "\\deprecated\\") {
+            $isProtected = $true
+        }
+
+        if (-not $isProtected) {
+            $allCandidates.Add([pscustomobject]@{
+                full_name = $full
+                name = $_.Name
+                length = $_.Length
+                last_write_time = $_.LastWriteTime
+            }) | Out-Null
+        }
+    }
+}
+
+$candidates = $allCandidates | Sort-Object full_name -Unique
+
+$ts = Get-Date -Format "yyyyMMdd_HHmmss"
+$ArchiveDir = Join-Path $Root "archive\deprecated\v18_4C_event_price_merge_$ts"
+New-Item -ItemType Directory -Force -Path $ArchiveDir | Out-Null
+
+$Report = Join-Path $OutDir "V18_4C_DEPRECATED_EVENT_PRICE_SCRIPT_CANDIDATES_$ts.csv"
+$candidates | Export-Csv -NoTypeInformation -Encoding UTF8 $Report
+
+Write-Host ""
+Write-Host "=== V18.4C OLD EVENT/PRICE SCRIPT CANDIDATES ==="
+Write-Host "CANDIDATE_COUNT: $($candidates.Count)"
+Write-Host "REPORT:"
+Write-Host $Report
+
+if ($DryRun) {
+    Write-Host "DRY_RUN: no files moved."
+    foreach ($c in $candidates) {
+        Write-Host "WOULD_ARCHIVE: $($c.full_name)"
+    }
+    return
+}
+
+foreach ($c in $candidates) {
+    $src = $c.full_name
+    $rel = $src.Substring($Root.Length).TrimStart("\")
+    $dst = Join-Path $ArchiveDir $rel
+    $dstParent = Split-Path $dst -Parent
+    New-Item -ItemType Directory -Force -Path $dstParent | Out-Null
+    Move-Item -Force -LiteralPath $src -Destination $dst
+    Write-Host "ARCHIVED: $src"
+}
+
+Write-Host ""
+Write-Host "=== V18.4C ARCHIVE DONE ==="
+Write-Host "ARCHIVE_DIR:"
+Write-Host $ArchiveDir

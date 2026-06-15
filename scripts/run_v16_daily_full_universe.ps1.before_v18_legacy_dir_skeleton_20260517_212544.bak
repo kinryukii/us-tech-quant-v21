@@ -1,0 +1,37 @@
+﻿param(
+    [switch]$UseYFinance,
+    [switch]$SkipDaily,
+    [switch]$SkipOfficialDaily
+)
+
+$ErrorActionPreference = "Stop"
+$Root = "D:\us-tech-quant"
+$TargetRaw105 = Join-Path $Root "scripts\run_v17_8A_raw105_full_decision_daily.ps1"
+$TargetPanel  = Join-Path $Root "scripts\run_v17_8B_raw105_full_decision_readable_panel.ps1"
+
+Write-Host ""
+Write-Host "=== V16 DAILY FULL UNIVERSE COMPAT SHIM ==="
+Write-Host "MODE: REDIRECT_TO_V17_RAW105_FULL_UNIVERSE"
+Write-Host "ROOT: $Root"
+Write-Host "TARGET_RAW105: $TargetRaw105"
+Write-Host "TARGET_PANEL: $TargetPanel"
+
+if (-not (Test-Path $TargetRaw105)) {
+    throw "Missing redirected raw105 script: $TargetRaw105"
+}
+
+if (-not (Test-Path $TargetPanel)) {
+    throw "Missing redirected panel script: $TargetPanel"
+}
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $TargetRaw105
+if ($LASTEXITCODE -ne 0) {
+    throw "V16 compat full universe failed at raw105 target"
+}
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $TargetPanel
+if ($LASTEXITCODE -ne 0) {
+    throw "V16 compat full universe failed at readable panel target"
+}
+
+Write-Host "=== V16 DAILY FULL UNIVERSE COMPAT SHIM READY ==="

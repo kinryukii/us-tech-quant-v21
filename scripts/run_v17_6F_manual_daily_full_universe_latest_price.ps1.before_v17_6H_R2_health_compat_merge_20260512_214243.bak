@@ -1,0 +1,290 @@
+﻿$ErrorActionPreference = "Continue"
+
+$Root = "D:\us-tech-quant"
+Set-Location $Root
+
+$OutDir = Join-Path $Root "outputs\v17\manual_daily"
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+$Stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+$Report = Join-Path $OutDir "V17_6F_E_MANUAL_DAILY_STABLE_$Stamp.txt"
+$FullUniverseLog = Join-Path $OutDir "v17_6F_E_full_universe_chain_$Stamp.log"
+$PriceLog = Join-Path $OutDir "v17_6F_E_price_audit_$Stamp.log"
+$OfficialLog = Join-Path $OutDir "v17_6F_E_official_daily_$Stamp.log"
+$ReadFirst = Join-Path $OutDir "V17_6F_E_READ_FIRST.txt"
+
+function Count-YamlTickers {
+    param([string]$Path)
+
+    if (!(Test-Path $Path)) {
+        return 0
+    }
+
+    $Tickers = @()
+
+    foreach ($Line in Get-Content $Path) {
+        $Trim = $Line.Trim()
+        if ($Trim -like "- *") {
+            $Ticker = $Trim.Substring(1).Trim().ToUpper()
+            if ($Ticker -match "^[A-Z][A-Z0-9\.\-]{0,9}$") {
+                $Tickers += $Ticker
+            }
+        }
+    }
+
+    return @($Tickers | Sort-Object -Unique).Count
+}
+
+function Read-TextUtf8 {
+    param([string]$Path)
+
+    if (!(Test-Path $Path)) {
+        return ""
+    }
+
+    try {
+        return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
+    } catch {
+        try {
+            return Get-Content $Path -Raw -ErrorAction SilentlyContinue
+        } catch {
+            return ""
+        }
+    }
+}
+
+function Extract-Code-AfterLabel {
+    param(
+        [string]$Text,
+        [string]$Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return "UNKNOWN"
+    }
+
+    $Esc = [regex]::Escape($Label)
+
+    $Patterns = @(
+        "(?ms)$Esc\s*:\s*\r?\n\s*([A-Z0-9_]+)",
+        "(?ms)$Esc\s*:\s*`?([A-Z0-9_]+)`?",
+        "(?ms)\|\s*$Esc\s*\|\s*`?([A-Z0-9_]+)`?\s*\|"
+    )
+
+    foreach ($Pattern in $Patterns) {
+        $Match = [regex]::Match($Text, $Pattern)
+        if ($Match.Success) {
+            return $Match.Groups[1].Value.Trim()
+        }
+    }
+
+    return "UNKNOWN"
+}
+
+Write-Host ""
+Write-Host "=== V17.6F-E MANUAL DAILY STABLE START ==="
+Write-Host "ROOT: $Root"
+Write-Host "MODE: MANUAL_RUN_ONLY"
+Write-Host ""
+
+$FullUniverseScript = Join-Path $Root "scripts\run_v16_daily_full_universe.ps1"
+$PriceAuditScript = Join-Path $Root "scripts\run_v17_6E_screened_universe_latest_price_audit.ps1"
+$OfficialScript = Join-Path $Root "scripts\run_v16_daily_auto_update.ps1"
+
+if (!(Test-Path $FullUniverseScript)) {
+    throw "Missing full universe script: $FullUniverseScript"
+}
+
+if (!(Test-Path $PriceAuditScript)) {
+    throw "Missing V17.6E price audit script: $PriceAuditScript"
+}
+
+if (!(Test-Path $OfficialScript)) {
+    throw "Missing official daily script: $OfficialScript"
+}
+
+Write-Host "=== STEP 1/3: FULL UNIVERSE CHAIN ==="
+& powershell -NoProfile -ExecutionPolicy Bypass -File $FullUniverseScript 2>&1 | Tee-Object -FilePath $FullUniverseLog
+$FullExit = $LASTEXITCODE
+
+$ScreenedYaml = Join-Path $Root "configs\v16\universe\us_full_screened_generated.yaml"
+$SecondStageYaml = Join-Path $Root "configs\v16\universe\us_full_second_stage_generated.yaml"
+
+$ScreenedCount = Count-YamlTickers $ScreenedYaml
+$SecondStageCount = Count-YamlTickers $SecondStageYaml
+
+if ($FullExit -ne 0) {
+    throw "Full universe chain failed. ExitCode=$FullExit"
+}
+
+if ($ScreenedCount -lt 20) {
+    throw "Screened universe count too small: $ScreenedCount"
+}
+
+if ($SecondStageCount -lt 1) {
+    throw "Second stage count too small: $SecondStageCount"
+}
+
+Write-Host ""
+Write-Host "FULL_UNIVERSE_CHAIN_STATUS: OK"
+Write-Host "SCREENED_UNIVERSE_COUNT: $ScreenedCount"
+Write-Host "SECOND_STAGE_COUNT: $SecondStageCount"
+
+Write-Host ""
+Write-Host "=== STEP 2/3: LATEST PRICE AUDIT ==="
+& powershell -NoProfile -ExecutionPolicy Bypass -File $PriceAuditScript 2>&1 | Tee-Object -FilePath $PriceLog
+$PriceExit = $LASTEXITCODE
+
+$PriceSnapshot = Join-Path $Root "state\v17_6E_screened_universe_latest_price_snapshot.csv"
+
+if (!(Test-Path $PriceSnapshot)) {
+    throw "Missing price snapshot: $PriceSnapshot"
+}
+
+$PriceRows = Import-Csv $PriceSnapshot
+
+$PriceRowCount = @($PriceRows).Count
+$PriceOkCount = @($PriceRows | Where-Object { $_.fetch_status -eq "OK" }).Count
+$PriceFailCount = @($PriceRows | Where-Object { $_.fetch_status -ne "OK" }).Count
+$PriceStaleCount = @($PriceRows | Where-Object { $_.freshness_status -ne "OK_LATEST_AVAILABLE" }).Count
+
+$PriceDates = @($PriceRows | Where-Object { $_.latest_price_date -ne "" } | ForEach-Object { $_.latest_price_date } | Sort-Object -Unique)
+$MinLatestPriceDate = if ($PriceDates.Count -gt 0) { $PriceDates[0] } else { "UNKNOWN" }
+$MaxLatestPriceDate = if ($PriceDates.Count -gt 0) { $PriceDates[$PriceDates.Count - 1] } else { "UNKNOWN" }
+
+$PriceAuditStatus = "OK"
+if ($PriceExit -ne 0) {
+    $PriceAuditStatus = "FAIL_PRICE_SCRIPT_EXIT"
+} elseif ($PriceFailCount -gt 0) {
+    $PriceAuditStatus = "FAIL_PRICE_FETCH"
+} elseif ($PriceStaleCount -gt 0) {
+    $PriceAuditStatus = "FAIL_PRICE_STALE"
+} elseif ($PriceOkCount -lt $ScreenedCount) {
+    $PriceAuditStatus = "FAIL_PRICE_COVERAGE"
+}
+
+Write-Host ""
+Write-Host "PRICE_AUDIT_STATUS: $PriceAuditStatus"
+Write-Host "PRICE_ROW_COUNT: $PriceRowCount"
+Write-Host "PRICE_OK_COUNT: $PriceOkCount"
+Write-Host "PRICE_FAIL_COUNT: $PriceFailCount"
+Write-Host "PRICE_STALE_COUNT: $PriceStaleCount"
+Write-Host "MIN_LATEST_PRICE_DATE: $MinLatestPriceDate"
+Write-Host "MAX_LATEST_PRICE_DATE: $MaxLatestPriceDate"
+
+if ($PriceAuditStatus -ne "OK") {
+    throw "Price audit did not pass. Status=$PriceAuditStatus"
+}
+
+Write-Host ""
+Write-Host "=== STEP 3/3: OFFICIAL DAILY MANUAL RUN ==="
+& powershell -NoProfile -ExecutionPolicy Bypass -File $OfficialScript 2>&1 | Tee-Object -FilePath $OfficialLog
+$OfficialExit = $LASTEXITCODE
+
+$ClassicBrief = Join-Path $Root "outputs\v16\read_center\V16_24_2B_CLASSIC_DAILY_BRIEF.md"
+$V17Summary = Join-Path $Root "outputs\v17\factor_effectiveness\V17_4_OFFICIAL_DAILY_WITH_DASHBOARD_SUMMARY.md"
+
+$ClassicText = Read-TextUtf8 $ClassicBrief
+$OfficialLogText = Read-TextUtf8 $OfficialLog
+$CombinedText = $ClassicText + "`n" + $OfficialLogText
+
+$OfficialAction = Extract-Code-AfterLabel $CombinedText "OFFICIAL ACTION"
+$BudgetAction = Extract-Code-AfterLabel $CombinedText "BUDGET ACTION"
+$BuyPermission = Extract-Code-AfterLabel $CombinedText "BUY PERMISSION"
+$GlobalMode = Extract-Code-AfterLabel $CombinedText "GLOBAL MODE"
+$CriticalUnknownCount = Extract-Code-AfterLabel $CombinedText "CRITICAL UNKNOWN COUNT"
+
+$TodaySafe = "UNKNOWN"
+if ($BuyPermission -eq "NO_NEW_BUYS_NOW" -or $OfficialAction -match "^NO_TRADE") {
+    $TodaySafe = "NO_TRADE_NO_NEW_BUYS"
+} elseif ($BuyPermission -match "BUY|ALLOW") {
+    $TodaySafe = "REVIEW_REQUIRED_BUY_PERMISSION_OPEN"
+}
+
+$ManualDailyStatus = "OK"
+if ($OfficialExit -ne 0) {
+    $ManualDailyStatus = "WARN_OFFICIAL_EXIT_NONZERO"
+}
+
+if ($OfficialAction -eq "UNKNOWN" -or $BudgetAction -eq "UNKNOWN" -or $BuyPermission -eq "UNKNOWN" -or $GlobalMode -eq "UNKNOWN") {
+    $ManualDailyStatus = "WARN_READOUT_PARTIAL"
+}
+
+if ($PriceAuditStatus -ne "OK") {
+    $ManualDailyStatus = "FAIL_PRICE_AUDIT"
+}
+
+$Now = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+$Lines = @()
+$Lines += "V17.6F-E MANUAL DAILY STABLE"
+$Lines += "Generated: $Now"
+$Lines += ""
+$Lines += "1. MANUAL DAILY STATUS"
+$Lines += "MANUAL_DAILY_STATUS: $ManualDailyStatus"
+$Lines += "MODE: MANUAL_RUN_ONLY"
+$Lines += "OFFICIAL_EXIT_CODE: $OfficialExit"
+$Lines += ""
+$Lines += "2. TODAY OPERATION ADVICE"
+$Lines += "TODAY_SAFE: $TodaySafe"
+$Lines += "OFFICIAL_ACTION: $OfficialAction"
+$Lines += "BUDGET_ACTION: $BudgetAction"
+$Lines += "BUY_PERMISSION: $BuyPermission"
+$Lines += "GLOBAL_MODE: $GlobalMode"
+$Lines += "CRITICAL_UNKNOWN_COUNT: $CriticalUnknownCount"
+$Lines += ""
+$Lines += "3. FULL UNIVERSE AND PRICE CHECK"
+$Lines += "SCREENED_UNIVERSE_COUNT: $ScreenedCount"
+$Lines += "SECOND_STAGE_COUNT: $SecondStageCount"
+$Lines += "PRICE_AUDIT_STATUS: $PriceAuditStatus"
+$Lines += "PRICE_ROW_COUNT: $PriceRowCount"
+$Lines += "PRICE_OK_COUNT: $PriceOkCount"
+$Lines += "PRICE_FAIL_COUNT: $PriceFailCount"
+$Lines += "PRICE_STALE_COUNT: $PriceStaleCount"
+$Lines += "MIN_LATEST_PRICE_DATE: $MinLatestPriceDate"
+$Lines += "MAX_LATEST_PRICE_DATE: $MaxLatestPriceDate"
+$Lines += ""
+$Lines += "4. FILES"
+$Lines += "FULL_UNIVERSE_LOG: $FullUniverseLog"
+$Lines += "PRICE_LOG: $PriceLog"
+$Lines += "OFFICIAL_LOG: $OfficialLog"
+$Lines += "PRICE_SNAPSHOT: $PriceSnapshot"
+$Lines += "CLASSIC_BRIEF: $ClassicBrief"
+$Lines += "V17_SUMMARY: $V17Summary"
+$Lines += "THIS_REPORT: $Report"
+$Lines += ""
+$Lines += "5. READ THIS AS"
+$Lines += "If MANUAL_DAILY_STATUS is OK, PRICE_AUDIT_STATUS is OK, and TODAY_SAFE is NO_TRADE_NO_NEW_BUYS, today's actionable conclusion is no trade / no new buys."
+$Lines += "If BUY permission opens, manually review the classic brief, second-stage candidates, and price snapshot before acting."
+$Lines += ""
+$Lines += "6. NEXT NORMAL COMMAND"
+$Lines += 'Set-Location "D:\us-tech-quant"'
+$Lines += 'powershell -NoProfile -ExecutionPolicy Bypass -File "D:\us-tech-quant\scripts\run_v17_6F_manual_daily_full_universe_latest_price.ps1"'
+
+Set-Content -Path $Report -Value $Lines -Encoding UTF8
+Set-Content -Path $ReadFirst -Value $Report -Encoding UTF8
+
+Write-Host ""
+Write-Host "=== V17.6F-E MANUAL DAILY STABLE READY ==="
+Write-Host "MANUAL_DAILY_STATUS: $ManualDailyStatus"
+Write-Host "TODAY_SAFE: $TodaySafe"
+Write-Host "OFFICIAL_ACTION: $OfficialAction"
+Write-Host "BUDGET_ACTION: $BudgetAction"
+Write-Host "BUY_PERMISSION: $BuyPermission"
+Write-Host "GLOBAL_MODE: $GlobalMode"
+Write-Host "CRITICAL_UNKNOWN_COUNT: $CriticalUnknownCount"
+Write-Host "SCREENED_UNIVERSE_COUNT: $ScreenedCount"
+Write-Host "SECOND_STAGE_COUNT: $SecondStageCount"
+Write-Host "PRICE_AUDIT_STATUS: $PriceAuditStatus"
+Write-Host "PRICE_OK_COUNT: $PriceOkCount"
+Write-Host "PRICE_FAIL_COUNT: $PriceFailCount"
+Write-Host "PRICE_STALE_COUNT: $PriceStaleCount"
+Write-Host "MAX_LATEST_PRICE_DATE: $MaxLatestPriceDate"
+Write-Host ""
+Write-Host "START HERE:"
+Write-Host $Report
+
+code $Report
+
+exit 0

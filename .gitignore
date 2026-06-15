@@ -1,0 +1,39 @@
+﻿# Python env/cache
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# logs/temp
+*.log
+tmp/
+temp/
+.cache/
+
+# generated runtime outputs
+outputs/
+state/
+archive/
+artifacts/
+large_files_over_50mb.txt
+
+# local/generated data
+data/cache/
+data/raw/
+inputs/
+
+# archive folders
+*_artifact_archive/

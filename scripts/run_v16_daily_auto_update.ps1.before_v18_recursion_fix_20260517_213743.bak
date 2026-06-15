@@ -1,0 +1,61 @@
+﻿param(
+    [switch]$UseYFinance,
+    [switch]$SkipDaily,
+    [switch]$SkipOfficialDaily
+)
+
+$ErrorActionPreference = "Stop"
+$Root = "D:\us-tech-quant"
+
+$Dirs = @(
+  "outputs\v17\ops",
+  "outputs\v17\raw105_decision",
+  "outputs\v17\raw_universe_audit",
+  "outputs\v17\price",
+  "outputs\v17\manual_daily",
+  "outputs\v16\read_center",
+  "outputs\v16\universe",
+  "outputs\v16\risk",
+  "outputs\v16\review",
+  "outputs\v16\health",
+  "state\v16",
+  "state\v17",
+  "state\v18"
+)
+
+foreach ($d in $Dirs) {
+    $p = Join-Path $Root $d
+    if (-not (Test-Path $p)) {
+        New-Item -ItemType Directory -Path $p -Force | Out-Null
+    }
+}
+
+$TargetRaw105 = Join-Path $Root "scripts\run_v17_8A_raw105_full_decision_daily.ps1"
+$TargetPanel  = Join-Path $Root "scripts\run_v17_8B_raw105_full_decision_readable_panel.ps1"
+
+Write-Host ""
+Write-Host "=== V16 LEGACY COMPAT SHIM ==="
+Write-Host "MODE: REDIRECT_TO_V17_RAW105_CURRENT_CHAIN_WITH_LEGACY_DIR_SKELETON"
+Write-Host "ROOT: $Root"
+Write-Host "TARGET_RAW105: $TargetRaw105"
+Write-Host "TARGET_PANEL: $TargetPanel"
+
+if (-not (Test-Path $TargetRaw105)) {
+    throw "Missing redirected raw105 script: $TargetRaw105"
+}
+
+if (-not (Test-Path $TargetPanel)) {
+    throw "Missing redirected panel script: $TargetPanel"
+}
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $TargetRaw105
+if ($LASTEXITCODE -ne 0) {
+    throw "V16 compat shim failed at raw105 target"
+}
+
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $TargetPanel
+if ($LASTEXITCODE -ne 0) {
+    throw "V16 compat shim failed at readable panel target"
+}
+
+Write-Host "=== V16 LEGACY COMPAT SHIM READY ==="

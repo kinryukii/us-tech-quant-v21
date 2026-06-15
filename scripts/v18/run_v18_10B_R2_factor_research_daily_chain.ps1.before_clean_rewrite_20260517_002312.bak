@@ -1,0 +1,362 @@
+﻿param(
+    [string]$Root = "D:\us-tech-quant",
+    [switch]$UseYFinance,
+    [int]$MinCount = 20,
+    [double]$TopFraction = 0.30
+)
+
+$ErrorActionPreference = "Stop"
+
+function Get-ReadFirstValue {
+    param(
+        [string]$Path,
+        [string]$Key
+    )
+
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+
+    $Lines = Get-Content $Path -Encoding UTF8
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if ($Lines[$i].Trim() -eq $Key.Trim()) {
+            if ($i + 1 -lt $Lines.Count) {
+                return $Lines[$i + 1].Trim()
+            }
+        }
+    }
+    return ""
+}
+
+function To-IntSafe {
+    param([string]$Value)
+
+    $n = 0
+    if ([int]::TryParse($Value, [ref]$n)) {
+        return $n
+    }
+    return 0
+}
+
+function Run-Step {
+    param(
+        [string]$Name,
+        [scriptblock]$Block
+    )
+
+    $Start = Get-Date
+    Write-Host ""
+    Write-Host "=== STEP START: $Name ==="
+
+    try {
+        $global:LASTEXITCODE = 0
+        & $Block
+
+        if ($global:LASTEXITCODE -ne 0) {
+            throw "Step failed with LASTEXITCODE=$global:LASTEXITCODE"
+        }
+
+        $End = Get-Date
+        $Seconds = [Math]::Round(($End - $Start).TotalSeconds, 3)
+        Write-Host "=== STEP OK: $Name | ${Seconds}s ==="
+
+        return [PSCustomObject]@{
+            step = $Name
+            status = "OK"
+            seconds = $Seconds
+            error = ""
+        }
+    }
+    catch {
+        $End = Get-Date
+        $Seconds = [Math]::Round(($End - $Start).TotalSeconds, 3)
+        Write-Host "=== STEP FAIL: $Name | ${Seconds}s ==="
+        Write-Host $_.Exception.Message
+
+        return [PSCustomObject]@{
+            step = $Name
+            status = "FAIL"
+            seconds = $Seconds
+            error = $_.Exception.Message
+        }
+    }
+}
+
+Write-Host ""
+Write-Host "=== V18.10B-R2 FACTOR RESEARCH DAILY CHAIN START ==="
+Write-Host "ROOT: $Root"
+Write-Host "USE_YFINANCE: $UseYFinance"
+Write-Host "MIN_COUNT: $MinCount"
+Write-Host "TOP_FRACTION: $TopFraction"
+
+$OutDir = Join-Path $Root "outputs\v18\factor_research"
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+
+$StepsPath = Join-Path $OutDir "V18_10B_R2_CURRENT_FACTOR_RESEARCH_DAILY_CHAIN_STEPS.csv"
+$ReportPath = Join-Path $OutDir "V18_10B_R2_CURRENT_FACTOR_RESEARCH_DAILY_CHAIN_REPORT.md"
+$ReadFirstPath = Join-Path $OutDir "V18_10B_R2_READ_FIRST.txt"
+
+$ForwardFiller = Join-Path $Root "scripts\v18\run_v18_9B_forward_return_filler.ps1"
+$CoverageAudit = Join-Path $Root "scripts\v18\run_v18_10A_factor_registry_coverage_audit.ps1"
+$MaturityMonitor = Join-Path $Root "scripts\v18\run_v18_10B_R1_forward_return_maturity_monitor.ps1"
+$Effectiveness = Join-Path $Root "scripts\v18\run_v18_10B_factor_effectiveness_backtest.ps1"
+
+foreach ($Required in @($ForwardFiller, $CoverageAudit, $MaturityMonitor, $Effectiveness)) {
+    if (-not (Test-Path $Required)) {
+        throw "Missing required script: $Required"
+    }
+}
+
+$StepResults = @()
+
+$StepResults += Run-Step "V18.9B forward return filler" {
+    if ($UseYFinance) {
+        powershell -NoProfile -ExecutionPolicy Bypass -File $ForwardFiller -UseYFinance
+    }
+    else {
+        powershell -NoProfile -ExecutionPolicy Bypass -File $ForwardFiller
+    }
+}
+
+$StepResults += Run-Step "V18.10A factor registry coverage audit" {
+    powershell -NoProfile -ExecutionPolicy Bypass -File $CoverageAudit
+}
+
+$StepResults += Run-Step "V18.10B-R1 forward return maturity monitor" {
+    powershell -NoProfile -ExecutionPolicy Bypass -File $MaturityMonitor -MinCount $MinCount
+}
+
+$StepResults += Run-Step "V18.10B factor effectiveness backtest" {
+    powershell -NoProfile -ExecutionPolicy Bypass -File $Effectiveness -MinCount $MinCount -TopFraction $TopFraction
+}
+
+$StepResults | Export-Csv -Path $StepsPath -NoTypeInformation -Encoding UTF8
+
+$FailCount = @($StepResults | Where-Object { $_.status -ne "OK" }).Count
+$TotalSeconds = [Math]::Round((@($StepResults | Measure-Object -Property seconds -Sum).Sum), 3)
+
+$FillerReadFirst = Join-Path $Root "outputs\v18\simulation\V18_9B_READ_FIRST.txt"
+$CoverageReadFirst = Join-Path $Root "outputs\v18\factor_registry\V18_10A_READ_FIRST.txt"
+$MaturityReadFirst = Join-Path $Root "outputs\v18\factor_research\V18_10B_R1_READ_FIRST.txt"
+$EffectivenessReadFirst = Join-Path $Root "outputs\v18\factor_research\V18_10B_READ_FIRST.txt"
+
+$ForwardStatus = Get-ReadFirstValue $FillerReadFirst "STATUS:"
+$YFinanceStatus = Get-ReadFirstValue $FillerReadFirst "YFINANCE_STATUS:"
+$TrackerRows = Get-ReadFirstValue $FillerReadFirst "TRACKER_ROWS:"
+$FilledCells = Get-ReadFirstValue $FillerReadFirst "FILLED_CELLS_THIS_RUN:"
+$PendingCells = Get-ReadFirstValue $FillerReadFirst "PENDING_CELLS_THIS_RUN:"
+
+$OfficialCandidateCaptured = Get-ReadFirstValue $CoverageReadFirst "OFFICIAL_CANDIDATE_CAPTURED_COUNT:"
+$ValidationLabelCaptured = Get-ReadFirstValue $CoverageReadFirst "VALIDATION_LABEL_CAPTURED_COUNT:"
+
+$ReadyHorizonCount = Get-ReadFirstValue $MaturityReadFirst "READY_HORIZON_COUNT:"
+$TotalLabelNonblank = Get-ReadFirstValue $MaturityReadFirst "TOTAL_LABEL_NONBLANK_COUNT:"
+$TotalMatureBlank = Get-ReadFirstValue $MaturityReadFirst "TOTAL_MATURE_BUT_LABEL_BLANK_COUNT:"
+
+$OkEvaluatedRows = Get-ReadFirstValue $EffectivenessReadFirst "OK_EVALUATED_ROWS:"
+$InsufficientRows = Get-ReadFirstValue $EffectivenessReadFirst "INSUFFICIENT_SAMPLE_ROWS:"
+$NoDataRows = Get-ReadFirstValue $EffectivenessReadFirst "NO_DATA_ROWS:"
+
+$ReadyHorizonInt = To-IntSafe $ReadyHorizonCount
+$OkEvaluatedInt = To-IntSafe $OkEvaluatedRows
+
+if ($FailCount -eq 0) {
+    $Status = "OK_FACTOR_RESEARCH_DAILY_CHAIN_READY"
+}
+else {
+    $Status = "FAIL_FACTOR_RESEARCH_DAILY_CHAIN"
+}
+
+if ($ReadyHorizonInt -gt 0 -and $OkEvaluatedInt -gt 0) {
+    $PromotionPermission = "RESEARCH_REVIEW_ALLOWED_BUT_NO_AUTO_PROMOTION"
+}
+else {
+    $PromotionPermission = "HOLD_NO_WEIGHT_ACTION"
+}
+
+$ReadFirstLines = @(
+    "V18.10B-R2 FACTOR RESEARCH DAILY CHAIN READ FIRST",
+    "",
+    "STATUS:",
+    $Status,
+    "",
+    "MODE:",
+    "SHADOW_ONLY_NO_BLACK_BOX_FACTOR_RESEARCH_CHAIN",
+    "",
+    "OFFICIAL_DECISION_IMPACT:",
+    "NONE",
+    "",
+    "AUTO_WEIGHT_CHANGE:",
+    "DISABLED",
+    "",
+    "AUTO_PROMOTION:",
+    "DISABLED",
+    "",
+    "AUTO_TRADE:",
+    "DISABLED",
+    "",
+    "USE_YFINANCE:",
+    "$UseYFinance",
+    "",
+    "TOTAL_SECONDS:",
+    "$TotalSeconds",
+    "",
+    "FAIL_COUNT:",
+    "$FailCount",
+    "",
+    "FORWARD_FILLER_STATUS:",
+    "$ForwardStatus",
+    "",
+    "YFINANCE_STATUS:",
+    "$YFinanceStatus",
+    "",
+    "TRACKER_ROWS:",
+    "$TrackerRows",
+    "",
+    "FILLED_CELLS_THIS_RUN:",
+    "$FilledCells",
+    "",
+    "PENDING_CELLS_THIS_RUN:",
+    "$PendingCells",
+    "",
+    "OFFICIAL_CANDIDATE_CAPTURED_COUNT:",
+    "$OfficialCandidateCaptured",
+    "",
+    "VALIDATION_LABEL_CAPTURED_COUNT:",
+    "$ValidationLabelCaptured",
+    "",
+    "READY_HORIZON_COUNT:",
+    "$ReadyHorizonCount",
+    "",
+    "TOTAL_LABEL_NONBLANK_COUNT:",
+    "$TotalLabelNonblank",
+    "",
+    "TOTAL_MATURE_BUT_LABEL_BLANK_COUNT:",
+    "$TotalMatureBlank",
+    "",
+    "OK_EVALUATED_ROWS:",
+    "$OkEvaluatedRows",
+    "",
+    "INSUFFICIENT_SAMPLE_ROWS:",
+    "$InsufficientRows",
+    "",
+    "NO_DATA_ROWS:",
+    "$NoDataRows",
+    "",
+    "PROMOTION_PERMISSION:",
+    "$PromotionPermission",
+    "",
+    "STEPS:",
+    "$StepsPath",
+    "",
+    "REPORT:",
+    "$ReportPath",
+    "",
+    "READ_FIRST:",
+    "$ReadFirstPath",
+    "",
+    "NEXT_STEP:",
+    "If READY_HORIZON_COUNT is 0, keep running the daily chain after market data matures.",
+    "If TOTAL_MATURE_BUT_LABEL_BLANK_COUNT is greater than 0, rerun this chain with -UseYFinance.",
+    "If OK_EVALUATED_ROWS is greater than 0, review factor effectiveness summary before any V18.10C weight research."
+)
+
+Set-Content -Path $ReadFirstPath -Value $ReadFirstLines -Encoding UTF8
+
+$ReportLines = @(
+    "# V18.10B-R2 Factor Research Daily Chain",
+    "",
+    "Generated: " + (Get-Date -Format "yyyy-MM-dd HH:mm:ss"),
+    "",
+    "## 1. Status",
+    "",
+    "- STATUS: " + $Status,
+    "- MODE: SHADOW_ONLY_NO_BLACK_BOX_FACTOR_RESEARCH_CHAIN",
+    "- OFFICIAL_DECISION_IMPACT: NONE",
+    "- AUTO_WEIGHT_CHANGE: DISABLED",
+    "- AUTO_PROMOTION: DISABLED",
+    "- AUTO_TRADE: DISABLED",
+    "- FAIL_COUNT: " + $FailCount,
+    "- TOTAL_SECONDS: " + $TotalSeconds,
+    "",
+    "## 2. Forward return filler",
+    "",
+    "- FORWARD_FILLER_STATUS: " + $ForwardStatus,
+    "- YFINANCE_STATUS: " + $YFinanceStatus,
+    "- TRACKER_ROWS: " + $TrackerRows,
+    "- FILLED_CELLS_THIS_RUN: " + $FilledCells,
+    "- PENDING_CELLS_THIS_RUN: " + $PendingCells,
+    "",
+    "## 3. Factor coverage",
+    "",
+    "- OFFICIAL_CANDIDATE_CAPTURED_COUNT: " + $OfficialCandidateCaptured,
+    "- VALIDATION_LABEL_CAPTURED_COUNT: " + $ValidationLabelCaptured,
+    "",
+    "## 4. Forward maturity",
+    "",
+    "- READY_HORIZON_COUNT: " + $ReadyHorizonCount,
+    "- TOTAL_LABEL_NONBLANK_COUNT: " + $TotalLabelNonblank,
+    "- TOTAL_MATURE_BUT_LABEL_BLANK_COUNT: " + $TotalMatureBlank,
+    "",
+    "## 5. Factor effectiveness",
+    "",
+    "- OK_EVALUATED_ROWS: " + $OkEvaluatedRows,
+    "- INSUFFICIENT_SAMPLE_ROWS: " + $InsufficientRows,
+    "- NO_DATA_ROWS: " + $NoDataRows,
+    "",
+    "## 6. Promotion guard",
+    "",
+    "- PROMOTION_PERMISSION: " + $PromotionPermission,
+    "",
+    "No automatic weight changes are allowed in this wrapper.",
+    "",
+    "## 7. Step results",
+    "",
+    "| step | status | seconds | error |",
+    "|---|---|---:|---|"
+)
+
+foreach ($s in $StepResults) {
+    $safeErr = "$($s.error)".Replace("|", "/")
+    $ReportLines += "| $($s.step) | $($s.status) | $($s.seconds) | $safeErr |"
+}
+
+$ReportLines += @(
+    "",
+    "## 8. Outputs",
+    "",
+    "- STEPS: " + $StepsPath,
+    "- REPORT: " + $ReportPath,
+    "- READ_FIRST: " + $ReadFirstPath
+)
+
+Set-Content -Path $ReportPath -Value $ReportLines -Encoding UTF8
+
+Write-Host ""
+Write-Host "=== V18.10B-R2 FACTOR RESEARCH DAILY CHAIN READY ==="
+Write-Host "STATUS: $Status"
+Write-Host "MODE: SHADOW_ONLY_NO_BLACK_BOX_FACTOR_RESEARCH_CHAIN"
+Write-Host "OFFICIAL_DECISION_IMPACT: NONE"
+Write-Host "AUTO_WEIGHT_CHANGE: DISABLED"
+Write-Host "AUTO_PROMOTION: DISABLED"
+Write-Host "AUTO_TRADE: DISABLED"
+Write-Host "TOTAL_SECONDS: $TotalSeconds"
+Write-Host "FAIL_COUNT: $FailCount"
+Write-Host "FORWARD_FILLER_STATUS: $ForwardStatus"
+Write-Host "YFINANCE_STATUS: $YFinanceStatus"
+Write-Host "FILLED_CELLS_THIS_RUN: $FilledCells"
+Write-Host "PENDING_CELLS_THIS_RUN: $PendingCells"
+Write-Host "READY_HORIZON_COUNT: $ReadyHorizonCount"
+Write-Host "TOTAL_LABEL_NONBLANK_COUNT: $TotalLabelNonblank"
+Write-Host "TOTAL_MATURE_BUT_LABEL_BLANK_COUNT: $TotalMatureBlank"
+Write-Host "OK_EVALUATED_ROWS: $OkEvaluatedRows"
+Write-Host "NO_DATA_ROWS: $NoDataRows"
+Write-Host "PROMOTION_PERMISSION: $PromotionPermission"
+Write-Host "STEPS: $StepsPath"
+Write-Host "REPORT: $ReportPath"
+Write-Host "READ_FIRST: $ReadFirstPath"
+Write-Host ""
+
+if ($FailCount -gt 0) {
+    throw "V18.10B-R2 completed with failing step(s). Check: $StepsPath"
+}

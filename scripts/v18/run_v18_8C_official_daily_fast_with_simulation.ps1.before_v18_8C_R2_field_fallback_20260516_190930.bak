@@ -1,0 +1,292 @@
+﻿param(
+    [double]$InitialCashUSD = 2000.0,
+    [int]$MaxNewPositions = 3,
+    [switch]$SkipOfficialDaily
+)
+
+$ErrorActionPreference = "Stop"
+
+$Root = "D:\us-tech-quant"
+
+$OfficialDaily = Join-Path $Root "scripts\v18\run_v18_7D_official_daily_fast_main_with_technical.ps1"
+$SimCabin     = Join-Path $Root "scripts\v18\run_v18_8B_current_simulation_cabin.ps1"
+
+$ReadCenterDir = Join-Path $Root "outputs\v18\read_center"
+$SimDir        = Join-Path $Root "outputs\v18\simulation"
+$OpsDir        = Join-Path $Root "outputs\v18\ops"
+
+New-Item -ItemType Directory -Force -Path $ReadCenterDir | Out-Null
+New-Item -ItemType Directory -Force -Path $OpsDir | Out-Null
+
+$CombinedReadFirst = Join-Path $ReadCenterDir "V18_8C_READ_FIRST.txt"
+$CombinedReport    = Join-Path $ReadCenterDir "V18_8C_CURRENT_OFFICIAL_DAILY_FAST_WITH_SIMULATION.md"
+$StepCsv           = Join-Path $OpsDir "V18_8C_CURRENT_OFFICIAL_DAILY_FAST_WITH_SIMULATION_STEPS.csv"
+$Profile           = Join-Path $OpsDir "V18_8C_CURRENT_OFFICIAL_DAILY_FAST_WITH_SIMULATION_PROFILE.csv"
+
+$OfficialReadFirst = Join-Path $ReadCenterDir "V18_6E_READ_FIRST.txt"
+$OfficialReport    = Join-Path $ReadCenterDir "V18_6E_CURRENT_FINAL_READ_CENTER_WITH_TECHNICAL.md"
+$SimReadFirst      = Join-Path $SimDir "V18_8B_READ_FIRST.txt"
+$SimReport         = Join-Path $SimDir "V18_CURRENT_SIM_CABIN.md"
+
+function Read-TextSafe {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        return ""
+    }
+
+    try {
+        return Get-Content $Path -Raw -Encoding UTF8
+    } catch {
+        return Get-Content $Path -Raw
+    }
+}
+
+function Extract-Field {
+    param(
+        [string]$Text,
+        [string]$Field,
+        [string]$Default = "UNKNOWN"
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $Default
+    }
+
+    $prefixes = @(
+        "${Field}:",
+        "- ${Field}:",
+        "* ${Field}:",
+        "${Field}：",
+        "- ${Field}：",
+        "* ${Field}："
+    )
+
+    foreach ($line in ($Text -split "`n")) {
+        $t = $line.Trim().Trim("`r")
+        foreach ($p in $prefixes) {
+            if ($t.StartsWith($p, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $v = $t.Substring($p.Length).Trim()
+                $v = $v.Trim([char]0x60).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($v)) {
+                    return $v
+                }
+            }
+        }
+    }
+
+    return $Default
+}
+
+$Start = Get-Date
+$Steps = @()
+
+function Add-Step {
+    param(
+        [string]$Step,
+        [string]$Status,
+        [datetime]$StartTime,
+        [datetime]$EndTime,
+        [string]$Detail
+    )
+
+    $script:Steps += [pscustomobject]@{
+        Step = $Step
+        Status = $Status
+        StartTime = $StartTime.ToString('yyyy-MM-dd HH:mm:ss')
+        EndTime = $EndTime.ToString('yyyy-MM-dd HH:mm:ss')
+        Seconds = [math]::Round(($EndTime - $StartTime).TotalSeconds, 3)
+        Detail = $Detail
+    }
+}
+
+Write-Host ""
+Write-Host "=== V18.8C OFFICIAL DAILY FAST WITH SIMULATION START ==="
+Write-Host "ROOT: $Root"
+Write-Host "SKIP_OFFICIAL_DAILY: $SkipOfficialDaily"
+Write-Host "INITIAL_CASH_USD: $InitialCashUSD"
+Write-Host "MAX_NEW_POSITIONS: $MaxNewPositions"
+Write-Host ""
+
+if (-not $SkipOfficialDaily) {
+    if (-not (Test-Path $OfficialDaily)) {
+        throw "MISSING_OFFICIAL_DAILY_WRAPPER: $OfficialDaily"
+    }
+
+    $s = Get-Date
+    Write-Host "STEP 1: run V18.7D official daily fast main with technical"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $OfficialDaily
+    if ($LASTEXITCODE -ne 0) {
+        $e = Get-Date
+        Add-Step -Step "V18_7D_OFFICIAL_DAILY_FAST" -Status "FAIL" -StartTime $s -EndTime $e -Detail $OfficialDaily
+        throw "FAIL: V18.7D official daily fast wrapper"
+    }
+    $e = Get-Date
+    Add-Step -Step "V18_7D_OFFICIAL_DAILY_FAST" -Status "OK" -StartTime $s -EndTime $e -Detail $OfficialDaily
+} else {
+    $s = Get-Date
+    $e = Get-Date
+    Add-Step -Step "V18_7D_OFFICIAL_DAILY_FAST" -Status "SKIPPED" -StartTime $s -EndTime $e -Detail "SkipOfficialDaily enabled"
+}
+
+if (-not (Test-Path $SimCabin)) {
+    throw "MISSING_SIM_CABIN_WRAPPER: $SimCabin"
+}
+
+$s = Get-Date
+Write-Host ""
+Write-Host "STEP 2: run V18.8B current simulation cabin"
+& powershell -NoProfile -ExecutionPolicy Bypass -File $SimCabin -InitialCashUSD $InitialCashUSD -MaxNewPositions $MaxNewPositions
+if ($LASTEXITCODE -ne 0) {
+    $e = Get-Date
+    Add-Step -Step "V18_8B_SIMULATION_CABIN" -Status "FAIL" -StartTime $s -EndTime $e -Detail $SimCabin
+    throw "FAIL: V18.8B simulation cabin"
+}
+$e = Get-Date
+Add-Step -Step "V18_8B_SIMULATION_CABIN" -Status "OK" -StartTime $s -EndTime $e -Detail $SimCabin
+
+$OfficialText = Read-TextSafe $OfficialReadFirst
+$SimText      = Read-TextSafe $SimReadFirst
+
+$FinalAction = Extract-Field -Text $OfficialText -Field "FINAL_ACTION"
+$BuyPermission = Extract-Field -Text $OfficialText -Field "BUY_PERMISSION"
+$VixRegime = Extract-Field -Text ($OfficialText + "`n" + $SimText) -Field "VIX_REGIME"
+$OfficialImpact = Extract-Field -Text $OfficialText -Field "OFFICIAL_DECISION_IMPACT"
+
+$SimStatus = Extract-Field -Text $SimText -Field "STATUS"
+$SimMode = Extract-Field -Text $SimText -Field "MODE"
+$OfficialPermission = Extract-Field -Text $SimText -Field "OFFICIAL_PERMISSION"
+$CashUSD = Extract-Field -Text $SimText -Field "CASH_USD"
+$MarketValueUSD = Extract-Field -Text $SimText -Field "MARKET_VALUE_USD"
+$EquityUSD = Extract-Field -Text $SimText -Field "EQUITY_USD"
+$PositionCount = Extract-Field -Text $SimText -Field "POSITION_COUNT"
+$NewTradeRows = Extract-Field -Text $SimText -Field "NEW_TRADE_LOG_ROWS_TODAY"
+
+$End = Get-Date
+$TotalSeconds = [math]::Round(($End - $Start).TotalSeconds, 3)
+
+$Steps | Export-Csv -NoTypeInformation -Encoding UTF8 $StepCsv
+
+$ProfileRows = @(
+    [pscustomobject]@{
+        RunName = "V18.8C_OFFICIAL_DAILY_FAST_WITH_SIMULATION"
+        StartedAt = $Start.ToString('yyyy-MM-dd HH:mm:ss')
+        EndedAt = $End.ToString('yyyy-MM-dd HH:mm:ss')
+        TotalSeconds = $TotalSeconds
+        FinalAction = $FinalAction
+        BuyPermission = $BuyPermission
+        VixRegime = $VixRegime
+        OfficialPermission = $OfficialPermission
+        SimStatus = $SimStatus
+        SimMode = $SimMode
+        PositionCount = $PositionCount
+        OfficialDecisionImpact = $OfficialImpact
+    }
+)
+$ProfileRows | Export-Csv -NoTypeInformation -Encoding UTF8 $Profile
+
+$Report = @()
+$Report += '# V18.8C Official Daily Fast With Simulation'
+$Report += ''
+$Report += ('- STATUS: `{0}`' -f 'OK_OFFICIAL_DAILY_FAST_WITH_SIMULATION_READY')
+$Report += ('- MODE: `{0}`' -f 'OFFICIAL_DAILY_PLUS_SHADOW_SIMULATION')
+$Report += ('- TOTAL_SECONDS: `{0}`' -f $TotalSeconds)
+$Report += ('- FINAL_ACTION: `{0}`' -f $FinalAction)
+$Report += ('- BUY_PERMISSION: `{0}`' -f $BuyPermission)
+$Report += ('- VIX_REGIME: `{0}`' -f $VixRegime)
+$Report += ('- OFFICIAL_DECISION_IMPACT: `{0}`' -f $OfficialImpact)
+$Report += ''
+$Report += '## Simulation Cabin'
+$Report += ''
+$Report += ('- SIM_STATUS: `{0}`' -f $SimStatus)
+$Report += ('- SIM_MODE: `{0}`' -f $SimMode)
+$Report += ('- OFFICIAL_PERMISSION: `{0}`' -f $OfficialPermission)
+$Report += ('- CASH_USD: `{0}`' -f $CashUSD)
+$Report += ('- MARKET_VALUE_USD: `{0}`' -f $MarketValueUSD)
+$Report += ('- EQUITY_USD: `{0}`' -f $EquityUSD)
+$Report += ('- POSITION_COUNT: `{0}`' -f $PositionCount)
+$Report += ('- NEW_TRADE_LOG_ROWS_TODAY: `{0}`' -f $NewTradeRows)
+$Report += ''
+$Report += '## Files'
+$Report += ''
+$Report += ('- OFFICIAL_READ_FIRST: `{0}`' -f $OfficialReadFirst)
+$Report += ('- OFFICIAL_READ_CENTER: `{0}`' -f $OfficialReport)
+$Report += ('- SIM_READ_FIRST: `{0}`' -f $SimReadFirst)
+$Report += ('- SIM_REPORT: `{0}`' -f $SimReport)
+$Report += ('- COMBINED_READ_FIRST: `{0}`' -f $CombinedReadFirst)
+$Report += ('- COMBINED_REPORT: `{0}`' -f $CombinedReport)
+$Report += ('- STEP_CSV: `{0}`' -f $StepCsv)
+$Report += ('- PROFILE: `{0}`' -f $Profile)
+$Report += ''
+$Report += '## Steps'
+$Report += ''
+$Report += '| Step | Status | Seconds | Detail |'
+$Report += '|---|---|---:|---|'
+foreach ($x in $Steps) {
+    $Report += ('| {0} | {1} | {2} | `{3}` |' -f $x.Step, $x.Status, $x.Seconds, $x.Detail)
+}
+$Report += ''
+$Report += '## Interpretation'
+$Report += ''
+$Report += '- The official daily decision remains the source of truth.'
+$Report += '- The simulation cabin is shadow-only.'
+$Report += '- Simulation output is now generated together with the official fast daily wrapper.'
+$Report += '- No simulation result is allowed to modify official buy permission.'
+
+$Report -join "`n" | Set-Content -Encoding UTF8 $CombinedReport
+
+$RF = @()
+$RF += 'V18.8C OFFICIAL DAILY FAST WITH SIMULATION'
+$RF += ''
+$RF += 'STATUS: OK_OFFICIAL_DAILY_FAST_WITH_SIMULATION_READY'
+$RF += 'MODE: OFFICIAL_DAILY_PLUS_SHADOW_SIMULATION'
+$RF += ('TOTAL_SECONDS: {0}' -f $TotalSeconds)
+$RF += ''
+$RF += ('FINAL_ACTION: {0}' -f $FinalAction)
+$RF += ('BUY_PERMISSION: {0}' -f $BuyPermission)
+$RF += ('VIX_REGIME: {0}' -f $VixRegime)
+$RF += ('OFFICIAL_DECISION_IMPACT: {0}' -f $OfficialImpact)
+$RF += ''
+$RF += ('SIM_STATUS: {0}' -f $SimStatus)
+$RF += ('SIM_MODE: {0}' -f $SimMode)
+$RF += ('OFFICIAL_PERMISSION: {0}' -f $OfficialPermission)
+$RF += ('CASH_USD: {0}' -f $CashUSD)
+$RF += ('MARKET_VALUE_USD: {0}' -f $MarketValueUSD)
+$RF += ('EQUITY_USD: {0}' -f $EquityUSD)
+$RF += ('POSITION_COUNT: {0}' -f $PositionCount)
+$RF += ('NEW_TRADE_LOG_ROWS_TODAY: {0}' -f $NewTradeRows)
+$RF += ''
+$RF += 'OFFICIAL_READ_FIRST:'
+$RF += $OfficialReadFirst
+$RF += ''
+$RF += 'OFFICIAL_READ_CENTER:'
+$RF += $OfficialReport
+$RF += ''
+$RF += 'SIM_READ_FIRST:'
+$RF += $SimReadFirst
+$RF += ''
+$RF += 'SIM_REPORT:'
+$RF += $SimReport
+$RF += ''
+$RF += 'COMBINED_REPORT:'
+$RF += $CombinedReport
+$RF += ''
+$RF += 'PROFILE:'
+$RF += $Profile
+
+$RF -join "`n" | Set-Content -Encoding UTF8 $CombinedReadFirst
+
+Write-Host ""
+Write-Host "=== V18.8C OFFICIAL DAILY FAST WITH SIMULATION READY ==="
+Write-Host "STATUS: OK_OFFICIAL_DAILY_FAST_WITH_SIMULATION_READY"
+Write-Host "TOTAL_SECONDS: $TotalSeconds"
+Write-Host "FINAL_ACTION: $FinalAction"
+Write-Host "BUY_PERMISSION: $BuyPermission"
+Write-Host "VIX_REGIME: $VixRegime"
+Write-Host "OFFICIAL_PERMISSION: $OfficialPermission"
+Write-Host "SIM_STATUS: $SimStatus"
+Write-Host "POSITION_COUNT: $PositionCount"
+Write-Host "COMBINED_READ_FIRST: $CombinedReadFirst"
+Write-Host "COMBINED_REPORT: $CombinedReport"
+Write-Host "PROFILE: $Profile"
+Write-Host ""
