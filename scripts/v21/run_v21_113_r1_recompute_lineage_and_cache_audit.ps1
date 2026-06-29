@@ -1,0 +1,10 @@
+$ErrorActionPreference = "Stop"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = Split-Path -Parent (Split-Path -Parent $ScriptDir)
+$Script = Join-Path $Root "scripts\v21\v21_113_r1_recompute_lineage_and_cache_audit.py"
+
+Set-Location $Root
+python $Script
+if ($LASTEXITCODE -ne 0) {
+    throw "V21.113 R1 recompute lineage and cache audit failed with exit code $LASTEXITCODE"
+}

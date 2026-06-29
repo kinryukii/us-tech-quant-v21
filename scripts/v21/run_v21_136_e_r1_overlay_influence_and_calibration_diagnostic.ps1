@@ -1,0 +1,4 @@
+$ErrorActionPreference = "Stop"
+
+python scripts/v21/v21_136_e_r1_overlay_influence_and_calibration_diagnostic.py
+pytest -q scripts/v21/test_v21_136_e_r1_overlay_influence_and_calibration_diagnostic.py

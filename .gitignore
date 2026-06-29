@@ -1,15 +1,10 @@
-﻿# Python env/cache
+﻿# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
 .venv/
 venv/
-__pycache__/
-*.pyc
-*.pyo
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.ipynb_checkpoints/
-.coverage
-htmlcov/
+env/
 
 # OS / IDE
 .DS_Store
@@ -17,23 +12,54 @@ Thumbs.db
 .vscode/
 .idea/
 
-# logs/temp
-*.log
-tmp/
-temp/
-.cache/
+# Secrets / credentials
+.env
+*.env
+*.key
+*.pem
+*token*
+*secret*
+credentials*
+config/private*
 
-# generated runtime outputs
+# Large / generated data
 outputs/
-state/
-archive/
-artifacts/
-large_files_over_50mb.txt
-
-# local/generated data
 data/cache/
 data/raw/
-inputs/
+price_cache/
+*.parquet
+*.pkl
+*.sqlite
+*.db
 
-# archive folders
-*_artifact_archive/
+# Logs
+*.log
+logs/
+
+# Temporary
+tmp/
+temp/
+
+# Archives / compressed backups
+archive/
+*.zip
+*.7z
+*.rar
+
+# Input caches / large historical data
+inputs/v21/historical_ohlcv_cache/
+inputs/**/historical_ohlcv_cache/
+inputs/**/*.parquet
+inputs/**/*.pkl
+
+# Large CSV data panels
+outputs/
+*.large.csv
+
+# Local config / runtime state / raw inputs
+config/
+configs/
+data/
+inputs/
+state/
+large_files_over_50mb.txt

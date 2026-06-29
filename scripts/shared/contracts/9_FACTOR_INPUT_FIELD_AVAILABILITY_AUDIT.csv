@@ -1,0 +1,12 @@
+field_group,required_fields,available_from_v20_8,availability_status,blocker_reason,next_required_source_or_step
+market_snapshot_core,ticker;effective_observation_date;effective_price_date;effective_close;source_hash;run_id;sample_id,TRUE,PASS,,No additional source required
+historical_ohlcv_windows,historical_ohlcv_windows,FALSE,SOURCE_REQUIRED,No historical OHLCV window source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+volume_history,volume_history,FALSE,SOURCE_REQUIRED,No volume history source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+moving_average_windows,moving_average_windows,FALSE,SOURCE_REQUIRED,No moving-average window source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+rsi_kdj_macd_bollinger_inputs,rsi_windows;kdj_windows;macd_windows;bollinger_band_windows,FALSE,SOURCE_REQUIRED,No indicator window source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+fundamental_snapshot,revenue;earnings;margin;cash_flow;capex;valuation,FALSE,SOURCE_REQUIRED,No accepted fundamental snapshot source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+event_calendar,event_calendar;earnings_calendar,FALSE,SOURCE_REQUIRED,No event or earnings calendar source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+macro_calendar,macro_calendar;cpi_series;fomc_schedule;nfp_calendar,FALSE,SOURCE_REQUIRED,No macro calendar source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+vix_qqq_spy_regime_inputs,vix_series;qqq_series;spy_series,FALSE,SOURCE_REQUIRED,No VIX/QQQ/SPY regime source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+portfolio_drawdown_position_cap_inputs,portfolio_drawdown_history;position_limit_inputs,FALSE,SOURCE_REQUIRED,No portfolio drawdown or position-cap input source is present in V20.8.,V20.10 factor source attachment or upstream source registration
+lineage_metadata,normalized_row_id;input_artifact_id;lineage_binding_id;source_artifact_id;source_system;source_hash;run_id;sample_id,TRUE,PASS,,No additional source required
