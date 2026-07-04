@@ -63,3 +63,10 @@ data/
 inputs/
 state/
 large_files_over_50mb.txt
+.venv/
+.venv_moomoo_py312/
+.pytest_cache/
+tmp/
+us-tech-quanttmppytest/
+__pycache__/
+*.pyc
