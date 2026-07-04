@@ -1,5 +1,15 @@
+param(
+    [string]$InputPath = "",
+    [string]$OutputDir = "",
+    [switch]$StagingMode,
+    [switch]$DryRun,
+    [switch]$ProductionWriteAllowed
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
 
 Write-Host "PATCH_VERSION: V20.8"
 Write-Host "PATCH_NAME: NORMALIZED_RESEARCH_DATASET_CONSTRUCTION"
@@ -16,4 +26,15 @@ Write-Host "ORDER_EXECUTION_USED: FALSE"
 Write-Host "V21_OUTPUTS_CREATED: FALSE"
 Write-Host "V19_21_OUTPUTS_CREATED: FALSE"
 
-python scripts/v20/v20_8_normalized_research_dataset_construction.py
+$ArgsList = @("scripts/v20/v20_8_normalized_research_dataset_construction.py")
+if ($InputPath) { $ArgsList += @("--input-path", $InputPath) }
+if ($OutputDir) { $ArgsList += @("--output-dir", $OutputDir) }
+if ($StagingMode) { $ArgsList += "--staging-mode" }
+if ($DryRun) { $ArgsList += "--dry-run" }
+if ($ProductionWriteAllowed) { $ArgsList += "--production-write-allowed" }
+
+Push-Location $RepoRoot
+try {
+    python @ArgsList
+}
+finally { Pop-Location }

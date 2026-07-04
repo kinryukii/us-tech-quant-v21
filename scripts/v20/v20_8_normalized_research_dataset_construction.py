@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path.cwd()
 OPS = ROOT / "outputs" / "v20" / "ops"
 CONSOLIDATION = ROOT / "outputs" / "v20" / "consolidation"
 READ_CENTER = ROOT / "outputs" / "v20" / "read_center"
@@ -57,6 +58,59 @@ ALLOWED_WRITE_PATHS = {
     CURRENT_REPORT,
     READ_FIRST,
 }
+
+
+def configure_paths(
+    repo_root: Path | None = None,
+    input_path: Path | None = None,
+    output_dir: Path | None = None,
+) -> None:
+    global ROOT, OPS, CONSOLIDATION, READ_CENTER
+    global IN_V20_7X_BINDING, IN_V20_7X_GATE, IN_V20_7X_READINESS, IN_V20_7X_VALIDATION, IN_V20_7X_READ_FIRST
+    global OUT_DEPENDENCY, OUT_NORMALIZED, OUT_SCHEMA, OUT_FIELD_MAP, OUT_LINEAGE, OUT_SAMPLE, OUT_PRICE, OUT_BOUNDARY, OUT_QUALITY
+    global OUT_BLOCKERS, OUT_GATE, OUT_NEXT, OUT_VALIDATION, REPORT, CURRENT_REPORT, READ_FIRST, ALLOWED_WRITE_PATHS
+
+    ROOT = (repo_root or Path.cwd()).resolve()
+    if output_dir is None:
+        OPS = ROOT / "outputs" / "v20" / "ops"
+        CONSOLIDATION = ROOT / "outputs" / "v20" / "consolidation"
+        READ_CENTER = ROOT / "outputs" / "v20" / "read_center"
+    else:
+        base = output_dir if output_dir.is_absolute() else ROOT / output_dir
+        base = base.resolve()
+        OPS = base / "ops"
+        CONSOLIDATION = base / "consolidation"
+        READ_CENTER = base / "read_center"
+
+    default_input_base = ROOT / "outputs" / "v20" / "consolidation"
+    default_ops = ROOT / "outputs" / "v20" / "ops"
+    IN_V20_7X_BINDING = (input_path if input_path and input_path.is_absolute() else ROOT / input_path) if input_path else default_input_base / "V20_7X_ACTIVE_MARKET_INPUT_LINEAGE_BINDING.csv"
+    IN_V20_7X_GATE = default_input_base / "V20_7X_GATE_DECISION.csv"
+    IN_V20_7X_READINESS = default_input_base / "V20_7X_INPUT_READINESS_FOR_V20_8_AUDIT.csv"
+    IN_V20_7X_VALIDATION = default_input_base / "V20_7X_VALIDATION_SUMMARY.csv"
+    IN_V20_7X_READ_FIRST = default_ops / "V20_7X_READ_FIRST.txt"
+
+    OUT_DEPENDENCY = CONSOLIDATION / "V20_8_DEPENDENCY_AUDIT.csv"
+    OUT_NORMALIZED = CONSOLIDATION / "V20_8_NORMALIZED_RESEARCH_DATASET.csv"
+    OUT_SCHEMA = CONSOLIDATION / "V20_8_NORMALIZED_SCHEMA_AUDIT.csv"
+    OUT_FIELD_MAP = CONSOLIDATION / "V20_8_FIELD_NORMALIZATION_MAP.csv"
+    OUT_LINEAGE = CONSOLIDATION / "V20_8_LINEAGE_PRESERVATION_AUDIT.csv"
+    OUT_SAMPLE = CONSOLIDATION / "V20_8_SAMPLE_ID_PRESERVATION_AUDIT.csv"
+    OUT_PRICE = CONSOLIDATION / "V20_8_PRICE_DATE_CONSISTENCY_AUDIT.csv"
+    OUT_BOUNDARY = CONSOLIDATION / "V20_8_RESEARCH_ONLY_BOUNDARY_AUDIT.csv"
+    OUT_QUALITY = CONSOLIDATION / "V20_8_DATA_QUALITY_AUDIT.csv"
+    OUT_BLOCKERS = CONSOLIDATION / "V20_8_BLOCKER_REGISTER.csv"
+    OUT_GATE = CONSOLIDATION / "V20_8_GATE_DECISION.csv"
+    OUT_NEXT = CONSOLIDATION / "V20_8_NEXT_STEP_DECISION.csv"
+    OUT_VALIDATION = CONSOLIDATION / "V20_8_VALIDATION_SUMMARY.csv"
+    REPORT = READ_CENTER / "V20_8_NORMALIZED_RESEARCH_DATASET_REPORT.md"
+    CURRENT_REPORT = READ_CENTER / "V20_CURRENT_NORMALIZED_RESEARCH_DATASET.md"
+    READ_FIRST = OPS / "V20_8_READ_FIRST.txt"
+    ALLOWED_WRITE_PATHS = {
+        OUT_DEPENDENCY, OUT_NORMALIZED, OUT_SCHEMA, OUT_FIELD_MAP, OUT_LINEAGE,
+        OUT_SAMPLE, OUT_PRICE, OUT_BOUNDARY, OUT_QUALITY, OUT_BLOCKERS,
+        OUT_GATE, OUT_NEXT, OUT_VALIDATION, REPORT, CURRENT_REPORT, READ_FIRST,
+    }
 
 SAFETY_FLAGS = {
     "REPORTING_ONLY": "FALSE",
@@ -213,7 +267,35 @@ def add_blocker(blockers: list[dict[str, str]], scope: str, reason: str, severit
     )
 
 
-def main() -> int:
+def output_inside(path: Path, directory: Path) -> bool:
+    try:
+        path.resolve().relative_to(directory.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument("--input-path", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--staging-mode", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--production-write-allowed", action="store_true")
+    args = parser.parse_args(argv)
+    if args.staging_mode and args.output_dir is None:
+        print("STAGE=V20.8")
+        print("FINAL_STATUS=BLOCKED_V20_8_STAGING_MODE_REQUIRES_OUTPUT_DIR")
+        return 2
+    configure_paths(args.repo_root, args.input_path, args.output_dir)
+    production_write_allowed = bool(args.production_write_allowed or (args.output_dir is None and not args.staging_mode and not args.dry_run))
+    if args.staging_mode:
+        production_write_allowed = False
+    if args.output_dir is not None and not all(output_inside(path, (args.repo_root / args.output_dir) if not args.output_dir.is_absolute() else args.output_dir) for path in ALLOWED_WRITE_PATHS):
+        print("STAGE=V20.8")
+        print("FINAL_STATUS=BLOCKED_V20_8_OUTPUT_OUTSIDE_STAGING_DIR")
+        return 2
     generated_at = utc_now()
     today = datetime.now(timezone.utc).date()
     blockers: list[dict[str, str]] = []
@@ -556,6 +638,14 @@ def main() -> int:
 
     validation_row = {
         "status": gate_status,
+        "stage": "V20.8",
+        "final_status": gate_status,
+        "as_of_date": sorted(date_distribution)[-1] if date_distribution else "",
+        "eligible_row_count": str(len(normalized_rows_out)),
+        "input_path": str(IN_V20_7X_BINDING),
+        "output_path": str(OUT_NORMALIZED),
+        "staging_mode": tf(args.staging_mode),
+        "production_write_allowed": tf(production_write_allowed),
         "patch_version": PATCH_VERSION,
         "generated_at_utc": generated_at,
         "binding_row_count": str(len(binding_rows)),
@@ -596,19 +686,20 @@ def main() -> int:
         **SAFETY_FLAGS,
     }
 
-    write_csv(OUT_DEPENDENCY, dependency_rows, ["dependency", "path", "exists", "status", "blocker_reason"])
-    write_csv(OUT_NORMALIZED, normalized_rows_out, NORMALIZED_COLUMNS)
-    write_csv(OUT_SCHEMA, schema_rows, ["column_name", "required", "detected", "non_empty_row_count", "row_count", "schema_status", "blocker_reason"])
-    write_csv(OUT_FIELD_MAP, field_map_rows, ["source_field", "normalized_field"])
-    write_csv(OUT_LINEAGE, lineage_rows, ["lineage_audit_id", "normalized_row_count", "source_hash_count", "run_id_count", "sample_id_count", "source_hash_preserved_count", "run_id_preserved_count", "sample_id_preserved_count", "source_system_preserved_count", "linked_to_v20_7x_lineage_binding", "lineage_preservation_status", "blocker_reason"])
-    write_csv(OUT_SAMPLE, sample_rows, ["sample_audit_id", "normalized_row_count", "sample_id_count", "sample_id_unique_count", "duplicate_sample_id_count", "normalized_row_id_unique_count", "normalized_row_id_duplicate_count", "sample_id_preservation_status", "blocker_reason"])
-    write_csv(OUT_PRICE, price_rows, ["price_audit_id", "normalized_row_count", "parseable_observation_date_count", "parseable_price_date_count", "future_date_row_count", "effective_close_numeric_positive_count", "stale_leakage_status_inherited_from_v20_7x", "price_date_consistency_status", "blocker_reason"])
-    write_csv(OUT_BOUNDARY, boundary_rows, ["boundary_check_id", "research_only_flag_required", "official_use_allowed_required", "allowed_for_factor_research_next_required", "allowed_for_backtest_now_required", "allowed_for_dynamic_weighting_now_required", "allowed_for_trading_now_required", "allowed_for_official_recommendation_now_required", "research_only_row_count", "official_use_allowed_row_count", "allowed_for_factor_research_next_row_count", "allowed_for_backtest_now_row_count", "allowed_for_dynamic_weighting_now_row_count", "allowed_for_trading_now_row_count", "allowed_for_official_recommendation_now_row_count", "research_only_boundary_status", "blocker_reason"])
-    write_csv(OUT_QUALITY, quality_rows, ["quality_check_id", "normalized_row_count", "unique_ticker_count", "date_distribution", "missing_ticker_count", "missing_price_count", "nonpositive_price_count", "missing_source_hash_count", "missing_run_id_count", "missing_sample_id_count", "duplicate_normalized_row_id_count", "rows_allowed_for_factor_research_next", "rows_allowed_for_official_use", "data_quality_status", "blocker_reason"])
-    write_csv(OUT_BLOCKERS, blocker_rows, ["blocker_id", "blocker_scope", "severity", "blocker_status", "blocker_reason", "blocks_v20_8"])
-    write_csv(OUT_GATE, gate_output, ["gate_id", "status", "NORMALIZED_RESEARCH_DATASET_CREATED", "NORMALIZED_ROWS_CREATED", "READY_FOR_V20_9_FACTOR_RESEARCH_DATASET_PREPARATION_NEXT", "READY_FOR_BACKTEST_NEXT", "READY_FOR_DYNAMIC_WEIGHTING_NEXT", "READY_FOR_TRADING_OR_OFFICIAL_RECOMMENDATION", "V21_OUTPUTS_CREATED", "V19_21_OUTPUTS_CREATED", "NEXT_RECOMMENDED_STEP", "gate_reason"])
-    write_csv(OUT_NEXT, next_output, ["decision_id", "ready_for_v20_9_factor_research_dataset_preparation_next", "ready_for_backtest_next", "ready_for_dynamic_weighting_next", "ready_for_trading_or_official_recommendation", "next_recommended_step", "reason"])
-    write_csv(OUT_VALIDATION, [validation_row], list(validation_row.keys()))
+    if not args.dry_run:
+        write_csv(OUT_DEPENDENCY, dependency_rows, ["dependency", "path", "exists", "status", "blocker_reason"])
+        write_csv(OUT_NORMALIZED, normalized_rows_out, NORMALIZED_COLUMNS)
+        write_csv(OUT_SCHEMA, schema_rows, ["column_name", "required", "detected", "non_empty_row_count", "row_count", "schema_status", "blocker_reason"])
+        write_csv(OUT_FIELD_MAP, field_map_rows, ["source_field", "normalized_field"])
+        write_csv(OUT_LINEAGE, lineage_rows, ["lineage_audit_id", "normalized_row_count", "source_hash_count", "run_id_count", "sample_id_count", "source_hash_preserved_count", "run_id_preserved_count", "sample_id_preserved_count", "source_system_preserved_count", "linked_to_v20_7x_lineage_binding", "lineage_preservation_status", "blocker_reason"])
+        write_csv(OUT_SAMPLE, sample_rows, ["sample_audit_id", "normalized_row_count", "sample_id_count", "sample_id_unique_count", "duplicate_sample_id_count", "normalized_row_id_unique_count", "normalized_row_id_duplicate_count", "sample_id_preservation_status", "blocker_reason"])
+        write_csv(OUT_PRICE, price_rows, ["price_audit_id", "normalized_row_count", "parseable_observation_date_count", "parseable_price_date_count", "future_date_row_count", "effective_close_numeric_positive_count", "stale_leakage_status_inherited_from_v20_7x", "price_date_consistency_status", "blocker_reason"])
+        write_csv(OUT_BOUNDARY, boundary_rows, ["boundary_check_id", "research_only_flag_required", "official_use_allowed_required", "allowed_for_factor_research_next_required", "allowed_for_backtest_now_required", "allowed_for_dynamic_weighting_now_required", "allowed_for_trading_now_required", "allowed_for_official_recommendation_now_required", "research_only_row_count", "official_use_allowed_row_count", "allowed_for_factor_research_next_row_count", "allowed_for_backtest_now_row_count", "allowed_for_dynamic_weighting_now_row_count", "allowed_for_trading_now_row_count", "allowed_for_official_recommendation_now_row_count", "research_only_boundary_status", "blocker_reason"])
+        write_csv(OUT_QUALITY, quality_rows, ["quality_check_id", "normalized_row_count", "unique_ticker_count", "date_distribution", "missing_ticker_count", "missing_price_count", "nonpositive_price_count", "missing_source_hash_count", "missing_run_id_count", "missing_sample_id_count", "duplicate_normalized_row_id_count", "rows_allowed_for_factor_research_next", "rows_allowed_for_official_use", "data_quality_status", "blocker_reason"])
+        write_csv(OUT_BLOCKERS, blocker_rows, ["blocker_id", "blocker_scope", "severity", "blocker_status", "blocker_reason", "blocks_v20_8"])
+        write_csv(OUT_GATE, gate_output, ["gate_id", "status", "NORMALIZED_RESEARCH_DATASET_CREATED", "NORMALIZED_ROWS_CREATED", "READY_FOR_V20_9_FACTOR_RESEARCH_DATASET_PREPARATION_NEXT", "READY_FOR_BACKTEST_NEXT", "READY_FOR_DYNAMIC_WEIGHTING_NEXT", "READY_FOR_TRADING_OR_OFFICIAL_RECOMMENDATION", "V21_OUTPUTS_CREATED", "V19_21_OUTPUTS_CREATED", "NEXT_RECOMMENDED_STEP", "gate_reason"])
+        write_csv(OUT_NEXT, next_output, ["decision_id", "ready_for_v20_9_factor_research_dataset_preparation_next", "ready_for_backtest_next", "ready_for_dynamic_weighting_next", "ready_for_trading_or_official_recommendation", "next_recommended_step", "reason"])
+        write_csv(OUT_VALIDATION, [validation_row], list(validation_row.keys()))
 
     report_lines = [
         "# V20.8 Normalized Research Dataset Construction",
@@ -634,8 +725,9 @@ def main() -> int:
         "This step constructs a research-only normalized dataset from V20.7X bound active market input lineage. It preserves source_hash, run_id, sample_id, and the active market lineage fields, and it does not create factor evidence, backtests, dynamic weighting rows, trading signals, official recommendations, broker actions, V21 outputs, or V19.21 outputs.",
         "",
     ]
-    write_text(REPORT, "\n".join(report_lines))
-    write_text(CURRENT_REPORT, "\n".join(report_lines))
+    if not args.dry_run:
+        write_text(REPORT, "\n".join(report_lines))
+        write_text(CURRENT_REPORT, "\n".join(report_lines))
 
     read_first_lines = [
         f"STATUS: {gate_status}",
@@ -681,7 +773,8 @@ def main() -> int:
         "",
     ]
     read_first_output_text = "\n".join(read_first_lines)
-    write_text(READ_FIRST, read_first_output_text)
+    if not args.dry_run:
+        write_text(READ_FIRST, read_first_output_text)
 
     validation_row["blocker_count"] = str(sum(1 for row in blocker_rows if row["severity"] == "BLOCKING"))
     validation_row["NORMALIZED_RESEARCH_DATASET_CREATED"] = tf(normalized_created)
@@ -708,11 +801,20 @@ def main() -> int:
     validation_row["write_paths_expected_count"] = str(len(ALLOWED_WRITE_PATHS))
     validation_row["write_paths_written_count"] = str(len(ALLOWED_WRITE_PATHS))
     validation_row["allowed_write_paths_match"] = tf(set(ALLOWED_WRITE_PATHS) == {OUT_DEPENDENCY, OUT_NORMALIZED, OUT_SCHEMA, OUT_FIELD_MAP, OUT_LINEAGE, OUT_SAMPLE, OUT_PRICE, OUT_BOUNDARY, OUT_QUALITY, OUT_BLOCKERS, OUT_GATE, OUT_NEXT, OUT_VALIDATION, REPORT, CURRENT_REPORT, READ_FIRST})
-    write_csv(OUT_VALIDATION, [validation_row], list(validation_row.keys()))
+    if not args.dry_run:
+        write_csv(OUT_VALIDATION, [validation_row], list(validation_row.keys()))
 
     for key, value in validation_row.items():
         print(f"{key.upper()}: {value}")
     print(f"READ_FIRST: {rel(READ_FIRST)}")
+    print("STAGE: V20.8")
+    print(f"FINAL_STATUS: {gate_status}")
+    print(f"AS_OF_DATE: {validation_row['as_of_date']}")
+    print(f"ELIGIBLE_ROW_COUNT: {validation_row['eligible_row_count']}")
+    print(f"INPUT_PATH: {IN_V20_7X_BINDING}")
+    print(f"OUTPUT_PATH: {OUT_NORMALIZED}")
+    print(f"STAGING_MODE: {tf(args.staging_mode)}")
+    print(f"PRODUCTION_WRITE_ALLOWED: {tf(production_write_allowed)}")
     return 0 if ready_for_v20_9 else 1
 
 

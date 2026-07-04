@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import argparse
 import csv
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path.cwd()
 OPS = ROOT / "outputs" / "v20" / "ops"
 CONSOLIDATION = ROOT / "outputs" / "v20" / "consolidation"
 READ_CENTER = ROOT / "outputs" / "v20" / "read_center"
@@ -41,6 +42,7 @@ READ_FIRST = OPS / "V20_9_READ_FIRST.txt"
 PATCH_VERSION = "V20.9"
 FACTOR_RESEARCH_DATASET_VERSION = "V20.9_FACTOR_RESEARCH_DATASET"
 EXPECTED_SOURCE_STEP = "V20.8"
+DRY_RUN = False
 
 ALLOWED_WRITE_PATHS = {
     OUT_DEPENDENCY,
@@ -63,6 +65,68 @@ ALLOWED_WRITE_PATHS = {
     CURRENT_REPORT,
     READ_FIRST,
 }
+
+
+def configure_paths(
+    repo_root: Path | None = None,
+    input_path: Path | None = None,
+    output_dir: Path | None = None,
+) -> None:
+    global ROOT, OPS, CONSOLIDATION, READ_CENTER
+    global IN_V20_8_DATASET, IN_V20_8_GATE, IN_V20_8_VALIDATION, IN_V20_8_BOUNDARY, IN_V20_8_READ_FIRST
+    global OUT_DEPENDENCY, OUT_BASE_DATASET, OUT_SCHEMA, OUT_ATTACHMENT_PLAN, OUT_FIELD_AVAILABILITY
+    global OUT_TECHNICAL, OUT_FUNDAMENTAL, OUT_RISK, OUT_REGIME, OUT_TRUST, OUT_BOUNDARY
+    global OUT_MISSING_SOURCE, OUT_BLOCKERS, OUT_GATE, OUT_NEXT, OUT_VALIDATION
+    global REPORT, CURRENT_REPORT, READ_FIRST, ALLOWED_WRITE_PATHS
+
+    ROOT = (repo_root or Path.cwd()).resolve()
+    if output_dir is None:
+        OPS = ROOT / "outputs" / "v20" / "ops"
+        CONSOLIDATION = ROOT / "outputs" / "v20" / "consolidation"
+        READ_CENTER = ROOT / "outputs" / "v20" / "read_center"
+    else:
+        base = output_dir if output_dir.is_absolute() else ROOT / output_dir
+        base = base.resolve()
+        OPS = base / "ops"
+        CONSOLIDATION = base / "consolidation"
+        READ_CENTER = base / "read_center"
+
+    default_input_base = ROOT / "outputs" / "v20" / "consolidation"
+    default_ops = ROOT / "outputs" / "v20" / "ops"
+    IN_V20_8_DATASET = (input_path if input_path and input_path.is_absolute() else ROOT / input_path) if input_path else default_input_base / "V20_8_NORMALIZED_RESEARCH_DATASET.csv"
+    input_base = IN_V20_8_DATASET.parent if input_path else default_input_base
+    input_ops = input_base.parent / "ops" if input_path else default_ops
+    IN_V20_8_GATE = input_base / "V20_8_GATE_DECISION.csv"
+    IN_V20_8_VALIDATION = input_base / "V20_8_VALIDATION_SUMMARY.csv"
+    IN_V20_8_BOUNDARY = input_base / "V20_8_RESEARCH_ONLY_BOUNDARY_AUDIT.csv"
+    IN_V20_8_READ_FIRST = input_ops / "V20_8_READ_FIRST.txt"
+
+    OUT_DEPENDENCY = CONSOLIDATION / "V20_9_DEPENDENCY_AUDIT.csv"
+    OUT_BASE_DATASET = CONSOLIDATION / "V20_9_FACTOR_RESEARCH_BASE_DATASET.csv"
+    OUT_SCHEMA = CONSOLIDATION / "V20_9_FACTOR_RESEARCH_SCHEMA_AUDIT.csv"
+    OUT_ATTACHMENT_PLAN = CONSOLIDATION / "V20_9_FACTOR_FAMILY_ATTACHMENT_PLAN.csv"
+    OUT_FIELD_AVAILABILITY = CONSOLIDATION / "V20_9_FACTOR_INPUT_FIELD_AVAILABILITY_AUDIT.csv"
+    OUT_TECHNICAL = CONSOLIDATION / "V20_9_TECHNICAL_FACTOR_READINESS_AUDIT.csv"
+    OUT_FUNDAMENTAL = CONSOLIDATION / "V20_9_FUNDAMENTAL_FACTOR_READINESS_AUDIT.csv"
+    OUT_RISK = CONSOLIDATION / "V20_9_RISK_FACTOR_READINESS_AUDIT.csv"
+    OUT_REGIME = CONSOLIDATION / "V20_9_MARKET_REGIME_FACTOR_READINESS_AUDIT.csv"
+    OUT_TRUST = CONSOLIDATION / "V20_9_DATA_TRUSTWORTHINESS_FACTOR_READINESS_AUDIT.csv"
+    OUT_BOUNDARY = CONSOLIDATION / "V20_9_FACTOR_RESEARCH_BOUNDARY_AUDIT.csv"
+    OUT_MISSING_SOURCE = CONSOLIDATION / "V20_9_MISSING_FACTOR_SOURCE_REGISTER.csv"
+    OUT_BLOCKERS = CONSOLIDATION / "V20_9_BLOCKER_REGISTER.csv"
+    OUT_GATE = CONSOLIDATION / "V20_9_GATE_DECISION.csv"
+    OUT_NEXT = CONSOLIDATION / "V20_9_NEXT_STEP_DECISION.csv"
+    OUT_VALIDATION = CONSOLIDATION / "V20_9_VALIDATION_SUMMARY.csv"
+    REPORT = READ_CENTER / "V20_9_FACTOR_RESEARCH_DATASET_PREPARATION_REPORT.md"
+    CURRENT_REPORT = READ_CENTER / "V20_CURRENT_FACTOR_RESEARCH_DATASET_PREPARATION.md"
+    READ_FIRST = OPS / "V20_9_READ_FIRST.txt"
+    ALLOWED_WRITE_PATHS = {
+        OUT_DEPENDENCY, OUT_BASE_DATASET, OUT_SCHEMA, OUT_ATTACHMENT_PLAN,
+        OUT_FIELD_AVAILABILITY, OUT_TECHNICAL, OUT_FUNDAMENTAL, OUT_RISK,
+        OUT_REGIME, OUT_TRUST, OUT_BOUNDARY, OUT_MISSING_SOURCE,
+        OUT_BLOCKERS, OUT_GATE, OUT_NEXT, OUT_VALIDATION, REPORT,
+        CURRENT_REPORT, READ_FIRST,
+    }
 
 SAFETY_FLAGS = {
     "REPORTING_ONLY": "FALSE",
@@ -223,6 +287,8 @@ def read_csv(path: Path) -> tuple[list[dict[str, str]], list[str]]:
 
 
 def write_csv(path: Path, rows: list[dict[str, str]], fields: list[str]) -> None:
+    if DRY_RUN:
+        return
     ensure_dir(path.parent)
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields, lineterminator="\n", extrasaction="ignore")
@@ -232,6 +298,8 @@ def write_csv(path: Path, rows: list[dict[str, str]], fields: list[str]) -> None
 
 
 def write_text(path: Path, text: str) -> None:
+    if DRY_RUN:
+        return
     ensure_dir(path.parent)
     path.write_text(text, encoding="utf-8")
 
@@ -325,7 +393,39 @@ def required_flags_present(text: str, normalized_count: int) -> bool:
     return all(flag in text for flag in required)
 
 
-def main() -> int:
+def output_inside(path: Path, directory: Path) -> bool:
+    try:
+        path.resolve().relative_to(directory.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def main(argv: list[str] | None = None) -> int:
+    global DRY_RUN
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo-root", type=Path, default=Path.cwd())
+    parser.add_argument("--input-path", type=Path, default=None)
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--staging-mode", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--production-write-allowed", action="store_true")
+    args = parser.parse_args(argv)
+    DRY_RUN = bool(args.dry_run)
+    if args.staging_mode and args.output_dir is None:
+        print("STAGE=V20.9")
+        print("FINAL_STATUS=BLOCKED_V20_9_STAGING_MODE_REQUIRES_OUTPUT_DIR")
+        return 2
+    configure_paths(args.repo_root, args.input_path, args.output_dir)
+    production_write_allowed = bool(args.production_write_allowed or (args.output_dir is None and not args.staging_mode and not args.dry_run))
+    if args.staging_mode:
+        production_write_allowed = False
+    if args.output_dir is not None:
+        output_base = args.output_dir if args.output_dir.is_absolute() else args.repo_root / args.output_dir
+        if not all(output_inside(path, output_base) for path in ALLOWED_WRITE_PATHS):
+            print("STAGE=V20.9")
+            print("FINAL_STATUS=BLOCKED_V20_9_OUTPUT_OUTSIDE_STAGING_DIR")
+            return 2
     generated_at = utc_now()
     today = datetime.now(timezone.utc).date()
 
@@ -673,6 +773,14 @@ def main() -> int:
 
     validation_row = {
         "status": gate_status,
+        "stage": "V20.9",
+        "final_status": gate_status,
+        "as_of_date": sorted({clean(row.get("effective_observation_date")) for row in factor_rows if clean(row.get("effective_observation_date"))})[-1] if factor_rows else "",
+        "eligible_row_count": str(factor_research_rows_created),
+        "input_path": str(IN_V20_8_DATASET),
+        "output_path": str(OUT_BASE_DATASET),
+        "staging_mode": tf(args.staging_mode),
+        "production_write_allowed": tf(production_write_allowed),
         "patch_version": PATCH_VERSION,
         "generated_at_utc": generated_at,
         "normalized_row_count": str(normalized_count),
@@ -837,6 +945,14 @@ def main() -> int:
     for key, value in validation_row.items():
         print(f"{key.upper()}: {value}")
     print(f"READ_FIRST: {rel(READ_FIRST)}")
+    print("STAGE: V20.9")
+    print(f"FINAL_STATUS: {gate_status}")
+    print(f"AS_OF_DATE: {validation_row['as_of_date']}")
+    print(f"ELIGIBLE_ROW_COUNT: {validation_row['eligible_row_count']}")
+    print(f"INPUT_PATH: {IN_V20_8_DATASET}")
+    print(f"OUTPUT_PATH: {OUT_BASE_DATASET}")
+    print(f"STAGING_MODE: {tf(args.staging_mode)}")
+    print(f"PRODUCTION_WRITE_ALLOWED: {tf(production_write_allowed)}")
     return 0 if ready_for_v20_10 else 1
 
 

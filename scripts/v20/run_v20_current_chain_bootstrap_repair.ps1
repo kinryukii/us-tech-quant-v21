@@ -156,7 +156,17 @@ function Write-DependencyMatrix {
     Add-DependencyRow $rows "V20.46" "V20.47" "$c\V20_46_NEXT_STEP_DECISION.csv" "decision" "PASS_READY_FOR_CONTROLLED_CURRENT_MARKET_REFRESH_STAGE"
     Add-DependencyRow $rows "V20.47" "POST_REFRESH_RECOMPUTE" "$c\V20_47_NEXT_STEP_DECISION.csv" "decision" "PASS_CONTROLLED_REFRESH_CERTIFIED_FOR_RESEARCH_HANDOFF"
     Add-DependencyRow $rows "POST_REFRESH_RECOMPUTE" "V20.7V" "$c\V20_POST_REFRESH_RECOMPUTE_STATUS.csv" "status" "PASS_V20_POST_REFRESH_RECOMPUTE_HANDOFF_COMPLETED"
-    Add-DependencyRow $rows "V20.7V" "V20.7W" "$c\V20_7V_VALIDATION_SUMMARY.csv" "status" "PASS_V20_7V_ACTIVE_MARKET_SOURCE_STAGING_READY"
+    $v20SevenVRow = Read-FirstCsvRow "$c\V20_7V_VALIDATION_SUMMARY.csv"
+    $v20SevenVStatus = Get-FieldValue $v20SevenVRow "status"
+    if ($v20SevenVStatus -eq "PASS_V20_7V_ACTIVE_MARKET_SOURCE_STAGING_READY") {
+        Add-DependencyRow $rows "V20.7V" "V20.7W" "$c\V20_7V_VALIDATION_SUMMARY.csv" "status" "PASS_V20_7V_ACTIVE_MARKET_SOURCE_STAGING_READY"
+    }
+    elseif ($v20SevenVStatus -eq "BLOCKED_V20_7V_PRECHECK_REVIEW_NEEDED") {
+        Add-DependencyRow $rows "V20.7V-R1" "RESEARCH_ONLY_DAILY_BOOTSTRAP" "$c\V20_7V_R1_RESEARCH_ONLY_BOOTSTRAP_PRECHECK_REPAIR_SUMMARY.csv" "research_only_bootstrap_allowed" "TRUE"
+    }
+    else {
+        Add-DependencyRow $rows "V20.7V" "V20.7W" "$c\V20_7V_VALIDATION_SUMMARY.csv" "status" "PASS_V20_7V_ACTIVE_MARKET_SOURCE_STAGING_READY"
+    }
     Add-DependencyRow $rows "V20.7W" "V20.7X" "$c\V20_7W_GATE_DECISION.csv" "status" "PASS_V20_7W_ACTIVE_MARKET_SOURCE_CERTIFICATION_READY"
     Add-DependencyRow $rows "V20.7X" "V20.8" "$c\V20_7X_GATE_DECISION.csv" "status" "PASS_V20_7X_ACTIVE_MARKET_INPUT_LINEAGE_BINDING_READY"
     Add-DependencyRow $rows "V20.8" "V20.9" "$c\V20_8_GATE_DECISION.csv" "status" "PASS_V20_8_NORMALIZED_RESEARCH_DATASET_CONSTRUCTED"
@@ -716,6 +726,20 @@ function Invoke-CheckedStage([object]$Stage) {
     }
     $allowedWarning = ($Stage.ExpectedStatus -eq "") -and ($actual -like "WARN_*")
     $passes = (($exit -eq 0) -and (($Stage.ExpectedStatus -eq "") -or ($actual -eq $Stage.ExpectedStatus))) -or $allowedWarning
+    if ($Stage.Name -eq "V20.7V" -and $actual -eq "BLOCKED_V20_7V_PRECHECK_REVIEW_NEEDED") {
+        $repairWrapper = Join-Path $ScriptDir "run_v20_7v_r1_research_only_bootstrap_precheck_repair.ps1"
+        Write-Warning "V20.7V active-market precheck is blocked; evaluating the separate research-only bootstrap repair. OFFICIAL ACTIVATION REMAINS BLOCKED."
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $repairWrapper
+        $repairExit = $LASTEXITCODE
+        $repairRow = Read-FirstCsvRow (Join-Path $Consolidation "V20_7V_R1_RESEARCH_ONLY_BOOTSTRAP_PRECHECK_REPAIR_SUMMARY.csv")
+        $repairAllowed = Get-FieldValue $repairRow "research_only_bootstrap_allowed"
+        $repairStatus = Get-FieldValue $repairRow "final_status"
+        if ($repairExit -eq 0 -and $repairAllowed -eq "TRUE") {
+            $passes = $true
+            $actual = $repairStatus
+            Write-Warning "Continuing the daily bootstrap in research-only mode. OFFICIAL ACTIVATION REMAINS BLOCKED; recommendation, ranking, weight, broker, and trade permissions remain FALSE."
+        }
+    }
     $reason = ""
     if (-not $passes) {
         $reason = "exit_code=$exit expected_status=$($Stage.ExpectedStatus) actual_status=$actual"
@@ -816,6 +840,7 @@ $modifiedPython = @(
     "scripts\v20\v20_7t_active_market_data_input_staging_and_registration.py",
     "scripts\v20\v20_7u_active_market_input_intake_and_lineage_binding.py",
     "scripts\v20\v20_7v_active_market_source_staging_from_accepted_v18_result.py",
+    "scripts\v20\v20_7v_r1_research_only_bootstrap_precheck_repair.py",
     "scripts\v20\v20_7w_active_market_source_certification_retry_from_v20_7v_staging.py",
     "scripts\v20\v20_7x_active_market_input_lineage_binding_retry_from_certified_v20_7w_source.py",
     "scripts\v20\v20_8_normalized_research_dataset_construction.py",
@@ -871,6 +896,7 @@ $modifiedPython = @(
     "scripts\v20\v20_53_official_recommendation_schema_dry_run_gate.py",
     "scripts\v20\v20_54_user_readable_current_decision_report.py",
     "scripts\v20\v20_55_daily_one_click_research_runner.py",
+    "scripts\v20\test_v20_7v_r1_research_only_bootstrap_precheck_repair.py",
     "scripts\v20\test_v20_current_chain_bootstrap_repair.py"
 )
 
@@ -900,6 +926,7 @@ try {
     $forwardFirstFailedStage = ""
     $forwardBlockerReason = ""
     $forwardPending = $false
+    $researchOnlyPrecheckRepairActive = $false
     $skipAfterForwardPending = @(
         "V20.28", "V20.29", "V20.30", "V20.31", "V20.32", "V20.33", "V20.34",
         "V20.35", "V20.35-R1", "V20.35-R2", "V20.36", "V20.37", "V20.38",
@@ -922,6 +949,11 @@ try {
         $result = Invoke-CheckedStage $stage
         $statusRows.Add($result)
         Write-DependencyMatrix
+        if ($result.stage -eq "V20.7V" -and $result.passed -eq "TRUE" -and $result.status -like "PASS_V20_7V_R1_*") {
+            $researchOnlyPrecheckRepairActive = $true
+            Write-Warning "V20.7W official active-market certification is not being bypassed. The legacy active-market branch stops here; the one-command operator may continue only in the research-only lane."
+            break
+        }
         if ($result.passed -ne "TRUE") {
             $matrixBlocker = Get-BlockerFromMatrix
             $candidateBlocker = if ($matrixBlocker) { $matrixBlocker } else { $result.blocker_reason }
@@ -942,7 +974,7 @@ try {
         }
     }
 
-    if (-not $firstFailedStage) {
+    if (-not $firstFailedStage -and -not $researchOnlyPrecheckRepairActive) {
         Write-DependencyMatrix
         $matrixBlocker = Get-BlockerFromMatrix
         if ($matrixBlocker -and -not $forwardPending) {
