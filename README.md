@@ -1,34 +1,31 @@
-﻿# us-tech-quant-v21
+# us-tech-quant-v21
 
 Research-only US technology quant strategy system.
 
+This repository contains a local, research-first quant workflow for US technology equities, ETFs, and DRAM-focused tactical planning.  
+It is designed for daily research, factor experimentation, data-quality checks, forward validation, and strict no-broker-action governance.
+
+> **Important:** This project is for research only. It does not provide financial advice, investment recommendations, broker execution, or official portfolio adoption.
+
+---
+
 ## Current focus
 
-V21 daily-frequency DRAM tactical planning chain.
+The current active focus is:
 
-## Latest DRAM daily chain
+- DRAM daily tactical planning chain
+- Moomoo local-cache based data workflow
+- Point-in-time / no-leakage validation
+- Forward tracking and strategy comparison
+- Compact output retention and repo size control
+- Strict research-only execution gates
 
-- V21.174_R1C: Auto DRAM daily OHLCV fetch/cache
-- V21.176: Daily DRAM premarket trade plan
-- V21.177: Daily DRAM plan ledger and staleness gate
-- V21.177_R1A: Staleness semantic repair
-- V21.178: Daily DRAM plan chain orchestrator
-- V21.178_R1A: Execution-mode daily DRAM chain
+---
 
-## Policy
+## Current daily entrypoint
 
-This repository is research-only.
-
-- No broker action
-- No official adoption without explicit approval
-- No protected output mutation
-- DRAM remains a manual/watchlist tactical anchor
-- Daily-frequency planning only
-- Intraday stage is diagnostic-only
-
-## Validation example
+The current recommended daily command is:
 
 ```powershell
-python -m pytest scripts\v21\test_v21_178_r1a_daily_dram_chain_execution_mode.py -q
-powershell -ExecutionPolicy Bypass -File scripts\v21\run_v21_178_r1a_daily_dram_chain_execution_mode.ps1
-```
+cd D:\us-tech-quant
+.\scripts\v21\run_v21_261_daily_chain_retention_enforcement_wiring_r1.ps1 -Execute
