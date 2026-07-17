@@ -518,6 +518,10 @@ Quantitative ranking, validation, backtesting, and guarded daily research infras
 
 
 
+
+
+
+
 # US Tech Quant v21
 
 **米国株式および ETF を対象とした、リサーチ優先型の定量ランキング・検証・日次シグナル基盤。**
