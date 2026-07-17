@@ -69,7 +69,7 @@ def write_docs() -> None:
     (DOCS / "DATA_SOURCE_MOOMOO_README.md").write_text(
         "# Moomoo Data Source\n\n"
         "The primary market-data path uses Moomoo OpenD quote APIs only. It requires `moomoo-api` and OpenD at "
-        "`MOOMOO_OPEND_HOST`/`MOOMOO_OPEND_PORT` (defaults 127.0.0.1:11111). No yfinance fallback, trade API, account unlock, "
+        "`MOOMOO_OPEND_HOST`/`MOOMOO_OPEND_PORT` (defaults 127.0.0.1:18441). No yfinance fallback, trade API, account unlock, "
         "or broker action is allowed. DRAM maps to `US.DRAM` and is always included as a priority symbol.\n",
         encoding="utf-8",
     )

@@ -151,6 +151,12 @@ def classify_reference(path_text: str, matched_term: str, active_manifest_keys: 
     p = path_text.replace("\\", "/").lower()
     term = matched_term.lower()
     active_member = any(key.lower() in p for key in active_manifest_keys)
+    # The policy guard necessarily contains the forbidden-provider tokens it
+    # detects.  Those declarative token lists are not a market-data call or a
+    # fallback path.  Treating them as an active use makes the guard block its
+    # own Moomoo-only enforcement stage indefinitely.
+    if p.endswith("scripts/v21/v21_data_source_policy_guard.py"):
+        return "FALSE_POSITIVE_CONTEXT_ONLY", "central policy guard declarative token list; no provider invocation", False
     if "/outputs/" in p or p.startswith("outputs/"):
         return "HISTORICAL_OUTPUT_METADATA", "historical output metadata is not active executable chain", active_member
     if "/docs/" in p or p.startswith("docs/") or p.endswith(".md") or "report" in p:

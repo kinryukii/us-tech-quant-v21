@@ -1,18 +1,27 @@
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
-$Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
-$OutputDir = Join-Path $RepoRoot "outputs\v21\V21.234_MINIMAL_MOOMOO_ONLY_DAILY_RESEARCH_CHAIN"
-$V231OutputDir = Join-Path $RepoRoot "outputs\v21\V21.231_MOOMOO_ONLY_HISTORICAL_REFETCH_AND_CANONICAL_REBUILD"
-$V232OutputDir = Join-Path $RepoRoot "outputs\v21\V21.232_MOOMOO_ONLY_DRAM_DAILY_AND_INTRADAY_PLAN"
-$V233OutputDir = Join-Path $RepoRoot "outputs\v21\V21.233_MOOMOO_ONLY_ABCDE_RERUN"
+$RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+$StorageModule = Join-Path $RepoRoot "scripts\common\storage_paths.ps1"
+if (-not (Test-Path -LiteralPath $StorageModule)) { throw "Storage path module not found: $StorageModule" }
+. $StorageModule
+$PythonExe = Get-UstqPythonExecutable
+if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) { throw "External Python executable not found: $PythonExe" }
+$ResolvedPython = (Resolve-Path -LiteralPath $PythonExe).Path
+$RepoPrefix = ([IO.Path]::GetFullPath([string]$RepoRoot)).TrimEnd('\') + '\'
+if ($ResolvedPython.StartsWith($RepoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Python executable must be outside repo: $ResolvedPython" }
+$OutputDir = Join-Path (Get-UstqDailyRoot) "current\V21.234_MINIMAL_MOOMOO_ONLY_DAILY_RESEARCH_CHAIN"
+$V231OutputDir = Join-Path (Get-UstqDailyRoot) "current\V21.231_MOOMOO_ONLY_HISTORICAL_REFETCH_AND_CANONICAL_REBUILD"; if(-not(Test-Path $V231OutputDir)){$V231OutputDir=Join-Path (Get-UstqDailyRoot) "migrated_from_repo\outputs\v21\V21.231_MOOMOO_ONLY_HISTORICAL_REFETCH_AND_CANONICAL_REBUILD"}
+$V232OutputDir = Join-Path (Get-UstqDailyRoot) "current\V21.232_MOOMOO_ONLY_DRAM_DAILY_AND_INTRADAY_PLAN"
+$V233OutputDir = Join-Path (Get-UstqDailyRoot) "current\V21.233_MOOMOO_ONLY_ABCDE_RERUN"; if(-not(Test-Path $V233OutputDir)){$V233OutputDir=Join-Path (Get-UstqDailyRoot) "migrated_from_repo\outputs\v21\V21.233_MOOMOO_ONLY_ABCDE_RERUN"}
+Assert-UstqExternalPath $OutputDir
 $SummaryPath = Join-Path $OutputDir "v21_234_summary.json"
 
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Set-Location $RepoRoot
 
-& $Python "scripts\v21\v21_234_minimal_moomoo_only_daily_research_chain.py" `
+$env:USTQ_REPO_ROOT=$RepoRoot; $env:USTQ_DATA_ROOT=(Get-UstqDataRoot); $env:USTQ_CACHE_ROOT=(Get-UstqCacheRoot); $env:USTQ_DAILY_ROOT=(Get-UstqDailyRoot); $env:USTQ_RESULTS_ROOT=(Get-UstqResultsRoot); $env:USTQ_ENVS_ROOT=(Get-UstqEnvsRoot); $env:USTQ_PYTHON_EXE=$ResolvedPython
+& $ResolvedPython "scripts\v21\v21_234_minimal_moomoo_only_daily_research_chain.py" `
   --repo-root $RepoRoot `
   --output-dir $OutputDir `
   --v21-231-output-dir $V231OutputDir `

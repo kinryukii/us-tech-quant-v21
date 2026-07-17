@@ -524,7 +524,7 @@ def run(
     output_dir: Path,
     v21_230_output_dir: Path | None = None,
     opend_host: str = "127.0.0.1",
-    opend_port: int = 11111,
+    opend_port: int = 18441,
     probe_timeout_seconds: int = 10,
     max_symbol_probe_count: int = 5,
     allow_minimal_quote_probe: bool = True,
@@ -665,7 +665,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--v21-230-output-dir", type=Path, default=None)
     parser.add_argument("--opend-host", default="127.0.0.1")
-    parser.add_argument("--opend-port", type=int, default=11111)
+    parser.add_argument("--opend-port", type=int, default=18441)
     parser.add_argument("--probe-timeout-seconds", type=int, default=10)
     parser.add_argument("--max-symbol-probe-count", type=int, default=5)
     parser.add_argument("--allow-minimal-quote-probe", action=argparse.BooleanOptionalAction, default=True)

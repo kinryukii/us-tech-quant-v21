@@ -29,6 +29,7 @@ WARN_STATUS = "WARN_V21_233_MOOMOO_ONLY_ABCDE_RERUN_READY_WITH_COMPACT_PROXY_WAR
 FAIL_POLICY = "FAIL_V21_233_SOURCE_POLICY_VIOLATION"
 FAIL_MISSING = "FAIL_V21_233_CANONICAL_SNAPSHOT_MISSING"
 FAIL_RERUN = "FAIL_V21_233_ABCDE_RERUN_FAILED"
+FAIL_STALE = "FAIL_V21_233_TARGET_DATE_UNIVERSE_STALE"
 DECISION = "MOOMOO_ONLY_ABCDE_COMPACT_RERUN_READY_RESEARCH_ONLY"
 FORBIDDEN_PROVIDER = "y" + "finance"
 FORBIDDEN_PROVIDER_CALL = "yf" + ".download"
@@ -51,6 +52,7 @@ SOURCE_FIELDS = ["artifact","path","source_policy","source","yfinance_used","yah
 SNAP_FIELDS = ["check_name","expected","actual","passed","severity","notes"]
 CROSS_FIELDS = ["check_name","expected","actual","passed","severity","notes"]
 AUDIT_FIELDS = ["check_name","passed","yfinance_import_present","yfinance_call_present","yahoo_default_allowed","external_fallback_default_allowed","notes"]
+EXTERNAL_MOOMOO_ROOT = Path(r"D:\us-tech-quant-data\moomoo")
 
 
 def default_repo_root() -> Path:
@@ -140,6 +142,37 @@ def load_canonical(path: Path) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: (r.get("ticker",""), r.get("date","")))
 
 
+def load_external_qfq_current_universe(cutoff_date: str) -> list[dict[str, Any]]:
+    """Read the shared Moomoo cache without copying it or looking past cutoff."""
+    manifest = EXTERNAL_MOOMOO_ROOT / "metadata" / "abcde_price_universe_r2.csv"
+    price_root = EXTERNAL_MOOMOO_ROOT / "source" / "prices_qfq"
+    if pd is None or not manifest.exists() or not price_root.exists():
+        return []
+    universe = {str(row.get("ticker", "")).upper() for row in read_csv_rows(manifest)}
+    if not universe:
+        return []
+    frames = []
+    for path in sorted(price_root.glob("year=*/prices.parquet")):
+        try:
+            frame = pd.read_parquet(path, columns=["ticker", "trade_date", "open", "high", "low", "close", "volume"])
+            frames.append(frame)
+        except Exception:
+            return []
+    if not frames:
+        return []
+    data = pd.concat(frames, ignore_index=True)
+    data["ticker"] = data["ticker"].astype(str).str.upper()
+    data["date"] = data["trade_date"].astype(str).str[:10]
+    data = data[(data["ticker"].isin(universe)) & (data["date"] <= cutoff_date)]
+    data = data.drop_duplicates(["ticker", "date"], keep="last").sort_values(["ticker", "date"])
+    return [
+        {"ticker": str(row.ticker), "moomoo_symbol": f"US.{row.ticker}", "date": str(row.date),
+         "open": row.open, "high": row.high, "low": row.low, "close": row.close, "volume": row.volume,
+         "source": "LOCAL_MOOMOO_CACHE", "source_policy": "MOOMOO_ONLY"}
+        for row in data.itertuples(index=False)
+    ]
+
+
 def grouped(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     out: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
@@ -153,7 +186,7 @@ def ret(closes: list[float], n: int) -> float | None:
     return closes[-1] / closes[-n-1] - 1
 
 
-def features_by_ticker(groups: dict[str, list[dict[str, Any]]], coverage_rows: list[dict[str, str]]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+def features_by_ticker(groups: dict[str, list[dict[str, Any]]], coverage_rows: list[dict[str, str]], requested_target_date: str = "") -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     feats: dict[str, dict[str, Any]] = {}
     coverage_map = {r.get("ticker",""): r for r in coverage_rows}
     coverage_audit = []
@@ -167,6 +200,10 @@ def features_by_ticker(groups: dict[str, list[dict[str, Any]]], coverage_rows: l
         closes = [v for v in closes if v is not None]
         vols = [to_float(r.get("volume")) or 0.0 for r in rows]
         latest = rows[-1].get("date","") if rows else ""
+        if requested_target_date and latest < requested_target_date:
+            coverage_audit.append({"ticker":ticker,"moomoo_symbol":rows[-1].get("moomoo_symbol","") if rows else "","has_canonical_qfq":"True","latest_date":latest,"row_count":len(rows),"coverage_status":"STALE_TARGET_DATE","included_in_ranking":"False","excluded_reason":"latest_date before requested target date","notes":f"requested_target_date={requested_target_date}"})
+            missing.append({"ticker":ticker,"moomoo_symbol":rows[-1].get("moomoo_symbol","") if rows else "","reason":"STALE_TARGET_DATE","yahoo_fallback_allowed":"False","external_fallback_allowed":"False","included_in_ranking":"False","required_user_review":"True","notes":f"latest_date={latest}; requested_target_date={requested_target_date}"})
+            continue
         if len(closes) < 60:
             coverage_audit.append({"ticker":ticker,"moomoo_symbol":rows[-1].get("moomoo_symbol","") if rows else "","has_canonical_qfq":"True","latest_date":latest,"row_count":len(rows),"coverage_status":"INSUFFICIENT_ROWS","included_in_ranking":"False","excluded_reason":"less than 60 rows","notes":"Moomoo-only compact feature minimum"})
             missing.append({"ticker":ticker,"moomoo_symbol":rows[-1].get("moomoo_symbol","") if rows else "","reason":"INSUFFICIENT_CANONICAL_ROWS","yahoo_fallback_allowed":"False","external_fallback_allowed":"False","included_in_ranking":"False","required_user_review":"True","notes":"no fallback allowed"})
@@ -251,12 +288,45 @@ def run(repo_root: Path, output_dir: Path, v21_231_output_dir: Path | None = Non
         return write_all(output_dir, base_summary(FAIL_MISSING, repo_root, output_dir, croot, snap, pointer), [], [], [], [], [], [], [], [], source_audit(pointer), snap_audit(pointer, False, source_ok), cross, dram_cross(v232), audit)
     before=sha256(qfq)
     rows=load_canonical(qfq)
+    requested_target_date=str(pointer.get("canonical_complete_universe_date") or read_json(v231/"v21_231_summary.json").get("canonical_complete_universe_date") or read_json(v231/"v21_231_summary.json").get("canonical_latest_date") or "")[:10]
+    cutoff_date=requested_target_date or max([str(r.get("date", "")) for r in rows] or [""])
+    # Rankings must use exactly the promoted canonical snapshot.  A separate
+    # shared cache can have a different as-of date/universe and must not
+    # silently replace this snapshot.
     if sha256(qfq) != before:
         raise RuntimeError("cache snapshot mutated during read")
     groups=grouped(rows); coverage_rows=read_csv_rows(v231/"ticker_coverage_audit.csv")
-    feats, coverage, missing=features_by_ticker(groups, coverage_rows)
-    rankings=build_rankings(feats, snap) if feats else []
-    if not rankings:
+    expected_manifest=read_csv_rows(v231/"abcde_expected_universe.csv")
+    expected_tickers={r.get("ticker", "") for r in expected_manifest if r.get("ticker")} or set(groups)
+    exclusion_rows=read_csv_rows(v231/"abcde_daily_exclusion_ledger.csv") or read_csv_rows(v231/"abcde_exclusion_ledger.csv")
+    exclusions={r.get("ticker", "") for r in exclusion_rows
+                if r.get("ticker") and (str(r.get("allowed", "")).lower()=="true" or r.get("status", "").upper() in {"APPROVED", "VALID", "ACTIVE"})
+                and (not str(r.get("effective_date") or r.get("target_date") or "")[:10] or str(r.get("effective_date") or r.get("target_date") or "")[:10] <= requested_target_date)}
+    exclusions &= expected_tickers
+    usable_tickers=expected_tickers-exclusions
+    feats, coverage, missing=features_by_ticker(groups, coverage_rows, requested_target_date)
+    # Missing planned tickers are stale for the requested target, even when a
+    # partial canonical file contains no row from which to infer latest_date.
+    for ticker in sorted(usable_tickers-set(groups)):
+        coverage.append({"ticker":ticker,"moomoo_symbol":f"US.{ticker}","has_canonical_qfq":"False","latest_date":"","row_count":0,"coverage_status":"STALE_TARGET_DATE","included_in_ranking":"False","excluded_reason":"missing planned ticker at requested target date","notes":f"requested_target_date={requested_target_date}"})
+        missing.append({"ticker":ticker,"moomoo_symbol":f"US.{ticker}","reason":"STALE_TARGET_DATE","yahoo_fallback_allowed":"False","external_fallback_allowed":"False","included_in_ranking":"False","required_user_review":"True","notes":f"missing canonical data; requested_target_date={requested_target_date}"})
+    # Rankings are cross-sectional snapshots: a ticker whose latest usable
+    # price is older than the common as-of date cannot be ranked alongside the
+    # current universe.  Exclude it rather than mixing dates or backfilling.
+    common_date=requested_target_date or max([str(f.get("latest_date", "")) for f in feats.values()] or [""])
+    stale={ticker for ticker, feature in feats.items() if str(feature.get("latest_date", "")) != common_date}
+    if stale:
+        for ticker in sorted(stale):
+            missing.append({"ticker":ticker,"moomoo_symbol":feats[ticker].get("moomoo_symbol",f"US.{ticker}"),"reason":"STALE_PRICE_DATE_EXCLUDED_FROM_SAME_DATE_RANKING","yahoo_fallback_allowed":"False","external_fallback_allowed":"False","included_in_ranking":"False","required_user_review":"True","notes":f"latest price date {feats[ticker].get('latest_date','')} differs from common as-of {common_date}"})
+        for row in coverage:
+            if row.get("ticker") in stale:
+                row.update({"coverage_status":"STALE_DATE_EXCLUDED","included_in_ranking":"False","excluded_reason":"latest date differs from common ranking as-of date"})
+        feats={ticker: feature for ticker, feature in feats.items() if ticker not in stale}
+    stale_target=sorted({r["ticker"] for r in coverage if r.get("coverage_status")=="STALE_TARGET_DATE"})
+    rankings=build_rankings(feats, snap) if feats and not stale_target else []
+    if stale_target:
+        status=FAIL_STALE
+    elif not rankings:
         status=FAIL_RERUN
     else:
         status=WARN_STATUS
@@ -267,6 +337,7 @@ def run(repo_root: Path, output_dir: Path, v21_231_output_dir: Path | None = Non
     quality=[{"check_name":"ranking_rows_present","strategy_name":s,"passed":bool_text(any(r["strategy_name"]==s for r in rankings)),"severity":"ERROR" if not any(r["strategy_name"]==s for r in rankings) else "INFO","affected_tickers":"","notes":"strategy output exists"} for s in STRATEGIES]
     quality.append({"check_name":"compact_proxy_components","strategy_name":"ALL","passed":"True","severity":"WARN","affected_tickers":len(feats),"notes":"UNAVAILABLE_IN_MOOMOO_ONLY_COMPACT_RERUN components replaced with documented compact price/volume proxies"})
     summary=base_summary(status, repo_root, output_dir, croot, snap, pointer, rankings, feats, missing, coverage, latest_dates)
+    summary.update({"requested_target_date":requested_target_date,"expected_universe_count":len(expected_tickers),"legally_excluded_count":len(exclusions),"eligible_universe_count":len(usable_tickers),"usable_ticker_count":len(usable_tickers),"feature_input_ticker_count":len(usable_tickers),"feature_built_ticker_count":len(feats),"ranked_ticker_count":len(feats),"ranking_contains_olpx":"OLPX" in feats,"stale_ticker_count":len(stale_target),"missing_target_date_tickers":stale_target,"preserve_previous_top20":bool(status.startswith("FAIL_"))})
     return write_all(output_dir, summary, rankings, top20, top50, overlap(rankings), date_audit, coverage, missing, quality, source_audit(pointer), snap_audit(pointer, True, source_ok), cross, dram_cross(v232), audit)
 
 
@@ -293,9 +364,11 @@ def base_summary(status: str, repo_root: Path, output_dir: Path, cache_root: Pat
 
 
 def write_all(out: Path, summary: dict[str, Any], rankings, top20, top50, overlaps, date_audit, coverage, missing, quality, source, snap, cross, dram, audit) -> dict[str, Any]:
-    write_csv(out/"abcde_strategy_ranking_master.csv", rankings, RANK_FIELDS)
-    write_csv(out/"abcde_top20_summary.csv", top20, TOP_FIELDS)
-    write_csv(out/"abcde_top50_summary.csv", top50, TOP_FIELDS)
+    # A stale/failed run is audit-only: never replace the last valid ranking snapshot.
+    if not (summary.get("preserve_previous_top20") and (out/"abcde_top20_summary.csv").exists()):
+        write_csv(out/"abcde_strategy_ranking_master.csv", rankings, RANK_FIELDS)
+        write_csv(out/"abcde_top20_summary.csv", top20, TOP_FIELDS)
+        write_csv(out/"abcde_top50_summary.csv", top50, TOP_FIELDS)
     write_csv(out/"abcde_strategy_overlap_matrix.csv", overlaps, OVERLAP_FIELDS)
     write_csv(out/"abcde_strategy_latest_date_audit.csv", date_audit, DATE_FIELDS)
     write_csv(out/"abcde_coverage_audit.csv", coverage, COVERAGE_FIELDS)

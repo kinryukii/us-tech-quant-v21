@@ -104,7 +104,7 @@ def env_truthy(name: str) -> bool:
 
 
 def parse_port(value: str | None) -> int:
-    raw = value or "11111"
+    raw = value or "18441"
     try:
         port = int(raw)
     except ValueError as exc:

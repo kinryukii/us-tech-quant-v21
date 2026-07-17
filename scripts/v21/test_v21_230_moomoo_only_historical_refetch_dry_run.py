@@ -95,11 +95,12 @@ def make_repo(tmp_path: Path) -> Path:
     return root
 
 
-def test_fails_if_v21_229_r1_output_missing(tmp_path):
+def test_is_self_contained_when_v21_229_output_missing(tmp_path):
     root = tmp_path / "repo"
     make_guard(root)
     summary = v230.run(root, tmp_path / "out", cache_root=tmp_path / "cache")
-    assert summary["final_status"] == v230.FAIL_POLICY_STATUS
+    assert summary["final_status"] in {v230.PASS_STATUS, v230.WARN_STATUS}
+    assert summary["v21_229_runtime_dependency_removed"] is True
 
 
 def test_fails_if_policy_guard_missing(tmp_path):

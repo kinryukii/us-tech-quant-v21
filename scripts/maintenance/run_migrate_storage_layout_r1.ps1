@@ -1,0 +1,2 @@
+param([switch]$DryRun,[switch]$Execute,[switch]$VerifyOnly,[switch]$Resume,[switch]$SkipCacheCleanup)
+. "$PSScriptRoot\..\common\storage_paths.ps1"; $p=Get-UstqStoragePaths -RepoRoot (Resolve-Path "$PSScriptRoot\..\.."); $args=@(); if($Execute){$args+='--execute'}elseif($VerifyOnly){$args+='--verify-only'}else{$args+='--dry-run'};if($Resume){$args+='--resume'};if($SkipCacheCleanup){$args+='--skip-cache-cleanup'};& $p.python_exe "$PSScriptRoot\migrate_storage_layout_r1.py" @args; exit $LASTEXITCODE

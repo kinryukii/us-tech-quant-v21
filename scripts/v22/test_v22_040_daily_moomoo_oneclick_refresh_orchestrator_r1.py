@@ -204,6 +204,72 @@ def test_missing_qfq_or_raw_canonical_files_must_fail(tmp_path):
     assert "NO_COMPLETE_CANONICAL_SNAPSHOT_CANDIDATE" in summary["error_message"]
 
 
+def test_global_max_target_date_with_partial_universe_cannot_promote(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    snap = cache / "canonical/moomoo_ohlcv/snapshot_id=partial"
+    universe = [f"T{i:03d}" for i in range(326)]
+    raw_rows = rows("2026-07-14", "raw", universe)
+    qfq_rows = rows("2026-07-14", "qfq", universe)
+    for r in raw_rows + qfq_rows:
+        if r["ticker"] in set(universe[:5]) and r["date"] == "2026-07-14":
+            r["date"] = "2026-07-15"
+    write_csv(snap / module.CANON_RAW, raw_rows); write_csv(snap / module.CANON_QFQ, qfq_rows)
+    write_pointer(repo, cache, snap, "partial")
+    summary = module.run(repo, target_date="2026-07-15", cache_root=cache,
+                         fetch_runner=lambda **_: {"final_status":"PASS", "broker_action_allowed":False, "official_adoption_allowed":False})
+    assert summary["final_status"] == module.FAIL_STATUS
+    assert "TARGET_DATE_UNIVERSE_INCOMPLETE" in summary["error_message"]
+
+
+def test_raw_qfq_ticker_set_mismatch_cannot_promote(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    snap = cache / "canonical/moomoo_ohlcv/snapshot_id=mismatch"
+    write_csv(snap / module.CANON_RAW, rows("2026-07-15", "raw", ["A", "B"]))
+    write_csv(snap / module.CANON_QFQ, rows("2026-07-15", "qfq", ["A"]))
+    write_pointer(repo, cache, snap, "mismatch")
+    summary = module.run(repo, target_date="2026-07-15", cache_root=cache,
+                         fetch_runner=lambda **_: {"final_status":"PASS", "broker_action_allowed":False, "official_adoption_allowed":False})
+    assert summary["final_status"] == module.FAIL_STATUS
+
+
+def test_325_of_326_with_one_approved_exclusion_can_promote(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    universe = [f"T{i:03d}" for i in range(326)]
+    snap = cache / "canonical/moomoo_ohlcv/snapshot_id=one-excluded"
+    write_csv(snap / module.CANON_RAW, rows("2026-07-15", "raw", universe[:-1]))
+    write_csv(snap / module.CANON_QFQ, rows("2026-07-15", "qfq", universe[:-1]))
+    write_pointer(repo, cache, snap, "one-excluded")
+    v231 = repo / module.V231_REL
+    (v231 / "abcde_expected_universe.csv").write_text("ticker\n" + "\n".join(universe) + "\n", encoding="utf-8")
+    (v231 / "abcde_exclusion_ledger.csv").write_text(f"ticker,status\n{universe[-1]},APPROVED\n", encoding="utf-8")
+    summary = module.run(repo, target_date="2026-07-15", cache_root=cache,
+                         fetch_runner=lambda **_: {"final_status":"PASS", "broker_action_allowed":False, "official_adoption_allowed":False},
+                         stage_runner=stage_runner_factory())
+    assert summary["final_status"] == module.PASS_STATUS
+    assert summary["expected_universe_count"] == 326
+    assert summary["target_date_ticker_count"] == 325
+    assert summary["excluded_ticker_count"] == 1
+
+
+def test_pointer_validation_uses_325_active_members_without_olpx(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    universe = [f"T{i:03d}" for i in range(325)]
+    snap = cache / "canonical/moomoo_ohlcv/snapshot_id=active-325"
+    write_csv(snap / module.CANON_RAW, rows("2026-07-15", "raw", universe))
+    write_csv(snap / module.CANON_QFQ, rows("2026-07-15", "qfq", universe))
+    write_pointer(repo, cache, snap, "active-325")
+    v231 = repo / module.V231_REL
+    (v231 / "abcde_expected_universe.csv").write_text("ticker\n" + "\n".join(universe) + "\n", encoding="utf-8")
+    validation = module.validate_pointer(module.pointer_payload(cache, "active-325", snap), v231)
+    assert validation["canonical_latest_date"] == "2026-07-15"
+    assert validation["pointer_expected_universe_count"] == 325
+    assert validation["pointer_eligible_universe_count"] == 325
+    assert validation["pointer_raw_target_date_ticker_count"] == 325
+    assert validation["pointer_qfq_target_date_ticker_count"] == 325
+    assert validation["pointer_missing_eligible_raw_tickers"] == []
+    assert validation["pointer_missing_eligible_qfq_tickers"] == []
+
+
 def test_wrapper_must_not_report_pass_when_abcde_date_is_stale(tmp_path):
     repo = tmp_path / "repo"
     cache = tmp_path / "cache"

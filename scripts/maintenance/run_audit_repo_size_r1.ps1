@@ -1,0 +1,1 @@
+param(); . "$PSScriptRoot\..\common\storage_paths.ps1"; $p=Get-UstqStoragePaths -RepoRoot (Resolve-Path "$PSScriptRoot\..\.."); & $p.python_exe "$PSScriptRoot\audit_repo_size_r1.py" --json (Join-Path $p.results_root 'storage_migration_r1\storage_audit_after.json')

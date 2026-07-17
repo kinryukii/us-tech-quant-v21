@@ -1,0 +1,2 @@
+param([switch]$Audit,[switch]$Migrate,[switch]$RetentionDryRun,[switch]$RetentionExecute,[switch]$Verify,[switch]$AllSafe)
+if($Audit -or $AllSafe){& "$PSScriptRoot\run_migrate_storage_layout_r1.ps1" -DryRun};if($Migrate -or $AllSafe){& "$PSScriptRoot\run_migrate_storage_layout_r1.ps1" -Execute};if($RetentionDryRun -or $AllSafe){& "$PSScriptRoot\run_enforce_retention_policy_r1.ps1"};if($RetentionExecute){& "$PSScriptRoot\run_enforce_retention_policy_r1.ps1" -Execute};if($Audit -or $AllSafe){& "$PSScriptRoot\run_audit_repo_size_r1.ps1"}

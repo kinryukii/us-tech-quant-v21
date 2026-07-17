@@ -32,7 +32,7 @@ class MoomooConnectionConfig:
 
 def env_config() -> MoomooConnectionConfig:
     host = os.environ.get("MOOMOO_OPEND_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    raw_port = os.environ.get("MOOMOO_OPEND_PORT", "11111").strip() or "11111"
+    raw_port = os.environ.get("MOOMOO_OPEND_PORT", "18441").strip() or "18441"
     try:
         port = int(raw_port)
     except ValueError as exc:

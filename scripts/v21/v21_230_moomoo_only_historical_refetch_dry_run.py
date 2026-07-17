@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import importlib.util
 import json
 import re
@@ -21,7 +22,6 @@ from typing import Any, Iterable
 
 STAGE = "V21.230_MOOMOO_ONLY_HISTORICAL_REFETCH_DRY_RUN"
 OUT_REL = Path("outputs/v21") / STAGE
-V229_R1_REL = Path("outputs/v21/V21.229_R1_ACTIVE_DATA_SOURCE_BLOCKER_TRIAGE_AND_ENFORCEMENT")
 PASS_STATUS = "PASS_V21_230_MOOMOO_ONLY_REFETCH_DRY_RUN_READY"
 WARN_STATUS = "WARN_V21_230_MOOMOO_ONLY_REFETCH_DRY_RUN_READY_WITH_PREREQUISITES"
 FAIL_POLICY_STATUS = "FAIL_V21_230_BLOCKED_BY_MOOMOO_ONLY_POLICY_GATE"
@@ -58,6 +58,7 @@ REUSE_FIELDS = ["ticker","frequency","adjustment","local_cache_path","local_cach
 CROSS_FIELDS = ["check_name","expected","actual","pass","severity","notes"]
 AUDIT_FIELDS = ["check_name","pass","yfinance_import_present","yfinance_call_present","yahoo_default_allowed","external_fallback_default_allowed","notes"]
 PREREQ_FIELDS = ["prerequisite","required","satisfied","severity","blocks_v21_231","notes"]
+LEGACY_AUDIT_FIELDS = ["legacy_file","v21_230_read_location","fields_previously_read","purpose","rebuild_source","business_required","final_treatment"]
 
 
 def default_repo_root() -> Path:
@@ -66,15 +67,19 @@ def default_repo_root() -> Path:
 
 def write_csv(path: Path, rows: Iterable[dict[str, Any]], fields: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore", lineterminator="\n")
         writer.writeheader()
         writer.writerows(rows)
+    tmp.replace(path)
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str, allow_nan=False) + "\n", encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str, allow_nan=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -214,31 +219,25 @@ def add_ticker(found: dict[str, dict[str, Any]], ticker: str, path: Path, root: 
         current["notes"] = (current.get("notes", "") + "; " + notes).strip("; ")
 
 
-def resolve_universe(repo_root: Path, include_v20: bool) -> list[dict[str, Any]]:
+def resolve_universe(repo_root: Path, include_v20: bool = False) -> list[dict[str, Any]]:
+    """Resolve the active universe from the durable manifest, never V21.229."""
     found: dict[str, dict[str, Any]] = {}
-    for path in candidate_universe_files(repo_root, include_v20):
-        lower = path.as_posix().lower()
-        is_dram = "dram" in lower
-        is_abcde = "abcde" in lower or "ranking" in lower or "abcd" in lower
-        if path.suffix.lower() == ".csv":
-            for row in read_csv_rows(path):
-                key = next((k for k in row if k and k.lower() in {"ticker", "symbol", "resolved_symbol"}), "")
-                if not key:
-                    continue
-                rank_key = next((k for k in row if k and k.lower() == "rank"), "")
-                ticker = row.get(key, "")
-                add_ticker(found, ticker, path, repo_root, row.get(rank_key, "") if rank_key else "", dram=is_dram or normalize_ticker(ticker) == "DRAM", abcde=is_abcde, benchmark=normalize_ticker(ticker) in BENCHMARK_TICKERS, active=True)
-        elif path.suffix.lower() == ".json":
-            payload = read_json(path)
-            for key in ["tickers", "ticker_universe", "active_tickers", "watch_tickers", "failed_tickers"]:
-                value = payload.get(key)
-                if isinstance(value, list):
-                    for item in value:
-                        ticker = item.get("ticker", "") if isinstance(item, dict) else str(item)
-                        add_ticker(found, ticker, path, repo_root, dram=is_dram or normalize_ticker(ticker) == "DRAM", abcde=is_abcde, benchmark=normalize_ticker(ticker) in BENCHMARK_TICKERS, active=True, notes=f"from_json_{key}")
-                elif isinstance(value, str):
-                    for ticker in re.split(r"[,;\s]+", value):
-                        add_ticker(found, ticker, path, repo_root, dram=is_dram or normalize_ticker(ticker) == "DRAM", abcde=is_abcde, benchmark=normalize_ticker(ticker) in BENCHMARK_TICKERS, active=True, notes=f"from_json_{key}")
+    data_root = Path(__import__("os").environ.get("USTQ_DATA_ROOT", r"D:\us-tech-quant-data"))
+    manifest = data_root / "moomoo/metadata/abcde_price_universe_r2.csv"
+    metadata = manifest.with_suffix(".active_manifest.json")
+    rows = read_csv_rows(manifest)
+    meta = read_json(metadata)
+    if manifest.exists() and meta.get("sha256"):
+        digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        if digest != meta["sha256"]:
+            raise RuntimeError("ACTIVE_ABCDE_UNIVERSE_SHA256_MISMATCH")
+    if manifest.exists() and meta and int(meta.get("active_ticker_count", len(rows))) != len(rows):
+        raise RuntimeError("ACTIVE_ABCDE_UNIVERSE_COUNT_MISMATCH")
+    if not rows:
+        raise RuntimeError("MISSING_DURABLE_ACTIVE_ABCDE_UNIVERSE")
+    for row in rows:
+        ticker = row.get("ticker", "")
+        add_ticker(found, ticker, manifest, repo_root, row.get("rank", ""), dram=normalize_ticker(ticker) == "DRAM", abcde=True, benchmark=normalize_ticker(ticker) in BENCHMARK_TICKERS, active=True, notes="durable_active_manifest")
     add_ticker(found, "DRAM", Path("seed"), repo_root, dram=True, abcde=True, active=True, notes="required DRAM ticker seed")
     for ticker in sorted(BENCHMARK_TICKERS):
         add_ticker(found, ticker, Path("seed"), repo_root, benchmark=True, active=True, notes="active benchmark/support seed")
@@ -395,7 +394,6 @@ def self_forbidden_audit(repo_root: Path) -> tuple[list[dict[str, Any]], bool]:
 def run(
     repo_root: Path,
     output_dir: Path,
-    v21_229_r1_output_dir: Path | None = None,
     cache_root: Path = DEFAULT_CACHE_ROOT,
     archive_root: Path = DEFAULT_ARCHIVE_ROOT,
     start_date: str = DEFAULT_START_DATE,
@@ -406,9 +404,6 @@ def run(
     repo_root = repo_root.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     end_date = end_date or latest_known_completed_session(repo_root)
-    v229_dir = (v21_229_r1_output_dir or (repo_root / V229_R1_REL)).resolve()
-    v229_summary_path = v229_dir / "v21_229_r1_summary.json"
-    v229_summary = read_json(v229_summary_path)
     guard_found = (repo_root / "scripts/v21/v21_data_source_policy_guard.py").exists()
     policy_guard_passed = False
     warning_count = 0
@@ -417,9 +412,6 @@ def run(
     fail_status = FAIL_POLICY_STATUS
     cross_rows: list[dict[str, Any]] = []
 
-    if not v229_summary_path.exists() or not v229_summary.get("v21_230_ready", False) or int(v229_summary.get("still_blocks_v21_230_count", 1)) != 0:
-        hard_fail = True
-        error_count += 1
     if not guard_found:
         hard_fail = True
         error_count += 1
@@ -466,7 +458,13 @@ def run(
         fail_status = FAIL_FORBIDDEN_STATUS
         error_count += 1
 
-    universe = resolve_universe(repo_root, include_v20) if not hard_fail else []
+    try:
+        universe = resolve_universe(repo_root, include_v20) if not hard_fail else []
+    except Exception as exc:
+        universe = []
+        hard_fail = True
+        error_count += 1
+        guard_error = (guard_error + "; " if guard_error else "") + str(exc)
     plans = build_plans(universe, cache_root, start_date, end_date)
     daily_raw = [r for r in plans["main"] if r["frequency"] == "1d" and r["adjustment"] == "raw"]
     daily_qfq = [r for r in plans["main"] if r["frequency"] == "1d" and r["adjustment"] == "qfq"]
@@ -509,13 +507,11 @@ def run(
         {"category": "dram_intraday", "frequency": "mixed", "ticker_count": sum(1 for r in universe if r["included_in_dram"] == "True"), "estimated_rows": sum(int(r["estimated_rows"]) for r in intraday), "estimated_bytes": sum(int(r["estimated_rows"]) for r in intraday) * 96, "proposed_root": str(cache_root), "notes": "estimate only"},
     ]
     cross_rows.extend([
-        {"check_name": "v21_229_r1_summary_found", "expected": "True", "actual": bool_text(v229_summary_path.exists()), "pass": bool_text(v229_summary_path.exists()), "severity": "ERROR" if not v229_summary_path.exists() else "INFO", "notes": str(v229_summary_path)},
-        {"check_name": "v21_230_ready", "expected": "True", "actual": str(v229_summary.get("v21_230_ready", "")), "pass": bool_text(v229_summary.get("v21_230_ready", False) is True), "severity": "ERROR", "notes": "must be ready from V21.229_R1"},
-        {"check_name": "still_blocks_v21_230_count", "expected": "0", "actual": str(v229_summary.get("still_blocks_v21_230_count", "")), "pass": bool_text(int(v229_summary.get("still_blocks_v21_230_count", 999)) == 0 if str(v229_summary.get("still_blocks_v21_230_count", "")).isdigit() else False), "severity": "ERROR", "notes": "must be zero"},
+        {"check_name": "v21_229_legacy_boundary", "expected": "no runtime dependency", "actual": "removed", "pass": "True", "severity": "INFO", "notes": "current policy guard and durable active manifest replace V21.229 R1 gate"},
         {"check_name": "policy_guard_imported_and_passed", "expected": "True", "actual": bool_text(policy_guard_passed), "pass": bool_text(policy_guard_passed), "severity": "ERROR", "notes": guard_error},
     ])
     prereq_rows = [
-        {"prerequisite": "V21.229_R1 Moomoo-only policy readiness", "required": "True", "satisfied": bool_text(not hard_fail and bool(v229_summary)), "severity": "ERROR", "blocks_v21_231": bool_text(hard_fail), "notes": "policy gate must remain ready"},
+        {"prerequisite": "Current Moomoo-only policy and durable active universe", "required": "True", "satisfied": bool_text(not hard_fail), "severity": "ERROR", "blocks_v21_231": bool_text(hard_fail), "notes": "self-contained replacement for legacy V21.229 R1"},
         {"prerequisite": "Moomoo OpenD configured and permissioned", "required": "True", "satisfied": "False", "severity": "WARN", "blocks_v21_231": "False", "notes": "not probed by default in V21.230"},
         {"prerequisite": "human approval for V21.231 actual fetch", "required": "True", "satisfied": "False", "severity": "WARN", "blocks_v21_231": "False", "notes": "V21.230 is dry-run only"},
     ]
@@ -539,7 +535,7 @@ def run(
     write_csv(output_dir / "failed_or_missing_ticker_plan.csv", plans["missing"], MISSING_FIELDS)
     write_csv(output_dir / "estimated_data_volume_plan.csv", volume_rows, VOLUME_FIELDS)
     write_csv(output_dir / "local_cache_reuse_plan.csv", plans["reuse"], REUSE_FIELDS)
-    write_csv(output_dir / "v21_229_r1_policy_crosscheck.csv", cross_rows, CROSS_FIELDS)
+    write_csv(output_dir / "v21_229_dependency_boundary_audit.csv", [{"legacy_file":"v21_229_r1_summary.json","v21_230_read_location":"run() legacy gate","fields_previously_read":"v21_230_ready; still_blocks_v21_230_count","purpose":"historical policy gate","rebuild_source":"config/v21/data_source_policy.json + scripts/v21/v21_data_source_policy_guard.py + durable active manifest","business_required":"False","final_treatment":"DELETE_RUNTIME_DEPENDENCY"}], LEGACY_AUDIT_FIELDS)
     write_csv(output_dir / "no_yfinance_enforcement_audit.csv", audit_rows, AUDIT_FIELDS)
     write_csv(output_dir / "v21_231_execution_prerequisites.csv", prereq_rows, PREREQ_FIELDS)
 
@@ -548,7 +544,8 @@ def run(
         "final_decision": final_decision,
         "repo_root": str(repo_root),
         "output_dir": str(output_dir),
-        "v21_229_r1_input_found": v229_summary_path.exists(),
+        "v21_229_runtime_dependency_removed": True,
+        "v21_229_replacement_source": "CURRENT_POLICY_GUARD_AND_DURABLE_ACTIVE_UNIVERSE_MANIFEST",
         "policy_guard_found": guard_found,
         "policy_guard_passed": policy_guard_passed,
         "ticker_universe_count": len(universe),
@@ -592,7 +589,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=STAGE)
     parser.add_argument("--repo-root", type=Path, default=default_repo_root())
     parser.add_argument("--output-dir", type=Path, default=None)
-    parser.add_argument("--v21-229-r1-output-dir", type=Path, default=None)
     parser.add_argument("--cache-root", type=Path, default=DEFAULT_CACHE_ROOT)
     parser.add_argument("--archive-root", type=Path, default=DEFAULT_ARCHIVE_ROOT)
     parser.add_argument("--start-date", default=DEFAULT_START_DATE)
@@ -609,7 +605,6 @@ def main(argv: list[str] | None = None) -> int:
     summary = run(
         repo_root=repo_root,
         output_dir=out,
-        v21_229_r1_output_dir=args.v21_229_r1_output_dir,
         cache_root=args.cache_root,
         archive_root=args.archive_root,
         start_date=args.start_date,

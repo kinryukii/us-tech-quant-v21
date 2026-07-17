@@ -780,7 +780,7 @@ def run() -> dict[str, Any]:
     write_csv(OUT / "canonical_universe_moomoo_symbol_map.csv", [{"canonical_symbol": s, "moomoo_code_primary": moomoo_code_candidates(s)[0], "moomoo_code_fallbacks": "|".join(moomoo_code_candidates(s)[1:])} for s in symbols])
 
     host = os.environ.get(HOST_ENV, "127.0.0.1")
-    port = int(os.environ.get(PORT_ENV, "11111"))
+    port = int(os.environ.get(PORT_ENV, "18441"))
     r4_readiness = load_r4_readiness()
     dedicated_python = dedicated_python_from_readiness(r4_readiness)
     mm, import_diag = import_moomoo_package()

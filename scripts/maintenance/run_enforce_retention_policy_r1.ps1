@@ -1,0 +1,1 @@
+param([switch]$Execute); . "$PSScriptRoot\..\common\storage_paths.ps1"; $p=Get-UstqStoragePaths -RepoRoot (Resolve-Path "$PSScriptRoot\..\..");$a=@('--json',(Join-Path $p.results_root 'storage_migration_r1\retention_dryrun.json'));if($Execute){$a+= '--execute'};& $p.python_exe "$PSScriptRoot\enforce_retention_policy_r1.py" @a

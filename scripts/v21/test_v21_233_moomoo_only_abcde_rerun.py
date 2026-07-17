@@ -158,3 +158,31 @@ def test_no_large_canonical_data_in_repo_outputs(tmp_path):
     root, cache, out231 = make_repo(tmp_path)
     out = tmp_path / "out"; v233.run(root, out, out231, cache_root=cache)
     assert all(p.stat().st_size < 250_000 for p in out.rglob("*") if p.is_file())
+
+
+def test_stale_target_date_does_not_overwrite_previous_top20(tmp_path):
+    root, cache, out231 = make_repo(tmp_path)
+    qfq = cache / "canonical/moomoo_ohlcv/snapshot_id=snap/canonical_moomoo_ohlcv_daily_qfq.csv"
+    data = canonical(["DRAM", "NVDA", "MU", "AAPL", "AMD"])
+    # AMD's last usable date is deliberately one day behind the requested target.
+    data = data.replace("AMD,US.AMD,US,2026-06-28", "AMD,US.AMD,US,2026-06-27")
+    write(qfq, data)
+    out = tmp_path / "out"; write(out / "abcde_top20_summary.csv", "strategy_name,rank,ticker,score,latest_date,compact_proxy_used,notes\nA1_CONTROL,1,KEEP,1,2026-06-28,True,previous\n")
+    summary = v233.run(root, out, out231, cache_root=cache)
+    assert summary["final_status"] == v233.FAIL_STALE
+    assert "KEEP" in (out / "abcde_top20_summary.csv").read_text(encoding="utf-8")
+
+
+def test_feature_build_and_rankings_exclude_olpx_from_current_universe(tmp_path):
+    root, cache, out231 = make_repo(tmp_path)
+    tickers = [f"T{i:03d}" for i in range(325)]
+    qfq = cache / "canonical/moomoo_ohlcv/snapshot_id=snap/canonical_moomoo_ohlcv_daily_qfq.csv"
+    write(qfq, canonical(tickers))
+    write(out231 / "abcde_expected_universe.csv", "ticker\n" + "\n".join(tickers) + "\n")
+    summary = v233.run(root, tmp_path / "out", out231, cache_root=cache)
+    ranked = read_csv(tmp_path / "out" / "abcde_strategy_ranking_master.csv")
+    assert summary["feature_input_ticker_count"] == 325
+    assert summary["feature_built_ticker_count"] == 325
+    assert summary["ranked_ticker_count"] == 325
+    assert summary["ranking_contains_olpx"] is False
+    assert "OLPX" not in {row["ticker"] for row in ranked}

@@ -1,0 +1,2 @@
+param([Parameter(Mandatory=$true)][string]$DailyRunDir,[string]$DataRoot='D:\us-tech-quant-data',[switch]$Execute)
+$py='D:\us-tech-quant-envs\abcde-moomoo-sdk-10.8.6808\Scripts\python.exe';$s=Join-Path $PSScriptRoot 'abcde_daily_rank_snapshot_collector_r3.py';if(!$Execute){"WhatIf: $py $s --daily-run-dir $DailyRunDir";exit 0};& $py $s --daily-run-dir $DailyRunDir --data-root $DataRoot;exit $LASTEXITCODE

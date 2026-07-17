@@ -176,10 +176,11 @@ def run(repo: Path, output_dir: Path | None = None, v252_root: Path = V252_REL, 
     s251 = read_json(root(repo, v251_root) / "v21_251_summary.json")
     s250 = read_json(root(repo, v250_root) / "v21_250_summary.json")
     missing = [name for name, data in [("V21.252 summary", s252), ("V21.251 summary", s251), ("V21.250 summary", s250)] if not data]
-    if missing:
-        summary = fail_summary("FAIL_V21_253_DAILY_CONTEXT_BLOCK_INPUT_MISSING", "DAILY_CONTEXT_BLOCK_BLOCKED_INPUT_MISSING", len(missing))
-        write_outputs(out, [], [], [], [], summary)
-        return summary
+    # V21.250--V21.252 are archival research-context producers.  Their
+    # absence must never manufacture a technical signal, but it also must not
+    # make an otherwise read-only daily chain unusable.  Continue with an
+    # explicitly conservative context: all action gates remain false and the
+    # missing provenance is carried in the summary/report.
 
     chain_path, chain, discovery = discover_latest_chain_summary(repo)
     rows = context_rows(s252, s251, s250, chain_path, chain)
@@ -192,8 +193,8 @@ def run(repo: Path, output_dir: Path | None = None, v252_root: Path = V252_REL, 
     )
     retention_found = bool(chain_path and ("RETENTION" in chain_path.parent.name.upper() or "V21.241" in chain_path.parent.name))
     summary = {
-        "final_status": "PASS_V21_253_DAILY_CONTEXT_BLOCK_READY_RESEARCH_ONLY" if chain_path else "WARN_V21_253_DAILY_CONTEXT_BLOCK_READY_WITH_MISSING_DRAM_SUMMARY",
-        "final_decision": "DAILY_RESEARCH_CONTEXT_BLOCK_READY_RESEARCH_ONLY" if chain_path else "DAILY_CONTEXT_BLOCK_READY_WITH_MISSING_DRAM_CONTEXT",
+        "final_status": "PASS_V21_253_DAILY_CONTEXT_BLOCK_READY_WITH_LEGACY_CONTEXT_UNAVAILABLE" if missing else ("PASS_V21_253_DAILY_CONTEXT_BLOCK_READY_RESEARCH_ONLY" if chain_path else "WARN_V21_253_DAILY_CONTEXT_BLOCK_READY_WITH_MISSING_DRAM_SUMMARY"),
+        "final_decision": "DAILY_RESEARCH_CONTEXT_BLOCK_CONSERVATIVE_LEGACY_CONTEXT_UNAVAILABLE" if missing else ("DAILY_RESEARCH_CONTEXT_BLOCK_READY_RESEARCH_ONLY" if chain_path else "DAILY_CONTEXT_BLOCK_READY_WITH_MISSING_DRAM_CONTEXT"),
         "context_section_count": len(sections),
         "latest_dram_summary_found": bool(chain_path),
         "latest_dram_final_status": chain.get("final_status", ""),
@@ -207,8 +208,10 @@ def run(repo: Path, output_dir: Path | None = None, v252_root: Path = V252_REL, 
         "long_history_fallback": s251.get("long_history_fallback", ""),
         "high_return_watch_only": s251.get("high_return_watch_only", ""),
         "retention_guard_status_found": retention_found,
-        "missing_input_count": 0,
-        "warning_count": 0 if chain_path else 1,
+        "missing_input_count": len(missing),
+        "missing_context_inputs": missing,
+        "legacy_context_available": not missing,
+        "warning_count": len(missing) if missing else (0 if chain_path else 1),
         "error_count": 0,
         **GATES,
     }

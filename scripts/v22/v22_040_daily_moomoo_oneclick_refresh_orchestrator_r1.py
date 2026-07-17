@@ -15,6 +15,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from common.storage_paths import get_daily_root, get_cache_root, get_python_executable, assert_safe_output_path
+from common.prerequisite_lifecycle import ensure as ensure_prerequisites, live_preflight
 
 
 STAGE = "V22.040_DAILY_MOOMOO_ONECLICK_REFRESH_ORCHESTRATOR_R1"
@@ -44,6 +49,16 @@ StageRunner = Callable[[str, Path, Path], dict[str, Any]]
 
 def default_repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+def daily_stage(rel: Path, *, allow_migrated: bool = True) -> Path:
+    """External daily artifact path; legacy migration fallback is read-only."""
+    if _RUNTIME_REPO is not None and _RUNTIME_REPO != default_repo_root().resolve():
+        return _RUNTIME_REPO / rel
+    current = get_daily_root() / "current" / rel.name
+    migrated = get_daily_root() / "migrated_from_repo" / rel
+    return current if current.exists() or not allow_migrated else migrated
+
+_RUNTIME_REPO: Path | None = None
 
 
 def utc_now() -> str:
@@ -105,8 +120,7 @@ def read_json(path: Path) -> dict[str, Any]:
 
 
 def python_exe(repo_root: Path) -> str:
-    local = repo_root / ".venv/Scripts/python.exe"
-    return str(local) if local.exists() else "python"
+    return str(get_python_executable())
 
 
 def powershell_exe() -> str:
@@ -125,15 +139,15 @@ def run_subprocess(cmd: list[str], cwd: Path, log_path: Path) -> int:
 
 def child_summary_path(repo_root: Path, stage: str) -> Path:
     if stage == "V21.231":
-        return repo_root / V231_REL / "v21_231_summary.json"
+        return daily_stage(V231_REL, allow_migrated=False) / "v21_231_summary.json"
     if stage == "V21.232":
-        return repo_root / V232_REL / "v21_232_summary.json"
+        return daily_stage(V232_REL, allow_migrated=False) / "v21_232_summary.json"
     if stage == "V21.233":
-        return repo_root / V233_REL / "v21_233_summary.json"
+        return daily_stage(V233_REL, allow_migrated=False) / "v21_233_summary.json"
     if stage == "V21.234":
-        return repo_root / V234_REL / "v21_234_summary.json"
+        return daily_stage(V234_REL, allow_migrated=False) / "v21_234_summary.json"
     if stage == "V21.256":
-        return repo_root / V256_REL / "v21_256_summary.json"
+        return daily_stage(V256_REL, allow_migrated=False) / "v21_256_summary.json"
     raise ValueError(stage)
 
 
@@ -147,7 +161,7 @@ def child_command(repo_root: Path, stage: str, target_date: str | None, cache_ro
             python_exe(repo_root),
             str(repo_root / "scripts/v21/v21_231_moomoo_only_historical_refetch_and_canonical_rebuild.py"),
             "--repo-root", str(repo_root),
-            "--output-dir", str(repo_root / V231_REL),
+            "--output-dir", str(daily_stage(V231_REL, allow_migrated=False)),
             "--end-date", str(target_date or ""),
         ]
         if cache_root is not None:
@@ -177,6 +191,19 @@ def running_summary(repo_root: Path, out: Path, target_date: str, run_start_utc:
         "abcde_latest_date": "",
         "dram_latest_price_date": "",
         "same_date_comparable_all_strategies": False,
+        "canonical_complete_universe_date": "",
+        "target_date_ticker_count": 0,
+        "expected_universe_count": 0,
+        "legally_excluded_count": 0,
+        "eligible_universe_count": 0,
+        "target_date_coverage_ratio": 0.0,
+        "gross_target_date_coverage_ratio": 0.0,
+        "eligible_target_date_coverage_ratio": 0.0,
+        "stale_ticker_count": 0,
+        "excluded_ticker_count": 0,
+        "missing_target_date_tickers": [],
+        "raw_qfq_ticker_set_exact_match": False,
+        "raw_qfq_target_date_ticker_set_exact_match": False,
         "data_gap_days": 0,
         "final_status": RUNNING_STATUS,
         "final_decision": RUNNING_DECISION,
@@ -228,7 +255,51 @@ def csv_stats(path: Path) -> dict[str, Any]:
         "row_count": len(rows),
         "ticker_count": len(tickers),
         "max_date": max(dates) if dates else "",
+        "rows": rows,
     }
+
+
+def approved_exclusions(v231_dir: Path, target_date: str) -> set[str]:
+    """Only a recorded, explicit exclusion can reduce the ABCDE universe."""
+    rows = read_csv_rows(v231_dir / "abcde_daily_exclusion_ledger.csv") or read_csv_rows(v231_dir / "abcde_exclusion_ledger.csv")
+    return {r.get("ticker", "") for r in rows if r.get("ticker") and (r.get("allowed", "").lower() == "true" or r.get("status", "").upper() in {"APPROVED", "VALID", "ACTIVE"}) and (not str(r.get("effective_date") or r.get("target_date") or "")[:10] or str(r.get("effective_date") or r.get("target_date") or "")[:10] <= target_date)}
+
+
+def expected_universe(v231_dir: Path, raw: dict[str, Any], qfq: dict[str, Any]) -> set[str]:
+    # The immutable planned-universe manifest is authoritative.  The coverage
+    # ledger records a fetch outcome and must never shrink the required pool.
+    manifest = read_csv_rows(v231_dir / "abcde_expected_universe.csv")
+    planned_manifest = {r.get("ticker", "") for r in manifest if r.get("ticker")}
+    if planned_manifest:
+        return planned_manifest
+    ledger = read_csv_rows(v231_dir / "ticker_coverage_audit.csv")
+    planned = {r.get("ticker", "") for r in ledger if r.get("ticker")}
+    return planned or ({r.get("ticker", "") for r in raw["rows"] + qfq["rows"] if r.get("ticker")})
+
+
+def snapshot_coverage(raw: dict[str, Any], qfq: dict[str, Any], expected: set[str], exclusions: list[dict[str, Any]]) -> dict[str, Any]:
+    raw_set = {r.get("ticker", "") for r in raw["rows"] if r.get("ticker")}
+    qfq_set = {r.get("ticker", "") for r in qfq["rows"] if r.get("ticker")}
+    target = raw["max_date"]
+    excluded = ({r.get("ticker", "") for r in exclusions if r.get("ticker") and (r.get("allowed", "").lower() == "true" or r.get("status", "").upper() in {"APPROVED", "VALID", "ACTIVE"}) and (not str(r.get("effective_date") or r.get("target_date") or "")[:10] or str(r.get("effective_date") or r.get("target_date") or "")[:10] <= target)} & expected)
+    usable = expected - excluded
+    # A complete-universe date means every usable ticker has that date in both views.
+    common_dates = sorted({date_key(r.get("date", "")) for r in raw["rows"] if r.get("ticker") in usable} & {date_key(r.get("date", "")) for r in qfq["rows"] if r.get("ticker") in usable}, reverse=True)
+    complete_date = ""
+    for candidate in common_dates:
+        raw_at = {r.get("ticker", "") for r in raw["rows"] if date_key(r.get("date", "")) == candidate}
+        qfq_at = {r.get("ticker", "") for r in qfq["rows"] if date_key(r.get("date", "")) == candidate}
+        if usable <= raw_at and usable <= qfq_at:
+            complete_date = candidate
+            break
+    raw_target = {r.get("ticker", "") for r in raw["rows"] if date_key(r.get("date", "")) == target}
+    qfq_target = {r.get("ticker", "") for r in qfq["rows"] if date_key(r.get("date", "")) == target}
+    missing = sorted((usable - raw_target) | (usable - qfq_target))
+    return {"expected_universe": expected, "excluded": excluded, "usable": usable, "raw_set": raw_set, "qfq_set": qfq_set,
+            "complete_date": complete_date, "target_date": target, "raw_target": raw_target, "qfq_target": qfq_target,
+            "missing": missing, "target_count": len(raw_target & qfq_target & usable),
+            "gross_ratio": len(raw_target & qfq_target & usable) / len(expected) if expected else 0.0,
+            "eligible_ratio": len(raw_target & qfq_target & usable) / len(usable) if usable else 0.0}
 
 
 def load_module(path: Path, name: str):
@@ -241,7 +312,7 @@ def load_module(path: Path, name: str):
 
 
 def default_stage_runner(stage: str, repo_root: Path, output_dir: Path) -> dict[str, Any]:
-    code = run_subprocess(child_command(repo_root, stage, None, None, False), repo_root, log_path(repo_root / OUT_REL, stage))
+    code = run_subprocess(child_command(repo_root, stage, None, None, False), repo_root, log_path(daily_stage(OUT_REL, allow_migrated=False), stage))
     summary_path = child_summary_path(repo_root, stage)
     summary = read_json(summary_path)
     summary["_exit_code"] = code
@@ -298,12 +369,16 @@ def candidate_dirs(repo_root: Path, cache_root: Path, v231_dir: Path) -> list[Pa
 
 def complete_candidates(repo_root: Path, cache_root: Path, v231_dir: Path) -> list[dict[str, Any]]:
     rows = []
-    for directory in candidate_dirs(repo_root, cache_root, v231_dir):
+    v231_summary = read_json(v231_dir / "v21_231_summary.json")
+    for index, directory in enumerate(candidate_dirs(repo_root, cache_root, v231_dir)):
         raw_path = directory / CANON_RAW
         qfq_path = directory / CANON_QFQ
         raw = csv_stats(raw_path)
         qfq = csv_stats(qfq_path)
-        complete = raw["exists"] and qfq["exists"] and raw["row_count"] > 0 and qfq["row_count"] > 0 and raw["max_date"] == qfq["max_date"]
+        exclusions = read_csv_rows(v231_dir / "abcde_daily_exclusion_ledger.csv") or read_csv_rows(v231_dir / "abcde_exclusion_ledger.csv")
+        cov = snapshot_coverage(raw, qfq, expected_universe(v231_dir, raw, qfq), exclusions)
+        target = raw["max_date"]
+        complete = raw["exists"] and qfq["exists"] and raw["row_count"] > 0 and qfq["row_count"] > 0 and raw["max_date"] == qfq["max_date"] and cov["raw_set"] == cov["qfq_set"] and bool(cov["complete_date"])
         rows.append({
             "snapshot_id": directory.name.replace("snapshot_id=", ""),
             "canonical_snapshot_dir": str(directory),
@@ -315,8 +390,29 @@ def complete_candidates(repo_root: Path, cache_root: Path, v231_dir: Path) -> li
             "qfq_row_count": qfq["row_count"],
             "raw_ticker_count": raw["ticker_count"],
             "qfq_ticker_count": qfq["ticker_count"],
-            "complete": complete,
+            "expected_universe_count": len(cov["expected_universe"]),
+            "excluded_ticker_count": len(cov["excluded"]),
+            "legally_excluded_count": len(cov["excluded"]),
+            "eligible_universe_count": len(cov["usable"]),
+            "target_date_ticker_count": cov["target_count"],
+            "target_date_coverage_ratio": len(cov["usable"] & cov["raw_target"] & cov["qfq_target"]) / len(cov["usable"]) if cov["usable"] else 0.0,
+            "gross_target_date_coverage_ratio": cov["gross_ratio"],
+            "eligible_target_date_coverage_ratio": cov["eligible_ratio"],
+            "stale_ticker_count": len(cov["missing"]),
+            "missing_target_date_tickers": cov["missing"],
+            "raw_qfq_ticker_set_exact_match": cov["raw_set"] == cov["qfq_set"],
+            "raw_qfq_target_date_ticker_set_exact_match": cov["raw_target"] == cov["qfq_target"],
+            "canonical_complete_universe_date": cov["complete_date"],
+            "complete": complete and cov["raw_target"] == cov["qfq_target"],
         })
+        # A just-completed V21.231 pointer already carries a full-universe
+        # coverage proof.  Prefer it directly instead of re-parsing every
+        # immutable historical CSV; fall back to the full scan for stale or
+        # incomplete pointers (including repair scenarios).
+        if (index == 0 and rows[-1]["complete"] and v231_summary.get("final_status", "").startswith("PASS")
+                and v231_summary.get("canonical_complete_universe_date") == raw["max_date"]
+                and int(v231_summary.get("stale_ticker_count", -1)) == 0):
+            return rows
     return rows
 
 
@@ -325,9 +421,13 @@ def select_latest_complete(candidates: list[dict[str, Any]], target_date: str | 
     if not complete:
         raise RuntimeError("NO_COMPLETE_CANONICAL_SNAPSHOT_CANDIDATE")
     if target_date:
-        exact = [row for row in complete if row["raw_max_date"] == target_date]
+        exact = [row for row in complete if row["raw_max_date"] == target_date and row["stale_ticker_count"] == 0]
         if exact:
             return sorted(exact, key=lambda r: (r["raw_max_date"], r["snapshot_id"]))[-1]
+        partial = [row for row in candidates if row["raw_max_date"] == target_date]
+        if partial:
+            missing = sorted({ticker for row in partial for ticker in row["missing_target_date_tickers"]})
+            raise RuntimeError(f"TARGET_DATE_UNIVERSE_INCOMPLETE:{target_date}:stale_ticker_count={len(missing)}:missing_target_date_tickers={','.join(missing)}")
     return sorted(complete, key=lambda r: (r["raw_max_date"], r["snapshot_id"]))[-1]
 
 
@@ -349,8 +449,8 @@ def promote_snapshot(cache_root: Path, selected: dict[str, Any]) -> tuple[str, P
     return snapshot_id, target_dir
 
 
-def pointer_payload(cache_root: Path, snapshot_id: str, canonical_dir: Path) -> dict[str, Any]:
-    return {
+def pointer_payload(cache_root: Path, snapshot_id: str, canonical_dir: Path, coverage: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = {
         "policy_version": "V21.231",
         "snapshot_id": snapshot_id,
         "created_at_utc": utc_now(),
@@ -368,6 +468,9 @@ def pointer_payload(cache_root: Path, snapshot_id: str, canonical_dir: Path) -> 
         "official_adoption_allowed": False,
         "research_only": True,
     }
+    if coverage:
+        payload.update({k: coverage[k] for k in ["expected_universe_count", "excluded_ticker_count", "legally_excluded_count", "eligible_universe_count", "target_date_ticker_count", "target_date_coverage_ratio", "gross_target_date_coverage_ratio", "eligible_target_date_coverage_ratio", "stale_ticker_count", "missing_target_date_tickers", "raw_qfq_ticker_set_exact_match", "raw_qfq_target_date_ticker_set_exact_match", "canonical_complete_universe_date"]})
+    return payload
 
 
 def update_v231_pointer(v231_dir: Path, pointer: dict[str, Any]) -> None:
@@ -375,17 +478,27 @@ def update_v231_pointer(v231_dir: Path, pointer: dict[str, Any]) -> None:
     write_csv_atomic(v231_dir / "canonical_snapshot_pointer.csv", [{"key": k, "value": v} for k, v in pointer.items()], POINTER_FIELDS)
 
 
-def validate_pointer(pointer: dict[str, Any]) -> dict[str, Any]:
+def validate_pointer(pointer: dict[str, Any], v231_dir: Path | None = None) -> dict[str, Any]:
     raw_path = Path(pointer.get("canonical_raw_path", ""))
     qfq_path = Path(pointer.get("canonical_qfq_path", ""))
     raw = csv_stats(raw_path)
     qfq = csv_stats(qfq_path)
-    ok = raw["exists"] and qfq["exists"] and raw["row_count"] > 0 and qfq["row_count"] > 0 and raw["max_date"] == qfq["max_date"]
+    expected = expected_universe(v231_dir, raw, qfq) if v231_dir else {r.get("ticker", "") for r in raw["rows"] + qfq["rows"] if r.get("ticker")}
+    exclusions = read_csv_rows(v231_dir / "abcde_daily_exclusion_ledger.csv") or read_csv_rows(v231_dir / "abcde_exclusion_ledger.csv") if v231_dir else []
+    cov = snapshot_coverage(raw, qfq, expected, exclusions) if raw["exists"] and qfq["exists"] else snapshot_coverage(raw, qfq, set(), [])
+    ok = raw["exists"] and qfq["exists"] and raw["row_count"] > 0 and qfq["row_count"] > 0 and raw["max_date"] == qfq["max_date"] and cov["raw_set"] == cov["qfq_set"] and bool(cov["complete_date"])
     return {
         "ok": ok,
         "raw": raw,
         "qfq": qfq,
-        "canonical_latest_date": raw["max_date"] if raw["max_date"] == qfq["max_date"] else "",
+        "canonical_latest_date": cov["complete_date"],
+        "coverage": cov,
+        "pointer_expected_universe_count": len(cov["expected_universe"]),
+        "pointer_eligible_universe_count": len(cov["usable"]),
+        "pointer_raw_target_date_ticker_count": len(cov["raw_target"] & cov["usable"]),
+        "pointer_qfq_target_date_ticker_count": len(cov["qfq_target"] & cov["usable"]),
+        "pointer_missing_eligible_raw_tickers": sorted(cov["usable"] - cov["raw_target"]),
+        "pointer_missing_eligible_qfq_tickers": sorted(cov["usable"] - cov["qfq_target"]),
     }
 
 
@@ -415,17 +528,22 @@ def run(
     target_date: str | None = None,
     cache_root: Path | None = None,
     no_network: bool = False,
+    run_id: str = "",
     fetch_runner: Callable[..., dict[str, Any]] | None = None,
     stage_runner: StageRunner | None = None,
 ) -> dict[str, Any]:
+    global _RUNTIME_REPO
     repo_root = repo_root.resolve()
-    out = output_dir or repo_root / OUT_REL
+    _RUNTIME_REPO = repo_root
+    out = output_dir or daily_stage(OUT_REL, allow_migrated=False)
+    assert_safe_output_path(out)
     out.mkdir(parents=True, exist_ok=True)
     target_date = target_date or latest_expected_completed_us_trading_date()
-    v231_dir = repo_root / V231_REL
+    v231_dir = daily_stage(V231_REL)
     run_start = time.perf_counter()
     run_start_utc = utc_now()
     summary = running_summary(repo_root, out, target_date, run_start_utc)
+    summary["run_id"] = run_id
     persist_summary(out, summary)
     stage_ledger: list[dict[str, Any]] = []
     failed_stage = ""
@@ -465,10 +583,10 @@ def run(
             child_summary = run_fetch_stage(repo_root, out, target_date, cache_root, no_network, fetch_runner)
         elif stage_runner is not None:
             child_summary = stage_runner(stage, repo_root, {
-                "V21.232": repo_root / V232_REL,
-                "V21.233": repo_root / V233_REL,
-                "V21.234": repo_root / V234_REL,
-                "V21.256": repo_root / V256_REL,
+                "V21.232": daily_stage(V232_REL, allow_migrated=False),
+                "V21.233": daily_stage(V233_REL, allow_migrated=False),
+                "V21.234": daily_stage(V234_REL, allow_migrated=False),
+                "V21.256": daily_stage(V256_REL, allow_migrated=False),
             }[stage])
         else:
             exit_code = run_subprocess(child_command(repo_root, stage, target_date, cache_root, no_network), repo_root, log_path(out, stage))
@@ -484,6 +602,16 @@ def run(
             after_stage(stage, child_summary, exit_code)
             raise RuntimeError(f"CHILD_SUMMARY_MISSING:{stage}:{summary_path}")
         child_summary = {**disk_summary, **{k: v for k, v in child_summary.items() if k.startswith("_")}}
+        if stage == "V21.231":
+            summary.update({
+                "child_failure_category": child_summary.get("failure_category", ""),
+                "child_failure_reason": child_summary.get("failure_reason", ""),
+                "child_expected_universe_count": child_summary.get("expected_universe_count", 0),
+                "child_eligible_universe_count": child_summary.get("eligible_universe_count", 0),
+                "child_target_date_ticker_count": child_summary.get("target_date_ticker_count", 0),
+                "child_missing_target_date_tickers": child_summary.get("missing_target_date_tickers", []),
+                "child_unresolved_api_error_count": child_summary.get("unresolved_api_error_count", 0),
+            })
         after_stage(stage, child_summary, exit_code)
         if exit_code != 0:
             nonlocal_failed[0] = stage
@@ -495,6 +623,16 @@ def run(
     nonlocal_forced = [""]
 
     try:
+        # Bootstrap only if protected, validated prerequisites are unavailable.
+        # This runs before V21.231 and cannot mutate canonical current data.
+        if repo_root == default_repo_root().resolve():
+            ensure_prerequisites(repo_root)
+            preflight = live_preflight()
+            summary["live_preflight"] = preflight
+            if preflight["live_preflight_status"] != "PASS_V21_230_R1_LIVE_PREFLIGHT":
+                raise RuntimeError(preflight["live_preflight_status"] + ":" + preflight.get("error_message", ""))
+        if cache_root is None:
+            cache_root = get_cache_root()
         fetch_summary = execute_stage("V21.231")
         if str(fetch_summary.get("final_status", "")).startswith("FAIL"):
             nonlocal_failed[0] = "V21.231"
@@ -505,10 +643,10 @@ def run(
         selected = select_latest_complete(candidates, target_date)
         warning = WARN_TARGET if selected["raw_max_date"] != target_date else ""
         promoted_id, promoted_dir = promote_snapshot(effective_cache_root, selected)
-        pointer = pointer_payload(effective_cache_root, promoted_id, promoted_dir)
+        pointer = pointer_payload(effective_cache_root, promoted_id, promoted_dir, selected)
         update_v231_pointer(v231_dir, pointer)
         canonical_pointer_updated = True
-        validation = validate_pointer(pointer)
+        validation = validate_pointer(pointer, v231_dir)
         if not validation["ok"]:
             raise RuntimeError("PROMOTED_CANONICAL_POINTER_VALIDATION_FAILED")
         summary.update({
@@ -524,6 +662,25 @@ def run(
             "qfq_raw_max_date_equal": validation["raw"]["max_date"] == validation["qfq"]["max_date"],
             "canonical_raw_path_exists": validation["raw"]["exists"],
             "canonical_qfq_path_exists": validation["qfq"]["exists"],
+            "expected_universe_count": selected["expected_universe_count"],
+            "legally_excluded_count": selected["legally_excluded_count"],
+            "eligible_universe_count": selected["eligible_universe_count"],
+            "target_date_ticker_count": selected["target_date_ticker_count"],
+            "target_date_coverage_ratio": selected["target_date_coverage_ratio"],
+            "gross_target_date_coverage_ratio": selected["gross_target_date_coverage_ratio"],
+            "eligible_target_date_coverage_ratio": selected["eligible_target_date_coverage_ratio"],
+            "stale_ticker_count": selected["stale_ticker_count"],
+            "excluded_ticker_count": selected["excluded_ticker_count"],
+            "missing_target_date_tickers": selected["missing_target_date_tickers"],
+            "raw_qfq_ticker_set_exact_match": selected["raw_qfq_ticker_set_exact_match"],
+            "raw_qfq_target_date_ticker_set_exact_match": selected["raw_qfq_target_date_ticker_set_exact_match"],
+            "canonical_complete_universe_date": selected["canonical_complete_universe_date"],
+            "pointer_expected_universe_count": validation["pointer_expected_universe_count"],
+            "pointer_eligible_universe_count": validation["pointer_eligible_universe_count"],
+            "pointer_raw_target_date_ticker_count": validation["pointer_raw_target_date_ticker_count"],
+            "pointer_qfq_target_date_ticker_count": validation["pointer_qfq_target_date_ticker_count"],
+            "pointer_missing_eligible_raw_tickers": validation["pointer_missing_eligible_raw_tickers"],
+            "pointer_missing_eligible_qfq_tickers": validation["pointer_missing_eligible_qfq_tickers"],
         })
         persist_summary(out, summary)
 
@@ -577,6 +734,19 @@ def run(
             "qfq_raw_max_date_equal": validation["raw"]["max_date"] == validation["qfq"]["max_date"],
             "canonical_raw_path_exists": validation["raw"]["exists"],
             "canonical_qfq_path_exists": validation["qfq"]["exists"],
+            "expected_universe_count": selected["expected_universe_count"],
+            "legally_excluded_count": selected["legally_excluded_count"],
+            "eligible_universe_count": selected["eligible_universe_count"],
+            "target_date_ticker_count": selected["target_date_ticker_count"],
+            "target_date_coverage_ratio": selected["target_date_coverage_ratio"],
+            "gross_target_date_coverage_ratio": selected["gross_target_date_coverage_ratio"],
+            "eligible_target_date_coverage_ratio": selected["eligible_target_date_coverage_ratio"],
+            "stale_ticker_count": selected["stale_ticker_count"],
+            "excluded_ticker_count": selected["excluded_ticker_count"],
+            "missing_target_date_tickers": selected["missing_target_date_tickers"],
+            "raw_qfq_ticker_set_exact_match": selected["raw_qfq_ticker_set_exact_match"],
+            "raw_qfq_target_date_ticker_set_exact_match": selected["raw_qfq_target_date_ticker_set_exact_match"],
+            "canonical_complete_universe_date": selected["canonical_complete_universe_date"],
             "research_only": True,
             "warning_count": warning_count,
             "error_count": error_count,
@@ -622,7 +792,7 @@ def run(
     write_csv(out / "v22_040_final_summary.csv", [{"key": k, "value": v} for k, v in summary.items()], ["key", "value"])
     report_keys = [
         "target_date", "latest_available_date", "canonical_snapshot_id", "canonical_latest_date",
-        "abcde_latest_date", "dram_latest_price_date", "same_date_comparable_all_strategies",
+        "abcde_latest_date", "dram_latest_price_date", "same_date_comparable_all_strategies", "canonical_complete_universe_date", "target_date_ticker_count", "expected_universe_count", "legally_excluded_count", "eligible_universe_count", "stale_ticker_count", "gross_target_date_coverage_ratio", "eligible_target_date_coverage_ratio", "excluded_ticker_count", "missing_target_date_tickers",
         "data_gap_days", "final_status", "final_decision", "broker_action_allowed",
         "official_adoption_allowed", "market_data_fetch_attempted", "canonical_pointer_updated",
         "abcde_rerun_succeeded", "dram_rerun_succeeded",
@@ -641,11 +811,23 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--target-date", default=None)
     parser.add_argument("--cache-root", type=Path, default=None)
     parser.add_argument("--no-network", action="store_true", default=False)
+    parser.add_argument("--path-replay", action="store_true", default=False)
+    parser.add_argument("--run-id", default="")
     args = parser.parse_args(argv)
-    summary = run(args.repo_root, args.output_dir, args.target_date, args.cache_root, args.no_network)
+    if args.path_replay:
+        v231 = daily_stage(V231_REL) / "v21_231_summary.json"; v233 = daily_stage(V233_REL) / "v21_233_summary.json"
+        required = [v231, v233, Path(get_cache_root())]
+        missing = [str(p) for p in required if not p.exists()]
+        if missing: raise RuntimeError("PATH_REPLAY_MISSING_INPUT:" + ",".join(missing))
+        out = get_daily_root() / "validation" / "r2a" / datetime.now().strftime("%Y%m%d_%H%M%S")
+        assert_safe_output_path(out); out.mkdir(parents=True, exist_ok=False)
+        payload={"final_status":"PASS_V22_040_DAILY_PATH_REPLAY","network_accessed":False,"broker_action_allowed":False,"official_adoption_allowed":False,"promotion_attempted":False,"canonical_write_attempted":False,"v231_summary":str(v231),"v233_summary":str(v233),"output_dir":str(out)}
+        write_json_atomic(out / "path_replay_summary.json", payload); print(json.dumps(payload)); return 0
+    summary = run(args.repo_root, args.output_dir, args.target_date, args.cache_root, args.no_network, args.run_id)
     for key in [
         "target_date", "latest_available_date", "canonical_snapshot_id", "canonical_latest_date",
         "abcde_latest_date", "dram_latest_price_date", "same_date_comparable_all_strategies",
+        "canonical_complete_universe_date", "target_date_ticker_count", "expected_universe_count", "legally_excluded_count", "eligible_universe_count", "stale_ticker_count", "gross_target_date_coverage_ratio", "eligible_target_date_coverage_ratio", "excluded_ticker_count", "missing_target_date_tickers",
         "data_gap_days", "final_status", "final_decision", "broker_action_allowed",
         "official_adoption_allowed", "market_data_fetch_attempted", "canonical_pointer_updated",
         "abcde_rerun_succeeded", "dram_rerun_succeeded",
