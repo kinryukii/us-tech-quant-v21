@@ -1,436 +1,120 @@
-# US Tech Quant Research System
+# US Tech Quant v21
 
-A research-first quantitative ranking and strategy evaluation system for U.S. technology, semiconductor, DRAM, ETF, and related equity universes.
+**Research-first quantitative ranking, validation, and daily signal pipeline for U.S. equities and ETFs.**
 
-This repository is designed for **research, audit, ranking comparison, factor engineering, and forward validation**.
-It is **not** a live trading bot and does **not** authorize broker execution by default.
+US Tech Quant v21 is a Windows-first quantitative research system built with Python and PowerShell. It automates market-data validation, feature generation, multi-strategy stock ranking, historical testing, audit reporting, and guarded daily refresh workflows.
 
----
+The project is designed for **reproducible research rather than direct trading execution**.
 
-## Current Status
-
-**Current major version:** V21
-**Current project mode:** Research-only
-**Current data mode:** Moomoo local-cache-first
-**Broker action:** Disabled unless explicitly approved
-**Official strategy adoption:** Blocked unless all governance gates pass
-
-Latest verified repair state:
-
-```text
-V21.264 final_status = PASS_V21_264_KNOWN_FAILURE_GROUPS_REPAIRED
-final_decision = KNOWN_FAILURE_GROUPS_REPAIRED_READY_FOR_TARGETED_COMMIT_REVIEW
-repaired_group_count = 4
-failed_group_count = 0
-```
-
-Latest clean-worktree verification:
-
-```text
-V21.262 final_status = PASS_V21_262_GIT_WORKTREE_TRIAGE_READY
-dirty_total_count = 0
-tracked_deletion_count = 0
-tracked_modification_count = 0
-untracked_count = 0
-staged_count = 0
-highest_risk_class = LOW
-```
-
-Latest remaining-failure quarantine state:
-
-```text
-V21.263 final_status = PASS_V21_263_REMAINING_FAILURES_QUARANTINED
-remaining_untracked_count = 0
-observed_failed_file_count = 0
-unexpected_untracked_count = 0
-blocked_from_commit_count = 0
-```
-
-Latest known commit:
-
-```text
-23adfd4366eae5742f07469cf835d0067198eba2
-Repair known failure groups and add V21.264 repair audit
-```
+> **Version note**
+>
+> The public project name remains **US Tech Quant v21**.
+> Some internal scripts and pipeline components use higher implementation identifiers such as `V22.xxx`. These identifiers describe internal workflow revisions and do not represent a change to the public release name.
 
 ---
 
-## Project Objective
+## Overview
 
-The system aims to build a strict research pipeline for:
-
-1. Daily market data refresh and validation.
-2. Factor panel construction.
-3. Strategy ranking generation.
-4. Random as-of backtesting.
-5. Forward return tracking.
-6. Strategy-switch governance.
-7. Research-only trade-plan generation.
-8. Retention, cache, and output safety audits.
-
-The system intentionally separates:
+The system converts raw market data into auditable daily research outputs through a structured pipeline:
 
 ```text
-research signal
-forward validation
-strategy comparison
-governance decision
-broker execution
+Market Data
+    ↓
+Data Validation
+    ↓
+Feature Engineering
+    ↓
+ABCDE Strategy Scoring
+    ↓
+Cross-Sectional Ranking
+    ↓
+Same-Date Comparability Checks
+    ↓
+Top-20 Research Output
+    ↓
+Historical and Random-Window Validation
 ```
 
-No ranking, factor weight, or trade plan should be treated as official unless the corresponding governance gates explicitly allow it.
+The current workflow covers more than 300 U.S. equities and ETFs and is designed to answer four practical research questions:
+
+1. Which stocks rank highest under each strategy today?
+2. Are all strategy outputs based on the same market date?
+3. Do the signals remain effective across different historical periods?
+4. Can every result be reproduced and audited from local artifacts?
 
 ---
 
-## Core Principles
+## Core Features
 
-### 1. Research First
+### Daily Research Pipeline
 
-All current outputs are research artifacts.
-The system can generate rankings, scores, strategy comparisons, and trade-plan references, but these are not automatic trading instructions.
+The daily pipeline performs:
 
-### 2. Point-in-Time Discipline
+* raw and adjusted price refresh
+* ticker-universe validation
+* missing-data and duplicate checks
+* feature construction
+* ABCDE strategy scoring
+* Top-20 ranking generation
+* raw-score preservation
+* same-date comparability validation
+* summary and audit artifact generation
+* hard-gate acceptance or rejection
 
-The system prioritizes PIT-style validation and avoids obvious look-ahead leakage.
-Forward evaluation, random as-of tests, and maturity checks are used before promoting any strategy.
-
-### 3. Moomoo Local Cache First
-
-The current daily chain is designed around local Moomoo cache usage.
-External refreshes, Yahoo/yfinance usage, and broker-side operations are not part of the default safe path unless explicitly wired and approved.
-
-### 4. No Broker Action by Default
-
-The system includes explicit gates:
-
-```text
-broker_action_allowed = false
-official_adoption_allowed = false
-factor_promotion_allowed = false
-```
-
-These gates are intentional and should not be bypassed casually.
-
-### 5. Retention and Cleanup Safety
-
-Large artifacts, cache files, raw outputs, quarantine files, and historical research outputs are protected by retention audits.
-Deletion and cleanup scripts must verify path class, hash, and external copy status before removing files.
-
----
-
-## Current Accepted Daily Entrypoint
-
-The current accepted daily research entrypoint is:
+The current stable daily entry point is:
 
 ```powershell
-.\scripts\v21\run_v21_256_daily_chain_master_wrapper_with_context_r1.ps1 -Execute
+.\scripts\v22\run_v22_044_daily_single_entrypoint_freeze_and_guard_r1.ps1 -Execute
 ```
 
-This entrypoint was registered by:
+A successful run returns:
 
 ```text
-V21.259_DAILY_RESEARCH_ENTRYPOINT_REGISTRY_R1
+PASS_V22_044_DAILY_SINGLE_ENTRYPOINT_FROZEN
 ```
 
-Status:
+The guard layer prevents incomplete or inconsistent daily outputs from being treated as accepted research results.
+
+---
+
+## ABCDE Strategy Framework
+
+The system produces five independently scored rankings.
+
+| Strategy            | Purpose                                       |
+| ------------------- | --------------------------------------------- |
+| `A1_CONTROL`        | Baseline multi-factor control strategy        |
+| `B_STATIC_MOMENTUM` | Momentum-oriented ranking                     |
+| `C`                 | Alternative factor-weight configuration       |
+| `D`                 | Diversified or defensive factor configuration |
+| `E_R1`              | Experimental research strategy                |
+
+Each strategy produces:
+
+* signal date
+* ticker
+* rank
+* raw score
+* normalized research fields
+* Top-20 summary
+* strategy-level diagnostics
+
+The system preserves the original raw score rather than publishing only the final rank.
+
+Example output:
 
 ```text
-final_status = PARTIAL_PASS_V21_259_ENTRYPOINT_REGISTERED_WITH_RETENTION_OBSERVATION
-accepted_entrypoint_name = V21.256_DAILY_CHAIN_MASTER_WRAPPER_WITH_CONTEXT_R1
-entrypoint_status = ACCEPTED_WITH_RETENTION_OBSERVATION
+Rank  Ticker  RawScore
+1     AAPL    0.898364
+2     PANW    0.884938
+3     PYPL    0.883704
 ```
 
 ---
 
-## Recommended Daily Workflow
+## Factor Architecture
 
-Run from the repository root:
-
-```powershell
-cd D:\us-tech-quant
-.\.venv\Scripts\python.exe --version
-.\scripts\v21\run_v21_256_daily_chain_master_wrapper_with_context_r1.ps1 -Execute
-```
-
-After the run, inspect the generated summary files under:
-
-```text
-outputs/v21/
-```
-
-Typical post-run checks:
-
-```powershell
-git status --short
-```
-
-Do not commit blindly if new large outputs, cache files, quarantine artifacts, or unexpected raw data appear.
-
----
-
-## Repository Layout
-
-Typical structure:
-
-```text
-.
-├── scripts/
-│   └── v21/
-│       ├── run_v21_*.ps1
-│       ├── v21_*.py
-│       └── test_v21_*.py
-│
-├── outputs/
-│   └── v21/
-│       ├── V21.*_*/
-│       └── summary / audit / ranking / validation artifacts
-│
-├── docs/
-│   └── optional documentation and reports
-│
-├── tests/
-│   └── optional shared tests
-│
-└── README.md
-```
-
-External cache root, when enabled locally:
-
-```text
-D:\us-tech-quant-cache
-```
-
-The external cache is not meant to be committed to GitHub.
-
----
-
-## Main System Modules
-
-### 1. Data and Cache Layer
-
-The cache architecture was formalized in:
-
-```text
-V21.223_LOCAL_CACHE_ARCHITECTURE_AND_IO_ROUTER
-```
-
-Purpose:
-
-* Separate repository code from large market-data artifacts.
-* Route large files to external cache.
-* Keep repo outputs compact when possible.
-* Maintain pointer manifests for externally stored artifacts.
-* Reduce accidental Git bloat.
-
-Default cache root:
-
-```text
-D:\us-tech-quant-cache
-```
-
----
-
-### 2. Moomoo Canonical Data Layer
-
-The system uses Moomoo-derived local OHLCV data as the current preferred source.
-
-Recent canonical Moomoo chain status included:
-
-```text
-qfq_success_count = 315
-raw_success_count = 315
-canonical_latest_date = 2026-07-01 or later depending on local refresh
-```
-
-The current design favors completed market dates and avoids treating an open trading session as a finalized daily bar.
-
----
-
-### 3. Technical and Forward Panel Builder
-
-Implemented in:
-
-```text
-V21.246_TECHNICAL_AND_FORWARD_PANEL_BUILD_FROM_MOOMOO_CACHE_R1
-```
-
-Purpose:
-
-* Build technical indicators from local Moomoo cache.
-* Generate forward-return panels.
-* Support PIT-lite effectiveness audits.
-
-Key indicator families include:
-
-```text
-RSI
-KDJ
-MACD
-Bollinger Bands
-MA20 / MA50
-EMA
-Volume
-Volatility
-Momentum
-Relative strength
-Breakout
-Pullback
-```
-
-Latest known build status:
-
-```text
-final_status = PARTIAL_PASS_V21_246_TECHNICAL_FORWARD_PANEL_READY_WITH_WARNINGS
-provider = MOOMOO
-usable_ticker_count = 328
-technical_indicator_count = 27
-```
-
----
-
-### 4. Technical Subfactor Effectiveness Audit
-
-Implemented in:
-
-```text
-V21.247_TECHNICAL_SUBFACTOR_EFFECTIVENESS_PIT_LITE_AUDIT
-```
-
-Purpose:
-
-* Evaluate technical indicators against future return horizons.
-* Check IC and bucket behavior.
-* Identify whether technical subfactors deserve promotion.
-
-Latest known result:
-
-```text
-final_status = PARTIAL_PASS_V21_247_TECHNICAL_EFFECTIVENESS_SIGNAL_MIXED
-technical_indicator_count = 27
-tested_indicator_count = 27
-candidate_for_v21_248_count = 0
-official_adoption_allowed = false
-broker_action_allowed = false
-factor_promotion_allowed = false
-```
-
-Interpretation:
-
-Technical factors are available for research, but no automatic promotion is allowed yet.
-
----
-
-### 5. ABCDE Strategy Ranking System
-
-The ABCDE framework compares multiple strategy variants, including baseline, momentum-enhanced, optimized, and experimental factor combinations.
-
-A key output root:
-
-```text
-outputs/v21/V21.233_MOOMOO_ONLY_ABCDE_RERUN
-```
-
-Important artifacts include:
-
-```text
-abcde_strategy_ranking_master.csv
-abcde_top20_summary.csv
-abcde_top50_summary.csv
-abcde_coverage_audit.csv
-abcde_canonical_snapshot_audit.csv
-```
-
-This output should be archived with original data preserved when used for research records.
-
----
-
-### 6. DRAM-Focused Research Chain
-
-The user’s current long-term trading research focus is DRAM.
-The system therefore includes a dedicated DRAM research and trade-plan chain.
-
-Important DRAM modules include:
-
-```text
-V21.178_R1A_DAILY_DRAM_CHAIN_EXECUTION_MODE
-V21.183_DRAM_INTRADAY_FORWARD_OUTCOME_UPDATER
-V21.184_DRAM_INTRADAY_OUTCOME_DASHBOARD_AND_DECISION_SUMMARY
-V21.185_DRAM_INTRADAY_TRIGGER_EVENT_ARCHIVE_AND_DAILY_APPEND
-V21.186_DRAM_NO_TRADE_GATE
-V21.201_DRAM_MOOMOO_R4_PLAN
-V21.232_DRAM_CURRENTNESS_CHECK
-```
-
-DRAM outputs may include:
-
-```text
-entry price
-no-chase price
-stop price
-currentness state
-intraday trigger ledger
-forward outcome dashboard
-no-trade gate
-```
-
-All DRAM trade-plan outputs remain research-only unless explicitly approved.
-
----
-
-### 7. Strategy Switch Governance
-
-The strategy-switch system was designed to avoid jumping between strategies based on one-day noise.
-
-Important modules include:
-
-```text
-V21.164_SWITCH_STATE_FORWARD_TRACKING_LEDGER
-V21.164_R1_SWITCH_LEDGER_DAILY_APPEND_AND_MATURITY_MONITOR
-V21.170_SWITCH_TRIGGER_THRESHOLD_CALIBRATION_R1
-V21.173_DAILY_CHAIN_ORCHESTRATOR_FOR_SWITCH_GOVERNANCE
-```
-
-Current governance posture:
-
-```text
-current_primary_control = A1_CONTROL
-switch_allowed_research_only = false
-official_adoption_allowed = false
-broker_action_allowed = false
-next_required_condition = continue daily switch ledger append and wait for matured 5D/10D/20D observations
-```
-
----
-
-### 8. Retention Guard and Cleanup Safety
-
-Important modules include:
-
-```text
-V21.223_LOCAL_CACHE_ARCHITECTURE_AND_IO_ROUTER
-V21.228 external copy verification
-V21.235_REPO_CLEAN_DELETE_AFTER_VERIFICATION
-V21.240 retention audit
-V21.241 daily chain with retention guard
-V21.262 git worktree triage
-V21.263 remaining failures quarantine
-V21.264 known failure repair audit
-```
-
-Cleanup rules:
-
-* Do not delete cache files without external-copy verification.
-* Do not delete active-chain outputs.
-* Do not delete protected outputs.
-* Do not delete quarantine artifacts unless explicitly reviewed.
-* Do not run broad `git clean` without triage.
-* Do not use `git add .` blindly when large outputs are present.
-
----
-
-## Factor Families
-
-The system currently organizes alpha and risk logic around six required factor families:
+The research framework is organized around six factor families:
 
 ```text
 Fundamental
@@ -441,213 +125,392 @@ Market Regime
 Data Trust
 ```
 
-These families should sum to:
+Technical inputs may include:
 
-```text
-1.00
-```
+* relative strength
+* momentum
+* RSI
+* KDJ
+* Bollinger Bands
+* moving averages
+* exponential moving averages
+* volume behavior
+* volatility
+* breakout strength
+* drawdown characteristics
 
-Baseline family-weight direction historically used:
-
-```text
-Fundamental   0.20
-Technical     0.25
-Strategy      0.20
-Risk          0.15
-Market Regime 0.10
-Data Trust    0.10
-```
-
-Dynamic weights are research-only unless forward validation and governance approval pass.
+The final score is constructed from multiple factor families rather than from a single technical indicator.
 
 ---
 
-## Safety Gates
+## Same-Date Comparability
 
-Every major script should preserve explicit safety outputs when relevant:
+A ranking comparison is accepted only when all required strategies use the same canonical market date.
 
-```text
-official_adoption_allowed
-broker_action_allowed
-factor_promotion_allowed
-protected_outputs_modified
-cache_mutated
-canonical_mutated
-research_only
-```
-
-Default expected posture:
+The daily guard checks fields such as:
 
 ```text
-official_adoption_allowed = false
-broker_action_allowed = false
+canonical_latest_date
+abcde_latest_date
+dram_latest_price_date
+same_date_comparable_all_strategies
+hard_gate_passed
 ```
 
-Any script that changes this behavior must be reviewed carefully.
+A result is rejected when:
+
+* one strategy is stale
+* price data are incomplete
+* the ranking date differs across strategies
+* required output files are missing
+* a child pipeline exits with an error
+* integrity checks fail
+
+This prevents rankings from different market dates from being compared as though they were generated simultaneously.
 
 ---
 
-## Testing
+## Historical Validation
 
-Most V21 modules include paired pytest files:
+The project includes several forms of validation.
+
+### Fixed-Period Backtests
+
+Used to evaluate a strategy over a defined historical interval.
+
+### Random-Window Backtests
+
+Random starting dates are used to reduce dependence on a single favorable backtest period.
+
+Supported research horizons include:
 
 ```text
-scripts/v21/test_v21_*.py
+20 trading days
+60 trading days
+120 trading days
+252 trading days
+504 trading days
 ```
 
-Run an individual test:
+### Year-Stratified Testing
+
+Windows can be sampled independently within each calendar year to test whether performance is concentrated in a specific market regime.
+
+### Benchmark Comparison
+
+QQQ is used as the primary benchmark for technology-oriented strategy research.
+
+Typical evaluation fields include:
+
+* median return
+* median excess return
+* probability of beating QQQ
+* maximum drawdown
+* worst-window return
+* turnover
+* transaction-cost-adjusted return
+* year-by-year stability
+
+---
+
+## Example Portfolio Rule
+
+One researched portfolio rule is:
+
+```text
+Enter: ticker reaches Top 5
+Exit: ticker falls below Top 10
+Maximum holdings: 5
+Initial allocation: 20% per slot
+Replacement source: current Top 5 only
+Rebalancing: disabled between entry and exit
+Benchmark: QQQ
+Transaction cost: configurable
+```
+
+This rule is a research configuration, not a guaranteed or recommended trading strategy.
+
+The repository also contains infrastructure for testing alternative:
+
+* entry thresholds
+* exit thresholds
+* holding periods
+* replacement rules
+* turnover controls
+* regime filters
+* benchmark fallback rules
+
+---
+
+## Audit and Research Integrity
+
+The project emphasizes failure visibility rather than silently producing a result.
+
+Audit checks include:
+
+* duplicated ticker-date rows
+* missing price fields
+* stale snapshots
+* inconsistent strategy dates
+* invalid universe membership
+* unexpected ticker deletion
+* strategy-specific window deletion
+* signal leakage risks
+* output-file completeness
+* frozen-configuration verification
+* transaction lifecycle integrity
+* forced-exit accounting
+* benchmark-window consistency
+
+Where complete historical point-in-time data are unavailable, the limitation is reported rather than hidden.
+
+---
+
+## Quick Start
+
+### Requirements
+
+* Windows 10 or Windows 11
+* PowerShell 5.1 or later
+* Python 3.10 or later
+* Git
+* local market-data source or compatible cached dataset
+
+### Clone the Repository
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q scripts\v21\test_v21_xxx.py
+git clone https://github.com/kinryukii/us-tech-quant-v21.git
+cd us-tech-quant-v21
 ```
 
-Run a specific known test module, for example:
+### Create a Virtual Environment
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q scripts\v21\test_v21_247_technical_subfactor_effectiveness_pit_lite_audit.py
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 ```
 
-Expected style:
-
-```text
-all tests passed
-wrapper run succeeded
-summary JSON produced
-final_status recorded
-final_decision recorded
-```
-
----
-
-## Output Conventions
-
-Each major V21 module should write outputs under:
-
-```text
-outputs/v21/V21.xxx_MODULE_NAME/
-```
-
-Typical output files:
-
-```text
-v21_xxx_summary.json
-V21.xxx_report.txt
-*.csv
-*_audit.csv
-*_latest.csv
-*_ledger.csv
-```
-
-Every important run should include:
-
-```text
-final_status
-final_decision
-input roots
-output roots
-row counts
-warning count
-error count
-mutation flags
-research/broker/adoption gates
-```
-
----
-
-## Git Hygiene
-
-Before committing:
+Install project dependencies when a requirements file is available:
 
 ```powershell
-git status --short
+pip install -r requirements.txt
 ```
 
-Recommended safe flow:
+### Allow Local PowerShell Scripts
 
 ```powershell
-git status --short
-git diff --stat
-git diff --name-only
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-Commit only targeted source, test, wrapper, and small audit files.
+### Run the Daily Research Chain
 
-Avoid committing:
-
-```text
-large raw market data
-external cache files
-temporary notebooks
-local credentials
-broker exports
-unreviewed quarantine files
-large generated CSVs
-binary artifacts unless intentionally archived
+```powershell
+.\scripts\v22\run_v22_044_daily_single_entrypoint_freeze_and_guard_r1.ps1 -Execute
 ```
 
-Do not run broad destructive cleanup commands unless a dedicated retention or cleanup module has verified the candidate files.
+### Check Repository Status
 
----
-
-## Development Rules
-
-When adding a new V21 module:
-
-1. Add the Python script under `scripts/v21/`.
-2. Add a matching pytest file.
-3. Add a PowerShell wrapper if the module is run directly.
-4. Write all outputs to a unique `outputs/v21/V21.xxx_*` folder.
-5. Include `final_status` and `final_decision`.
-6. Include explicit research/broker/adoption gates.
-7. Avoid hidden data mutation.
-8. Avoid external network access unless the script name and summary make it explicit.
-9. Keep large artifacts outside the Git repo when possible.
-10. Run pytest before committing.
-
-Suggested naming:
-
-```text
-scripts/v21/v21_265_example_module_name_r1.py
-scripts/v21/test_v21_265_example_module_name_r1.py
-scripts/v21/run_v21_265_example_module_name_r1.ps1
-outputs/v21/V21.265_EXAMPLE_MODULE_NAME_R1/
+```powershell
+git status
 ```
 
 ---
 
-## Research-Only Disclaimer
+## Repository Structure
 
-This repository is for quantitative research, data validation, ranking experiments, and strategy governance.
+A simplified project layout:
 
-It does not provide financial advice.
-It does not guarantee investment returns.
-It does not authorize live trading.
-It does not replace independent risk management.
+```text
+us-tech-quant-v21/
+├─ scripts/
+│  ├─ v21/
+│  └─ v22/
+│     ├─ daily pipeline entry points
+│     ├─ ranking and validation modules
+│     ├─ random-window backtests
+│     ├─ annual stability diagnostics
+│     └─ regression tests
+├─ config/
+│  └─ strategy and runtime configuration
+├─ docs/
+│  └─ methodology and research notes
+├─ tests/
+│  └─ validation and regression tests
+└─ README.md
+```
 
-All broker actions, if any, require explicit human approval outside the default research chain.
+Large datasets, generated outputs, logs, virtual environments, and local caches are intentionally excluded from Git.
+
+Typical excluded content includes:
+
+```text
+data/
+outputs/
+results/
+.venv/
+__pycache__/
+*.log
+*.parquet
+```
 
 ---
 
-## Current Operating Summary
+## Data Storage
 
-The current system can be summarized as:
+The repository is designed to separate source code from large research data.
 
-```text
-Moomoo local-cache-first daily research chain
-+ ABCDE ranking comparison
-+ DRAM-focused research workflow
-+ technical factor PIT-lite audit
-+ forward validation
-+ strategy-switch governance
-+ retention-safe output management
-+ broker-action hard block
-```
-
-Current practical recommendation:
+Recommended structure:
 
 ```text
-Use the V21.256 daily master wrapper as the main research entrypoint.
-Treat all rankings and trade plans as research-only.
-Preserve raw outputs for important ABCDE and DRAM runs.
-Do not promote factor weights or strategy switches until forward maturity gates pass.
+Project code:
+D:\us-tech-quant
+
+Market data:
+D:\us-tech-quant-data
+
+Backtest and archived results:
+D:\us-tech-quant-results
 ```
+
+This separation provides:
+
+* a smaller Git repository
+* faster commits and cloning
+* independent backtest result directories
+* reduced risk of accidentally publishing proprietary or large datasets
+* clearer separation between code, data, and generated research artifacts
+
+---
+
+## Reproducibility
+
+For reproducible research, each run should preserve:
+
+* strategy configuration
+* ticker universe
+* signal date
+* data date
+* random seed
+* transaction-cost assumptions
+* benchmark series
+* test-window manifest
+* summary JSON
+* ranking CSV
+* integrity diagnostics
+
+Randomized tests should always use an explicitly recorded seed.
+
+Example:
+
+```text
+MASTER_SEED=2026071604
+```
+
+A result without its configuration, seed, date range, and universe definition should not be treated as independently reproducible.
+
+---
+
+## Current Research Status
+
+The current system can:
+
+* run the daily ABCDE ranking workflow
+* generate five same-date-comparable strategy rankings
+* print Top-20 tickers with raw scores
+* maintain local historical price caches
+* run fixed and random-window backtests
+* compare strategy performance with QQQ
+* test annual stability
+* measure turnover and drawdown
+* reject incomplete daily runs
+* preserve machine-readable audit summaries
+
+The research results also show that a ranking signal can perform differently across years and market regimes. Therefore, the project does not treat a strong aggregate backtest as sufficient evidence of a robust strategy.
+
+---
+
+## Known Limitations
+
+The public repository should not be interpreted as a complete institutional-grade point-in-time research platform.
+
+Current limitations may include:
+
+* incomplete historical index membership
+* survivorship-bias risk
+* incomplete delisted-security coverage
+* limited historical publication-date fundamentals
+* incomplete historical corporate-action metadata
+* dependence on local data availability
+* broker or vendor-specific data differences
+* simplified transaction-cost and liquidity assumptions
+* limited live-execution validation
+
+Historical proxy rankings must be distinguished from rankings reconstructed using complete point-in-time data.
+
+---
+
+## Safety and Execution Policy
+
+This repository is research-first.
+
+By default:
+
+```text
+broker_action_allowed = False
+official_adoption_allowed = False
+```
+
+Research output must not automatically trigger:
+
+* live orders
+* portfolio reallocation
+* broker actions
+* official strategy adoption
+
+Any future execution layer should remain isolated behind explicit configuration, additional validation, and manual approval.
+
+---
+
+## Roadmap
+
+Planned research directions include:
+
+* stronger point-in-time data support
+* historical universe reconstruction
+* delisted-security coverage
+* improved fundamental-data lineage
+* walk-forward validation
+* strategy ensemble analysis
+* factor-decay measurement
+* market-regime attribution
+* turnover-aware portfolio construction
+* transaction-cost stress testing
+* paper-trading isolation
+* automated PDF research reports
+* multi-agent research workflows
+
+---
+
+## Disclaimer
+
+This repository is provided for software engineering, quantitative research, and educational purposes only.
+
+It does not constitute:
+
+* investment advice
+* a solicitation to trade
+* a guarantee of future performance
+* a production-ready trading system
+
+Backtested or simulated performance does not represent actual trading results. Historical results may be affected by data quality, survivorship bias, look-ahead bias, market impact, liquidity constraints, transaction costs, and implementation assumptions.
+
+Use the software and research outputs at your own risk.
+
+---
+
+## Project
+
+**US Tech Quant v21**
+
+Quantitative ranking, validation, backtesting, and guarded daily research infrastructure for U.S. equities and ETFs.
