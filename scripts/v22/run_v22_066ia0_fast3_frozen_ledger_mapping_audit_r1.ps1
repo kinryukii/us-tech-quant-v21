@@ -1,0 +1,1 @@
+param([switch]$Execute);if(-not $Execute){throw 'The -Execute flag is required.'};$r=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path;& "$r\.venv\Scripts\python.exe" "$r\scripts\v22\v22_066ia0_fast3_frozen_ledger_mapping_audit_r1.py" --execute

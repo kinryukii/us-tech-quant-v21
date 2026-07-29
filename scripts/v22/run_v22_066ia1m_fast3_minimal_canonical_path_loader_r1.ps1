@@ -1,0 +1,1 @@
+param([switch]$Execute);if(-not $Execute){throw 'The -Execute flag is required.'};$r=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path;& "$r\.venv\Scripts\python.exe" "$r\scripts\v22\v22_066ia1m_fast3_minimal_canonical_path_loader_r1.py" --execute

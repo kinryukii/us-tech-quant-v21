@@ -1,0 +1,1 @@
+param([switch]$Execute);if(-not $Execute){throw 'The -Execute flag is required.'};$r=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path;& "$r\.venv\Scripts\python.exe" "$r\scripts\v22\v22_066h_fast3_historical_candidate_trade_path_atlas_r1.py" --execute;exit $LASTEXITCODE

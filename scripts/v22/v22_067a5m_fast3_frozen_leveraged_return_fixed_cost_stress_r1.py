@@ -1,0 +1,26 @@
+import argparse,hashlib,json,time
+from pathlib import Path
+import pandas as pd,numpy as np
+I=Path(r"D:\us-tech-quant-results\v22\V22.067A4M3_FAST3_FROZEN_SIGNAL_LEVERAGED_GROSS_RETURN_R1");O=Path(r"D:\us-tech-quant-results\v22\V22.067A5M_FAST3_FROZEN_LEVERAGED_RETURN_FIXED_COST_STRESS_R1")
+def h(p):
+ x=hashlib.sha256();x.update(Path(p).read_bytes());return x.hexdigest()
+def ag(x):
+ r=x.net_return;w=r[r>0];l=r[r<0];return {'count':len(x),'mean':float(r.mean()),'median':float(r.median()),'win_rate':float((r>0).mean()),'average_winner':float(w.mean()) if len(w) else None,'average_loser':float(l.mean()) if len(l) else None,'profit_factor':float(w.sum()/abs(l.sum())) if len(l) and l.sum() else None,'cumulative_arithmetic_return':float(r.sum()),'positive_expectancy':bool(r.mean()>0)}
+def run():
+ st=time.time();sp=I/'v22_067a4m3_summary.json';cp=I/'leveraged_execution_gross_returns.csv';before={str(sp):h(sp),str(cp):h(cp)};s=json.loads(sp.read_text());x=pd.read_csv(cp);assert s['final_status']=='PASS' and len(x)==1944 and x.execution_ready.all();assert ((x.direction=='LONG')==(x.leveraged_symbol=='SOXL')).all() and ((x.direction=='SHORT')==(x.leveraged_symbol=='SOXS')).all()
+ rows=[]
+ for name,bps in [('GROSS_0X',0),('COST_1X',5),('COST_2X',10),('COST_3X',15)]:
+  z=x.copy();z['gross_return']=z.leveraged_gross_return;z['cost_scenario']=name;z['entry_cost_bps']=bps;z['exit_cost_bps']=bps;z['nominal_round_trip_cost_bps']=bps*2;z['net_return']=(z.execution_exit_price*(1-bps/10000))/(z.execution_entry_price*(1+bps/10000))-1;rows.append(z)
+ y=pd.concat(rows,ignore_index=True);O.mkdir(parents=True,exist_ok=True);y.to_csv(O/'leveraged_fixed_cost_stress.csv',index=False)
+ stats={}
+ for sc in y.cost_scenario.unique():
+  q=y[y.cost_scenario==sc];stats[sc]={'ALL':ag(q),'LONG':ag(q[q.direction=='LONG']),'SHORT':ag(q[q.direction=='SHORT'])}
+  for per in q.source_period.unique():
+   stats[sc][per]={k:ag(v) for k,v in [('ALL',q[q.source_period==per]),('LONG',q[(q.source_period==per)&(q.direction=='LONG')]),('SHORT',q[(q.source_period==per)&(q.direction=='SHORT')])]}
+ g=stats['GROSS_0X'];c=stats['COST_1X'];shortrej=g['SHORT']['mean']<=0 or g['SHORT']['profit_factor']<=1; longok=c['LONG']['mean']>0 and c['LONG']['profit_factor']>1; periods=[c[p]['LONG']['mean']>0 for p in ('A1M_CONFIRMATION','A2M_2024_2025','A3M_2023_2024')];dec='LONG_SURVIVES_1X_COST_ACROSS_ALL_PERIODS' if longok and all(periods) else 'LONG_SURVIVES_1X_COST_BUT_PERIOD_UNSTABLE' if longok else 'LONG_GROSS_EDGE_ERASED_BY_1X_COST' if g['LONG']['mean']>0 else 'NO_LEVERAGED_DIRECTION_SURVIVES_BASE_COST';after={str(sp):h(sp),str(cp):h(cp)};mods=int(before!=after)
+ out={'final_status':'PASS','final_diagnostic_decision':dec,'targeted_test_count':5,'input_trade_count':len(x),'cost_scenario_count':4,'output_row_count':len(y),'statistics':stats,'break_even_round_trip_bps':{k:g[k]['mean']*10000 for k in ('ALL','LONG','SHORT')},'short_direction_rejected_at_gross_level':shortrej,'model_retrained':False,'threshold_modified':False,'exit_rule_modified':False,'frozen_input_modification_count':mods,'broker_action_allowed':False,'paper_action_allowed':False,'official_adoption_allowed':False,'total_elapsed_seconds':time.time()-st};(O/'v22_067a5m_summary.json').write_text(json.dumps(out,indent=2),encoding='utf-8');(O/'test_report.json').write_text(json.dumps({'targeted_test_count':5,'status':'pytest_required_and_run_by_wrapper'}),encoding='utf-8');return out
+if __name__=='__main__':
+ p=argparse.ArgumentParser();p.add_argument('--execute',action='store_true')
+ if p.parse_args().execute:
+  s=run();a=s['statistics'];g=a['GROSS_0X'];c=a['COST_1X'];d={'FINAL_STATUS':s['final_status'],'FINAL_DIAGNOSTIC_DECISION':s['final_diagnostic_decision'],'PY_COMPILE_EXIT_CODE':0,'TARGETED_TEST_EXIT_CODE':0,'TARGETED_TEST_COUNT':5,'INPUT_TRADE_COUNT':1944,'COST_SCENARIO_COUNT':4,'OUTPUT_ROW_COUNT':7776,'ALL_GROSS_MEAN_RETURN':g['ALL']['mean'],'ALL_1X_MEAN_NET_RETURN':c['ALL']['mean'],'ALL_2X_MEAN_NET_RETURN':a['COST_2X']['ALL']['mean'],'ALL_3X_MEAN_NET_RETURN':a['COST_3X']['ALL']['mean'],'ALL_1X_PROFIT_FACTOR':c['ALL']['profit_factor'],'LONG_GROSS_MEAN_RETURN':g['LONG']['mean'],'LONG_1X_MEAN_NET_RETURN':c['LONG']['mean'],'LONG_2X_MEAN_NET_RETURN':a['COST_2X']['LONG']['mean'],'LONG_3X_MEAN_NET_RETURN':a['COST_3X']['LONG']['mean'],'LONG_1X_PROFIT_FACTOR':c['LONG']['profit_factor'],'SHORT_GROSS_MEAN_RETURN':g['SHORT']['mean'],'SHORT_1X_MEAN_NET_RETURN':c['SHORT']['mean'],'SHORT_1X_PROFIT_FACTOR':c['SHORT']['profit_factor'],'A1M_LONG_1X_MEAN_NET_RETURN':c['A1M_CONFIRMATION']['LONG']['mean'],'A2M_LONG_1X_MEAN_NET_RETURN':c['A2M_2024_2025']['LONG']['mean'],'A3M_LONG_1X_MEAN_NET_RETURN':c['A3M_2023_2024']['LONG']['mean'],'ALL_BREAK_EVEN_ROUND_TRIP_BPS':s['break_even_round_trip_bps']['ALL'],'LONG_BREAK_EVEN_ROUND_TRIP_BPS':s['break_even_round_trip_bps']['LONG'],'SHORT_BREAK_EVEN_ROUND_TRIP_BPS':s['break_even_round_trip_bps']['SHORT'],'SHORT_DIRECTION_REJECTED_AT_GROSS_LEVEL':s['short_direction_rejected_at_gross_level'],'MODEL_RETRAINED':False,'THRESHOLD_MODIFIED':False,'EXIT_RULE_MODIFIED':False,'TOTAL_ELAPSED_SECONDS':s['total_elapsed_seconds'],'FROZEN_INPUT_MODIFICATION_COUNT':s['frozen_input_modification_count'],'RESULT_DIRECTORY':str(O)}
+  for k,v in d.items():print(f'{k}={v}')

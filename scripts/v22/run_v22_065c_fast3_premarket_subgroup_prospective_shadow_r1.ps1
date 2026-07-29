@@ -1,0 +1,1 @@
+param([switch]$Execute);if(-not $Execute){throw 'The -Execute flag is required.'};Set-Location 'D:\us-tech-quant';$p='.\.venv\Scripts\python.exe';&$p -m pytest .\scripts\v22\test_v22_065c_fast3_premarket_subgroup_prospective_shadow_r1.py -q -p no:cacheprovider;&$p .\scripts\v22\v22_065c_fast3_premarket_subgroup_prospective_shadow_r1.py --execute

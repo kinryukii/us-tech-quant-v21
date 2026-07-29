@@ -1,0 +1,11 @@
+"""R10C1 uses R10B4's single forward-label implementation."""
+from pathlib import Path
+import sys
+import pandas as pd
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from r10b4_a_rawscore_real_forward_stability_ledger import build_labels,atomic_parquet,atomic_json
+CAN=Path(r'D:\us-tech-quant-data\canonical\v22\ABCDE_COMPACT_V1_DAILY_HISTORY_R1\abcde_compact_v1_daily_2026.parquet');LED=Path(r'D:\us-tech-quant-data\research_ledger\v22\R10C1_ABCDE_COMPACT_V1_FORWARD_STABILITY_LEDGER_R1')
+def main():
+ x=pd.read_parquet(CAN); wide=x.pivot(index=['signal_date','ticker','model_version'],columns='strategy_name',values=['raw_score','rank']).reset_index();wide.columns=['_'.join(str(z) for z in c if z) for c in wide.columns];wide=wide.rename(columns={'raw_score_A1_CONTROL':'a_raw_score','rank_A1_CONTROL':'a_rank','raw_score_B_STATIC_MOMENTUM':'b_raw_score','rank_B_STATIC_MOMENTUM':'b_rank','raw_score_C_DYNAMIC_MOMENTUM':'c_raw_score','rank_C_DYNAMIC_MOMENTUM':'c_rank','raw_score_D_WEIGHT_OPTIMIZED_REFERENCE':'d_raw_score','rank_D_WEIGHT_OPTIMIZED_REFERENCE':'d_rank','raw_score_E_R1_DEFENSIVE_REFERENCE':'e_raw_score','rank_E_R1_DEFENSIVE_REFERENCE':'e_rank'});wide['a_in_top5']=wide.a_rank<=5;wide['a_in_top10']=wide.a_rank<=10;wide['a_in_top20']=wide.a_rank<=20; ranks=wide[['a_rank','b_rank','c_rank','d_rank','e_rank']];wide['top5_strategy_count']=(ranks<=5).sum(axis=1);wide['top10_strategy_count']=(ranks<=10).sum(axis=1);wide['top20_strategy_count']=(ranks<=20).sum(axis=1)
+ old=pd.read_parquet(LED/'compact_forward_label_ledger.parquet') if (LED/'compact_forward_label_ledger.parquet').exists() else pd.DataFrame();lab=build_labels(wide.rename(columns={'model_version':'_model'}),old);atomic_parquet(wide,LED/'compact_signal_ledger.parquet');atomic_parquet(lab,LED/'compact_forward_label_ledger.parquet');atomic_parquet(pd.DataFrame([{'cohort_id':1,'signal_date_count':int(wide.signal_date.nunique()),'cohort_fully_mature':bool(lab.label_20d_mature.all())}]),LED/'compact_cohort_ledger.parquet');atomic_json({'model_version':'ABCDE_COMPACT_V1','signal_date_count':int(wide.signal_date.nunique()),'signal_row_count':int(len(wide)),'mature_20d_signal_date_count':int(lab[lab.label_20d_mature].signal_date.nunique())},LED/'ledger_manifest.json');print('COMPACT_R10C1_OK')
+if __name__=='__main__':main()

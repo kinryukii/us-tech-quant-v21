@@ -1,0 +1,1 @@
+param([switch]$Execute);$r=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path;& "$r\.venv\Scripts\python.exe" "$r\scripts\v22\v22_066ia6m_fast3_fixed_underlying_target_adverse_race_r1.py" --execute
