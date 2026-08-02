@@ -7,7 +7,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 from scipy.stats import ks_2samp, spearmanr
 
-REPO=Path(__file__).resolve().parents[2]; LOCAL=REPO/'.local_results'; DATA=Path(r'D:/us-tech-quant-data/fast3/moomoo_24h_1m')
+REPO=Path(__file__).resolve().parents[2]; LOCAL=Path(r'D:\us-tech-quant-results\fast3\archive\legacy_v22'); DATA=Path(r'D:/us-tech-quant-data/fast3/moomoo_24h_1m')
 B1='V22.069B1_FAST3_NONLINEAR_COMPACT_MODEL_MATERIALIZATION_R1'; C='V22.069C_FAST3_NONLINEAR_COMPACT_VALIDATION_R1'; OUT='V22.070A_FAST3_NONLINEAR_VALIDATION_FAILURE_ATLAS_R1'
 MODEL_SHA='d92fbddcac00dd3e6e37e76daa3510eda40444cc914d4dc3160c2db0ffd93ce0'; STATE_SHA='e005ee7bb350b768375cf3e11efe968121b60ec370e6222e0693c9374cfe008e'
 FEATURES=['PREMARKET_CUM_RETURN','PREMARKET_MAX_DRAWDOWN','PREMARKET_REALIZED_VOLATILITY']; SYMS=['QQQ','SOXX','TQQQ','SQQQ','SOXL','SOXS']; COST=.001
@@ -19,7 +19,7 @@ def sha(p):
   for b in iter(lambda:f.read(1048576),b''): d.update(b)
  return d.hexdigest()
 def null(x): return float(x) if x is not None and np.isfinite(x) else None
-def roots(upstream, results): return Path(upstream)/'v22'/B1,Path(upstream)/'v22'/C,Path(results)/'v22'/OUT
+def roots(upstream, results): return Path(upstream)/B1,Path(upstream)/C,Path(results)/OUT
 
 def check_inputs(upstream):
  b,c,_=roots(upstream,upstream); req=[b/'frozen_model.joblib',b/'frozen_model_state.json',b/'training_contract_manifest.json',b/'development_model_predictions.csv',c/'validation_event_scores.csv',c/'v22_069c_summary.json']

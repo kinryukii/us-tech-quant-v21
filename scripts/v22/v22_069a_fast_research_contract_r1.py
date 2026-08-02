@@ -15,8 +15,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 ROOT = Path(r"D:\us-tech-quant-data\fast3\moomoo_24h_1m")
-REQUESTED_OFFICIAL_OUTPUT_ROOT = r"D:\us-tech-quant-results\v22\V22.069A_FAST_RESEARCH_CONTRACT_R1"
-LOCAL_RESULTS_ROOT = Path(__file__).resolve().parents[2] / ".local_results" / "v22"
+REQUESTED_OFFICIAL_OUTPUT_ROOT = r"D:\us-tech-quant-results\fast3\archive\legacy_v22\V22.069A_FAST_RESEARCH_CONTRACT_R1"
+LOCAL_RESULTS_ROOT = Path(r"D:\us-tech-quant-results\fast3\archive\legacy_v22")
 OUT = LOCAL_RESULTS_ROOT / "V22.069A_FAST_RESEARCH_CONTRACT_R1"
 SYMS = ["QQQ", "SOXX", "TQQQ", "SQQQ", "SOXL", "SOXS"]
 IDENTITY_FIELDS = ("relative_path", "symbol", "year", "month", "file_size", "mtime_ns")

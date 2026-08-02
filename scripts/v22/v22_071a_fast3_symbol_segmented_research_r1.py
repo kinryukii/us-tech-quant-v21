@@ -19,7 +19,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeRegressor
 
 REPO = Path(__file__).resolve().parents[2]
-CONTRACT = REPO / ".local_results/v22/V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json"
+LEGACY_RESULTS_ROOT = Path(r"D:\us-tech-quant-results\fast3\archive\legacy_v22")
+CONTRACT = LEGACY_RESULTS_ROOT / "V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json"
 DATA_ROOT = Path(r"D:/us-tech-quant-data/fast3/moomoo_24h_1m")
 OUT_NAME = "V22.071A_FAST3_SYMBOL_SEGMENTED_RESEARCH_R1"
 SYMS = ["QQQ", "SOXX", "TQQQ", "SQQQ", "SOXL", "SOXS"]
@@ -139,7 +140,7 @@ def qualifies(row, symbols):
     return base and pos >= 4 and neg <= 2 and contribution is not None and contribution < .40, pos, neg, nullable(contribution)
 
 
-def run(results_root=REPO / ".local_results"):
+def run(results_root=LEGACY_RESULTS_ROOT):
     contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
     if contract.get("symbols") != SYMS or contract.get("features") != FEATURES: raise RuntimeError("FROZEN_FEATURE_OR_SYMBOL_CONTRACT_MISMATCH")
     months = list(contract["split"]["development_months"]) + list(contract["split"]["validation_months"])
@@ -163,7 +164,7 @@ def run(results_root=REPO / ".local_results"):
     segmented = max((r for r in models if r["structure"] == "PER_SYMBOL"), key=lambda r: (r["oof_spearman_ic"] is not None, r["oof_spearman_ic"] or -np.inf))
     summary = {"research_id": OUT_NAME, "final_status": "PASS", "final_decision": "SYMBOL_SEGMENTED_RESEARCH_CANDIDATE_FOUND" if selected else "NO_STABLE_SYMBOL_SEGMENTED_CANDIDATE", "next_freeze_stage_allowed": bool(selected), "selected_structure": selected["structure"] if selected else None, "selected_model": selected["model"] if selected else None, "former_development_role": "RESEARCH_DATA", "former_validation_role": "RESEARCH_DATA", "former_validation_still_independent": False, "confirmation_remains_sealed": True, "confirmation_row_read_count": 0, "research_event_count": len(events), "former_development_event_count": int(events.date.str[:7].isin(contract["split"]["development_months"]).sum()), "former_validation_event_count": int(events.date.str[:7].isin(contract["split"]["validation_months"]).sum()), "valid_fold_count": valid_folds, "invalid_fold_count": invalid_folds, "time_order_violation_count": violations, "data_leakage_detected": False, "hyperparameter_search_count": 0, "candidate_model_count": 3, "research_fit_call_count": fits, "final_frozen_model_output_count": 0, "broker_action_allowed": False, "paper_trading_allowed": False, "official_adoption_allowed": False, "live_trading_allowed": False, "order_output_count": 0, "position_output_count": 0, "broker_connection_count": 0, "pooled_best_model": pooled["model"], "pooled_best_oof_spearman_ic": pooled["oof_spearman_ic"], "pooled_best_net_spread_10bps": pooled["top_bottom_spread_net_10bps"], "segmented_best_model": segmented["model"], "segmented_best_oof_spearman_ic": segmented["oof_spearman_ic"], "segmented_best_net_spread_10bps": segmented["top_bottom_spread_net_10bps"], "positive_symbol_count": selected["positive_symbol_count"] if selected else segmented["positive_symbol_count"], "negative_symbol_count": selected["negative_symbol_count"] if selected else segmented["negative_symbol_count"], "single_symbol_contribution_ratio": selected["single_symbol_contribution_ratio"] if selected else segmented["single_symbol_contribution_ratio"], "excluded_event_count": len(excluded)}
     contract_out = {"primary_hypothesis": "Original six-ETF pooled model fails because symbol-conditional relationships are heterogeneous; independent symbol models may be more stable.", "secondary_hypothesis": "The depth-2 single tree has only three unique scores; constrained ensembles may improve ranking resolution without materially expanding complexity.", "features": FEATURES, "symbols": SYMS, "cost_round_trip": COST, "former_development_role": "RESEARCH_DATA", "former_validation_role": "RESEARCH_DATA", "former_validation_still_independent": False, "confirmation_remains_sealed": True, "confirmation_row_read_count": 0, "hyperparameter_search_count": 0, "candidate_model_count": 3, "random_kfold_used": False, "time_order_violation_count": violations, "data_leakage_detected": False}
-    out = Path(results_root) / "v22" / OUT_NAME; out.parent.mkdir(parents=True, exist_ok=True); stage = Path(tempfile.mkdtemp(prefix=".071a_", dir=out.parent))
+    out = Path(results_root) / OUT_NAME; out.parent.mkdir(parents=True, exist_ok=True); stage = Path(tempfile.mkdtemp(prefix=".071a_", dir=out.parent))
     try:
         (stage / "v22_071a_summary.json").write_text(stable(summary), encoding="utf-8"); pd.DataFrame(models).to_csv(stage / "model_scorecard.csv", index=False); pd.DataFrame(symbols).to_csv(stage / "symbol_scorecard.csv", index=False); pd.DataFrame(folds).to_csv(stage / "fold_scorecard.csv", index=False); (stage / "research_contract.json").write_text(stable(contract_out), encoding="utf-8")
         if out.exists(): shutil.rmtree(out)
@@ -173,6 +174,6 @@ def run(results_root=REPO / ".local_results"):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(); parser.add_argument("--execute", action="store_true"); parser.add_argument("--results-root", default=str(REPO / ".local_results")); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--execute", action="store_true"); parser.add_argument("--results-root", default=str(LEGACY_RESULTS_ROOT)); args = parser.parse_args()
     if args.execute:
         summary, out = run(Path(args.results_root)); print(json.dumps({**summary, "summary_path": str(out / "v22_071a_summary.json")}, sort_keys=True))

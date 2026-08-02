@@ -1,4 +1,4 @@
-param([switch]$Execute,[string]$ResultsRoot='.\.local_results')
+param([switch]$Execute,[string]$ResultsRoot='D:\us-tech-quant-results\fast3\archive\legacy_v22')
 $ErrorActionPreference='Stop'
 $r=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $p=Join-Path $r '.venv\Scripts\python.exe'

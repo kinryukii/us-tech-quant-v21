@@ -1,4 +1,4 @@
-param([switch]$Execute, [string]$UpstreamResultsRoot = ".\.local_results", [string]$ResultsRoot = ".\.local_results")
+param([switch]$Execute, [string]$UpstreamResultsRoot = "D:\us-tech-quant-results\fast3\archive\legacy_v22", [string]$ResultsRoot = "D:\us-tech-quant-results\fast3\archive\legacy_v22")
 $ErrorActionPreference='Stop'; $repo=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path; $python=Join-Path $repo '.venv\Scripts\python.exe'; $script=Join-Path $repo 'scripts\v22\v22_069c_fast3_nonlinear_compact_validation_r1.py'; $test=Join-Path $repo 'scripts\v22\test_v22_069c_fast3_nonlinear_compact_validation_r1.py'
 if((git -C $repo branch --show-current).Trim() -ne 'checkpoint/v22-069c-validation-20260731'){throw 'BRANCH_MISMATCH'}
 & $python -m py_compile $script; $compile=$LASTEXITCODE; if($compile -ne 0){exit $compile}; & $python -m pytest $test -q; $tests=$LASTEXITCODE; if($tests -ne 0){exit $tests}

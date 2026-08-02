@@ -14,7 +14,8 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 REPO=Path(__file__).resolve().parents[2]
 OUT_NAME='V22.073A_FAST3_PIT_FEATURE_EXPANSION_RESEARCH_R1'
-CONTRACT=REPO/'.local_results/v22/V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json'
+LEGACY_RESULTS_ROOT=Path(r'D:\us-tech-quant-results\fast3\archive\legacy_v22')
+CONTRACT=LEGACY_RESULTS_ROOT/'V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json'
 DATA_ROOT=Path(r'D:/us-tech-quant-data/fast3/moomoo_24h_1m')
 SYMS=['QQQ','SOXX','TQQQ','SQQQ','SOXL','SOXS']; COST=.001
 BASE_FEATURES=['PREMARKET_CUM_RETURN','MAX_DRAWDOWN','REALIZED_VOL']
@@ -107,7 +108,7 @@ def quality(events,features,devmonths):
  return ans
 def passes(r):
  return all([r['research_coverage_ratio']>=.80,r['event_count']>=7500,r['oof_spearman_ic'] is not None and r['oof_spearman_ic']>0,r['top_bottom_spread_net_10bps'] is not None and r['top_bottom_spread_net_10bps']>0,r['positive_fold_ratio'] is not None and r['positive_fold_ratio']>=.60,r['median_fold_ic'] is not None and r['median_fold_ic']>0,r['positive_month_ratio'] is not None and r['positive_month_ratio']>=.50,r['valid_symbol_count']==6,r['positive_symbol_net_spread_count']>=4,r['top5_date_concentration'] is not None and r['top5_date_concentration']<.60,r['valid_fold_count']==5])
-def run(results_root=REPO/'.local_results'):
+def run(results_root=LEGACY_RESULTS_ROOT):
  c=json.loads(CONTRACT.read_text(encoding='utf-8')); months=c['split']['development_months']+c['split']['validation_months']; events,volumes,volume_reason=build_events(months)
  if len(events)!=9497: raise RuntimeError(f'RESEARCH_EVENT_COUNT_MISMATCH:{len(events)}')
  features=FIXED_FEATURES+volumes; q=quality(events,features,c['split']['development_months']); usable=[x['feature'] for x in q if x['usable']]
@@ -117,13 +118,13 @@ def run(results_root=REPO/'.local_results'):
   r,f,s,n=evaluate(events,usable,name,fs);r['candidate_pass']=passes(r);models.append(r);foldrows+=f;symrows+=s;fits+=n
  winners=[r for r in models if r['candidate_pass']]; rank={'RIDGE':0,'CONSTRAINED_RANDOM_FOREST':1}; selected=sorted(winners,key=lambda r:(-r['median_fold_ic'],-r['top_bottom_spread_net_10bps'],-r['positive_symbol_net_spread_count'],r['top5_date_concentration'],rank[r['model']]))[0] if winners else None; best=sorted(models,key=lambda r:(r['oof_spearman_ic'] is not None,r['oof_spearman_ic'] or -99),reverse=True)[0]
  summary={'research_id':OUT_NAME,'final_status':'PASS','final_decision':'EXPANDED_PIT_FEATURE_RESEARCH_CANDIDATE_FOUND' if selected else 'FAST3_EXPANDED_FEATURE_LINE_STOPPED_NO_STABLE_EDGE','next_freeze_stage_allowed':bool(selected),'fast3_expanded_feature_line_stopped':not bool(selected),'selected_model':selected['model'] if selected else None,'research_event_count':len(events),'former_development_role':'RESEARCH_DATA','former_validation_role':'RESEARCH_DATA','former_validation_still_independent':False,'confirmation_remains_sealed':True,'confirmation_row_read_count':0,'base_feature_count':3,'expanded_feature_count':len(features),'usable_feature_count':len(usable),'rejected_feature_count':len(q)-len(usable),'volume_features_included':bool(volumes),'volume_feature_exclusion_reason':volume_reason,'candidate_model_count':2,'hyperparameter_search_count':0,'valid_fold_count':len(fs),'invalid_fold_count':0,'time_order_violation_count':sum(not x['time_order_valid'] for x in foldrows),'data_leakage_detected':False,'research_fit_call_count':fits,'final_frozen_model_output_count':0,'broker_action_allowed':False,'paper_trading_allowed':False,'official_adoption_allowed':False,'live_trading_allowed':False,'order_output_count':0,'position_output_count':0,'broker_connection_count':0,**{f'{r["model"].lower()}_{k}':r[k] for r in models for k in ('oof_spearman_ic','top_bottom_spread_net_10bps')},**{f'best_{k}':best[k] for k in ('model','oof_spearman_ic','top_bottom_spread_net_10bps','positive_fold_ratio','positive_month_ratio','positive_symbol_net_spread_count','research_coverage_ratio')}}
- out=Path(results_root)/'v22'/OUT_NAME;out.parent.mkdir(parents=True,exist_ok=True);stage=Path(tempfile.mkdtemp(prefix='.073a_',dir=out.parent))
+ out=Path(results_root)/OUT_NAME;out.parent.mkdir(parents=True,exist_ok=True);stage=Path(tempfile.mkdtemp(prefix='.073a_',dir=out.parent))
  try:
   (stage/'v22_073a_summary.json').write_text(dump(summary),encoding='utf-8');(stage/'feature_contract.json').write_text(dump({'primary_hypothesis':HYPOTHESIS,'fixed_features':BASE_FEATURES+PRICE_FEATURES[len(BASE_FEATURES):]+ETF_FEATURES+VOLUME_FEATURES,'included_features':features,'usable_features':usable,'symbols':SYMS,'target':'V22.069_INTRADAY_OPEN_TO_CLOSE','cost_bps':10,'confirmation_remains_sealed':True,'confirmation_row_read_count':0,'volume_contract_reason':volume_reason,'random_kfold_used':False}),encoding='utf-8');pd.DataFrame(q).to_csv(stage/'feature_quality.csv',index=False);pd.DataFrame(models).to_csv(stage/'model_scorecard.csv',index=False);pd.DataFrame(foldrows).to_csv(stage/'fold_scorecard.csv',index=False);pd.DataFrame(symrows).to_csv(stage/'symbol_scorecard.csv',index=False)
   if out.exists(): shutil.rmtree(out)
   os.replace(stage,out);return summary,out
  except Exception: shutil.rmtree(stage,ignore_errors=True);raise
 if __name__=='__main__':
- a=argparse.ArgumentParser();a.add_argument('--execute',action='store_true');a.add_argument('--results-root',default=str(REPO/'.local_results'));z=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument('--execute',action='store_true');a.add_argument('--results-root',default=str(LEGACY_RESULTS_ROOT));z=a.parse_args()
  if z.execute:
   s,o=run(Path(z.results_root));print(json.dumps({**s,'summary_path':str(o/'v22_073a_summary.json')},ensure_ascii=False,sort_keys=True))

@@ -17,9 +17,10 @@ import pyarrow.parquet as pq
 from scipy.stats import spearmanr
 
 REPO = Path(__file__).resolve().parents[2]
-DEFAULT_UPSTREAM_ROOT = REPO / ".local_results"
-DEFAULT_RESULTS_ROOT = Path(r"D:/us-tech-quant-results")
-CONTRACT = REPO / ".local_results/v22/V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json"
+LEGACY_RESULTS_ROOT = Path(r"D:\us-tech-quant-results\fast3\archive\legacy_v22")
+DEFAULT_UPSTREAM_ROOT = LEGACY_RESULTS_ROOT
+DEFAULT_RESULTS_ROOT = LEGACY_RESULTS_ROOT
+CONTRACT = LEGACY_RESULTS_ROOT / "V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json"
 DATA_ROOT = Path(r"D:/us-tech-quant-data/fast3/moomoo_24h_1m")
 EXPECTED_MODEL_ARTIFACT_SHA256 = "d92fbddcac00dd3e6e37e76daa3510eda40444cc914d4dc3160c2db0ffd93ce0"
 EXPECTED_MODEL_STATE_SHA256 = "e005ee7bb350b768375cf3e11efe968121b60ec370e6222e0693c9374cfe008e"
@@ -39,8 +40,8 @@ def sha(path):
 def nullable(value): return float(value) if value is not None and np.isfinite(value) else None
 
 
-def upstream_dir(root): return Path(root) / "v22/V22.069B1_FAST3_NONLINEAR_COMPACT_MODEL_MATERIALIZATION_R1"
-def output_dir(root): return Path(root) / "v22/V22.069C_FAST3_NONLINEAR_COMPACT_VALIDATION_R1"
+def upstream_dir(root): return Path(root) / "V22.069B1_FAST3_NONLINEAR_COMPACT_MODEL_MATERIALIZATION_R1"
+def output_dir(root): return Path(root) / "V22.069C_FAST3_NONLINEAR_COMPACT_VALIDATION_R1"
 
 
 def load_lineage(root):

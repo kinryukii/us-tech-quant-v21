@@ -1,4 +1,4 @@
-param([switch]$Execute,[string]$ResultsRoot='.\.local_results')
+param([switch]$Execute,[string]$ResultsRoot='D:\us-tech-quant-results\fast3\archive\legacy_v22')
 $ErrorActionPreference='Stop';$r=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path;$p=Join-Path $r '.venv\Scripts\python.exe';$m=Join-Path $r 'scripts\v22\v22_074a_fast3_plus3_hit_target_reset_r1.py';$t=Join-Path $r 'scripts\v22\test_v22_074a_fast3_plus3_hit_target_reset_r1.py'
 if((git -C $r branch --show-current).Trim() -ne 'checkpoint/v22-074a-plus3-hit-target-reset-20260731'){throw 'BRANCH_MISMATCH'};if(-not (git -C $r log --format=%H -n 20|Where-Object {$_ -like '9812f7a*'})){throw 'BASELINE_MISSING'}
 $allowed=@('?? scripts/v22/v22_074a_fast3_plus3_hit_target_reset_r1.py','?? scripts/v22/test_v22_074a_fast3_plus3_hit_target_reset_r1.py','?? scripts/v22/run_v22_074a_fast3_plus3_hit_target_reset_r1.ps1');if(@(git -C $r status --short|Where-Object {$_ -notin $allowed}).Count){throw 'WORKTREE_NOT_CLEAN'}

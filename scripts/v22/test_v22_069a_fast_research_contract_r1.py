@@ -101,7 +101,7 @@ def test_local_fallback_publish_succeeds(tmp_path, monkeypatch):
 
 def test_runner_excludes_local_results_from_git_status():
     runner = Path(__file__).with_name("run_v22_069a_fast_research_contract_r1.ps1").read_text()
-    assert ".git\\info\\exclude" in runner and ".local_results/" in runner
+    assert ".git\\info\\exclude" in runner and "archive\\legacy_v22" in runner
 
 
 def _required_schema(metadata=None, nullable=True):

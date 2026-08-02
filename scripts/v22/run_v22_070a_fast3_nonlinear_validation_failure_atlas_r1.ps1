@@ -1,4 +1,4 @@
-param([switch]$Execute,[string]$UpstreamResultsRoot='.\.local_results',[string]$ResultsRoot='.\.local_results')
+param([switch]$Execute,[string]$UpstreamResultsRoot='D:\us-tech-quant-results\fast3\archive\legacy_v22',[string]$ResultsRoot='D:\us-tech-quant-results\fast3\archive\legacy_v22')
 $ErrorActionPreference='Stop';$r=(Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path;$p=Join-Path $r '.venv\Scripts\python.exe';$m=Join-Path $r 'scripts\v22\v22_070a_fast3_nonlinear_validation_failure_atlas_r1.py';$t=Join-Path $r 'scripts\v22\test_v22_070a_fast3_nonlinear_validation_failure_atlas_r1.py'
 if((git -C $r branch --show-current).Trim() -ne 'checkpoint/v22-070a-validation-failure-atlas-20260731'){throw 'BRANCH_MISMATCH'}
 &$p -m py_compile $m;if($LASTEXITCODE){exit $LASTEXITCODE};&$p -m pytest $t -q;if($LASTEXITCODE){exit $LASTEXITCODE};if(-not $Execute){exit 0}

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 NAME="V22.078A_FAST3_24H_EVENT_ENTRY_STRATEGY_R1"; ROOT=Path(__file__).resolve().parents[2]
-CANON=Path(r"D:\us-tech-quant-data\fast3\moomoo_24h_1m\canonical"); OUT=ROOT/".local_results"/"v22"/NAME
+CANON=Path(r"D:\us-tech-quant-data\fast3\moomoo_24h_1m\canonical"); OUT=Path(r"D:\us-tech-quant-results\fast3\archive\legacy_v22")/NAME
 SYMS=("QQQ","SOXX","TQQQ","SQQQ","SOXL","SOXS")
 MONTHS=tuple([str(x)[:7] for x in pd.period_range("2018-07","2023-03",freq="M")]+[str(x)[:7] for x in pd.period_range("2023-05","2024-11",freq="M")])
 SESSION_MAP={"NIGHT":"OVERNIGHT","PREMARKET":"PREMARKET","RTH":"REGULAR","AFTERHOURS":"AFTER_HOURS"}

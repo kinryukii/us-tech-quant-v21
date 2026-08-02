@@ -9,8 +9,8 @@ from sklearn.linear_model import Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-REPO=Path(__file__).resolve().parents[2]; OUT_NAME="V22.072A_FAST3_TARGET_REGIME_SCREEN_R1"
-CONTRACT=REPO/".local_results/v22/V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json"
+REPO=Path(__file__).resolve().parents[2]; OUT_NAME="V22.072A_FAST3_TARGET_REGIME_SCREEN_R1"; LEGACY_RESULTS_ROOT=Path(r"D:\us-tech-quant-results\fast3\archive\legacy_v22")
+CONTRACT=LEGACY_RESULTS_ROOT/"V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json"
 FEATURES=["PREMARKET_CUM_RETURN","PREMARKET_MAX_DRAWDOWN","PREMARKET_REALIZED_VOLATILITY"]; SYMS=["QQQ","SOXX","TQQQ","SQQQ","SOXL","SOXS"]; COST=.001
 MODELS={"RIDGE":{"alpha":1.0},"CONSTRAINED_RANDOM_FOREST":{"n_estimators":200,"max_depth":3,"min_samples_leaf":80,"max_features":1.0,"random_state":20260731,"n_jobs":-1}}
 TARGETS=[{"target":"V22_069_INTRADAY_OPEN_TO_CLOSE","definition":"exit_price / entry_price - 1","entry_timestamp":"09:30-09:32 first valid open","exit_timestamp":"15:58-16:00 last valid close","pit_available":True,"source_code_location":"scripts/v22/v22_069b_fast3_nonlinear_compact_development_r1.py:88-98"}]
@@ -55,7 +55,7 @@ def evaluate(events,target,reg,kind,fold_defs):
  x=pd.concat(out,ignore_index=True) if out else pd.DataFrame(columns=["date","symbol","target_return","prediction"]);return metric(x,rows,len(events)),rows,fits
 def gate(r):
  keys=[r.event_count>=1000,r.research_coverage_ratio>=.2,r.oof_spearman_ic is not None and r.oof_spearman_ic>0,r.top_bottom_spread_net_10bps is not None and r.top_bottom_spread_net_10bps>0,r.positive_fold_ratio is not None and r.positive_fold_ratio>=.6,r.median_fold_ic is not None and r.median_fold_ic>0,r.positive_month_ratio is not None and r.positive_month_ratio>=.5,r.top5_date_concentration is not None and r.top5_date_concentration<.6,r.valid_symbol_count>=4,r.positive_symbol_net_spread_count>=4,r.valid_fold_count>=5];return all(keys)
-def run(results_root=REPO/".local_results"):
+def run(results_root=LEGACY_RESULTS_ROOT):
  c=json.loads(CONTRACT.read_text());months=c["split"]["development_months"]+c["split"]["validation_months"];h=helper();events,_=h.build_events(months);fold_defs=h.expanding_folds(events.date);score=[];folds=[];fits=0
  for t in TARGETS:
   t["usable_event_count"]=len(events)
@@ -65,12 +65,12 @@ def run(results_root=REPO/".local_results"):
  passes=[r for r in score if r["candidate_pass"]];rank={"RIDGE":0,"CONSTRAINED_RANDOM_FOREST":1};best=sorted(passes,key=lambda r:(-r["median_fold_ic"],-r["top_bottom_spread_net_10bps"],-r["positive_symbol_net_spread_count"],r["top5_date_concentration"],rank[r["model"]],r["regime"]!="ALL"))[0] if passes else max(score,key=lambda r:(r["oof_spearman_ic"] is not None,r["oof_spearman_ic"] or -99))
  selected=passes[0] if len(passes)==1 else (sorted(passes,key=lambda r:(-r["median_fold_ic"],-r["top_bottom_spread_net_10bps"],-r["positive_symbol_net_spread_count"],r["top5_date_concentration"],rank[r["model"]],r["regime"]!="ALL"))[0] if passes else None)
  summary={"final_status":"PASS","final_decision":"TARGET_REGIME_RESEARCH_CANDIDATE_FOUND" if selected else "FAST3_CURRENT_FEATURE_LINE_STOPPED_NO_TARGET_REGIME_EDGE","next_freeze_stage_allowed":bool(selected),"fast3_current_feature_line_stopped":not bool(selected),"selected_target":selected["target"] if selected else None,"selected_regime":selected["regime"] if selected else None,"selected_model":selected["model"] if selected else None,"research_event_count":len(events),"former_development_role":"RESEARCH_DATA","former_validation_role":"RESEARCH_DATA","former_validation_still_independent":False,"confirmation_remains_sealed":True,"confirmation_row_read_count":0,"target_candidate_count":len(TARGETS),"regime_candidate_count":len(REGIMES),"candidate_model_count":2,"valid_fold_count":5,"invalid_fold_count":0,"time_order_violation_count":sum(not z["time_order_valid"] for z in folds),"data_leakage_detected":False,"research_fit_call_count":fits,"hyperparameter_search_count":0,"final_frozen_model_output_count":0,"broker_action_allowed":False,"paper_trading_allowed":False,"official_adoption_allowed":False,"live_trading_allowed":False,"order_output_count":0,"position_output_count":0,"broker_connection_count":0,**{f"best_{k}":best[k] for k in ("target","regime","model","oof_spearman_ic","top_bottom_spread_net_10bps","positive_fold_ratio","positive_month_ratio","positive_symbol_net_spread_count")}}
- out=Path(results_root)/"v22"/OUT_NAME;out.parent.mkdir(parents=True,exist_ok=True);stage=Path(tempfile.mkdtemp(prefix=".072a_",dir=out.parent))
+ out=Path(results_root)/OUT_NAME;out.parent.mkdir(parents=True,exist_ok=True);stage=Path(tempfile.mkdtemp(prefix=".072a_",dir=out.parent))
  try:
   (stage/"v22_072a_summary.json").write_text(stable(summary));pd.DataFrame(score).to_csv(stage/"target_regime_scorecard.csv",index=False);pd.DataFrame(folds).to_csv(stage/"fold_scorecard.csv",index=False);(stage/"target_inventory.json").write_text(stable(TARGETS));(stage/"research_contract.json").write_text(stable({"features":FEATURES,"symbols":SYMS,"cost_bps":10,"confirmation_remains_sealed":True,"confirmation_row_read_count":0,"random_kfold_used":False,"regime_threshold_search_count":0,"target_selection":"existing_contracts_shortest_to_longest_max_four"}));
   if out.exists():shutil.rmtree(out)
   os.replace(stage,out);return summary,out
  except Exception:shutil.rmtree(stage,ignore_errors=True);raise
 if __name__=="__main__":
- a=argparse.ArgumentParser();a.add_argument("--execute",action="store_true");a.add_argument("--results-root",default=str(REPO/".local_results"));z=a.parse_args()
+ a=argparse.ArgumentParser();a.add_argument("--execute",action="store_true");a.add_argument("--results-root",default=str(LEGACY_RESULTS_ROOT));z=a.parse_args()
  if z.execute:s,o=run(Path(z.results_root));print(json.dumps({**s,"summary_path":str(o/"v22_072a_summary.json")},sort_keys=True))

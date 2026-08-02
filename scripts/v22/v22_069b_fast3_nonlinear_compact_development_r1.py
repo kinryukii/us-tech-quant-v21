@@ -19,9 +19,10 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.tree import DecisionTreeRegressor, export_text
 
 REPO = Path(__file__).resolve().parents[2]
-CONTRACT = REPO / ".local_results" / "v22" / "V22.069A_FAST_RESEARCH_CONTRACT_R1" / "v22_069a_fast_frozen_research_contract.json"
+LEGACY_RESULTS_ROOT = Path(r"D:\us-tech-quant-results\fast3\archive\legacy_v22")
+CONTRACT = LEGACY_RESULTS_ROOT / "V22.069A_FAST_RESEARCH_CONTRACT_R1" / "v22_069a_fast_frozen_research_contract.json"
 EXPECTED_CONTRACT_SHA256 = "7facdfdae38e5b7d925f2cae4ad0216fc14b8afdfe3da27f3ec6a9f096c28013"
-OUT = REPO / ".local_results" / "v22" / "V22.069B_FAST3_NONLINEAR_COMPACT_DEVELOPMENT_R1"
+OUT = LEGACY_RESULTS_ROOT / "V22.069B_FAST3_NONLINEAR_COMPACT_DEVELOPMENT_R1"
 ROOT = Path(r"D:\us-tech-quant-data\fast3\moomoo_24h_1m")
 SYMS = ["QQQ", "SOXX", "TQQQ", "SQQQ", "SOXL", "SOXS"]
 FEATURES = ["PREMARKET_CUM_RETURN", "PREMARKET_MAX_DRAWDOWN", "PREMARKET_REALIZED_VOLATILITY"]

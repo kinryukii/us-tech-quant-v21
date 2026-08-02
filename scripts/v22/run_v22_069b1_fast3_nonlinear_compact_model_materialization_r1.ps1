@@ -1,4 +1,4 @@
-param([switch]$Execute, [string]$ResultsRoot = ".\.local_results")
+param([switch]$Execute, [string]$ResultsRoot = "D:\us-tech-quant-results\fast3\archive\legacy_v22")
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $python = Join-Path $repo '.venv\Scripts\python.exe'

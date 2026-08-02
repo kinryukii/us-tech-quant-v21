@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse,json
 from pathlib import Path
 import pandas as pd
-NAME='V22.079A_FAST3_STRATEGY_FAMILY_SYNTHESIS_AND_FAILURE_ATTRIBUTION_R1'; ROOT=Path(__file__).resolve().parents[2]; BASE=ROOT/'.local_results'/'v22'; OUT=BASE/NAME
+NAME='V22.079A_FAST3_STRATEGY_FAMILY_SYNTHESIS_AND_FAILURE_ATTRIBUTION_R1'; ROOT=Path(__file__).resolve().parents[2]; BASE=Path(r'D:\us-tech-quant-results\fast3\archive\legacy_v22'); OUT=BASE/NAME
 FAMILIES={'PREMARKET_FORWARD':['V22.065A','V22.065B','V22.065C','V22.065D','V22.066'],'COMPACT_MODEL':['V22.067','V22.068','V22.068D','V22.068E','V22.069A','V22.069A0'],'EVENT_24H':['V22.076A','V22.077A','V22.078A']}
 NA='NOT_AVAILABLE_WITH_CURRENT_UPSTREAM_ARTIFACTS'
 def dump(p,x):p.write_text(json.dumps(x,indent=2,default=str)+'\n',encoding='utf8')

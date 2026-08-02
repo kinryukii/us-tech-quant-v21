@@ -20,10 +20,11 @@ import sklearn
 from sklearn.tree import DecisionTreeRegressor
 
 REPO = Path(__file__).resolve().parents[2]
-CONTRACT = REPO / ".local_results/v22/V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json"
+LEGACY_RESULTS_ROOT = Path(r"D:\us-tech-quant-results\fast3\archive\legacy_v22")
+CONTRACT = LEGACY_RESULTS_ROOT / "V22.069A_FAST_RESEARCH_CONTRACT_R1/v22_069a_fast_frozen_research_contract.json"
 EXPECTED_CONTRACT_SHA256 = "7facdfdae38e5b7d925f2cae4ad0216fc14b8afdfe3da27f3ec6a9f096c28013"
 OLD_INCOMPLETE_MODEL_SHA256 = "d6d5bf3d8c14267154c64db10c26666bc2203cbe67b1ee5009bc6997c4094a31"
-DEFAULT_RESULTS_ROOT = Path(r"D:/us-tech-quant-results")
+DEFAULT_RESULTS_ROOT = LEGACY_RESULTS_ROOT
 DATA_ROOT = Path(r"D:/us-tech-quant-data/fast3/moomoo_24h_1m")
 SYMS = ["QQQ", "SOXX", "TQQQ", "SQQQ", "SOXL", "SOXS"]
 FEATURES = ["PREMARKET_CUM_RETURN", "PREMARKET_MAX_DRAWDOWN", "PREMARKET_REALIZED_VOLATILITY"]
@@ -120,7 +121,7 @@ def _verify_subprocess(model_path, csv_path):
 
 def _output_root(value):
     root = Path(value or os.environ.get("V22_069B1_RESULTS_ROOT", DEFAULT_RESULTS_ROOT))
-    return root / "v22" / "V22.069B1_FAST3_NONLINEAR_COMPACT_MODEL_MATERIALIZATION_R1"
+    return root / "V22.069B1_FAST3_NONLINEAR_COMPACT_MODEL_MATERIALIZATION_R1"
 
 
 def _require(condition, code):
