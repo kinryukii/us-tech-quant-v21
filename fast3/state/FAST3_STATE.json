@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0.0",
+  "project": "FAST3",
+  "current_stage": "FAST3-003",
+  "last_completed_stage": "FAST3-003",
+  "current_status": "PASS_ARCHITECTURE_CONSOLIDATION",
+  "live_trading_allowed": false,
+  "confirmation_read_count": 0,
+  "frozen_contracts": [
+    "FAST3-002_EXECUTABLE_ETF_LABEL_AND_PORTFOLIO_CONTRACT"
+  ],
+  "contract_hashes": {
+    "FAST3-002": "72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead"
+  },
+  "development_data_boundary": "2025-01-31T23:59:59-05:00",
+  "confirmation_data_boundary": "2025-02-08T00:00:00-05:00",
+  "result_root": "D:\\us-tech-quant-results\\fast3",
+  "data_root": "D:\\us-tech-quant-data\\fast3",
+  "active_runner": null,
+  "updated_at": "2026-08-02T15:42:00+09:00",
+  "updated_by": "FAST3-000-003_CHECKPOINT_REPAIR",
+  "git_commit": "8d86867",
+  "unresolved_blockers": [
+    "Eleven pre-existing external legacy autoresearch result directories remain outside the canonical root because their SHA256 migration would access frozen Confirmation artifacts, which this maintenance task forbids."
+  ]
+}

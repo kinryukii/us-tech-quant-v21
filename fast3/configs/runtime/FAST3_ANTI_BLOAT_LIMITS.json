@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "stage_file_budget": 12,
+  "production_code_line_budget": 1500,
+  "test_code_line_budget": 1200,
+  "single_python_file_line_budget": 600,
+  "single_function_line_budget": 100,
+  "max_public_abstractions_per_stage": 2,
+  "max_new_module_families_per_stage": 1,
+  "max_formal_config_per_stage": 1,
+  "max_runner_per_stage": 1,
+  "max_powershell_wrapper_per_stage": 1,
+  "max_report_per_stage": 1,
+  "max_csv_json_bytes_outside_legacy": 1048576,
+  "forbidden_binary_suffixes": [".parquet", ".pickle", ".pkl", ".joblib"],
+  "model_search_limits": {"complex_models": 2, "dummy_models": 1, "feature_sets": 3, "parameter_combinations_per_model": 3, "seeds": 3, "total_candidates": 36}
+}

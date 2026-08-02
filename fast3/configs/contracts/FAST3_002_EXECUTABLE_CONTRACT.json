@@ -1,0 +1,18 @@
+{
+  "contract_id": "FAST3-002_EXECUTABLE_ETF_LABEL_AND_PORTFOLIO_CONTRACT",
+  "version": "1.0.0",
+  "default_entry_mode": "MODE_A_NEXT_BAR_OPEN",
+  "entry_modes": {
+    "MODE_A_NEXT_BAR_OPEN": {"price_source": "NEXT_COMPLETED_TRADABLE_BAR_OPEN", "research_only": false},
+    "MODE_B_NEXT_BAR_VWAP_PROXY": {"price_source": "NEXT_COMPLETED_BAR_TYPICAL_PRICE_HLC3", "research_only": true}
+  },
+  "universe": {"SOXX": {"UP": "SOXL", "DOWN": "SOXS"}, "QQQ": {"UP": "TQQQ", "DOWN": "SQQQ"}},
+  "time": {"logic_clock": "timestamp_et", "audit_clock": "timestamp_utc", "decision_bar": "completed", "entry_requires_strictly_later_timestamp": true, "broker_trade_date": "source field retained; never inferred from UTC date"},
+  "exit": {"target_net_return": 0.03, "stop_gross_return": -0.015, "stop_policy_assumption": "fixed research default, not optimized", "max_holding_minutes": 1440, "force_exit_sessions": [], "data_end_exit": "last completed ETF close proxy", "same_bar_target_stop_policy": "STOP_FIRST_CONSERVATIVE"},
+  "cost": {"round_trip_scenarios_bps": [10, 20], "definition": "total entry plus exit spread/slippage/fee proxy; split symmetrically", "entry_bps": [5, 10], "exit_bps": [5, 10]},
+  "portfolio": {"initial_nav": 100000.0, "max_concurrent_positions": 1, "single_symbol_max_weight": 1.0, "total_gross_leverage_limit": 1.0, "add_positions": false, "average_down": false, "repeat_signal": "ignore while active", "opposite_signal": "reject while active", "capital_reuse": "after recorded exit timestamp"},
+  "nested_walk_forward": {"development_only": true, "purge_minutes": 1440, "embargo_minutes": 1440, "outer_test_selection_forbidden": true, "scaler_fit": "train fold only"},
+  "confirmation_guard": {"confirmation_start_et": "2025-02-08T00:00:00-05:00", "confirmation_read_count": 0, "action": "raise CONFIRMATION_PATH_FORBIDDEN"},
+  "safety": {"research_only": true, "broker_action_allowed": false, "live_trading_allowed": false, "official_adoption_allowed": false, "underlying_times_three_forbidden": true},
+  "config_sha256": "72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead"
+}
