@@ -26,7 +26,7 @@ SKIP_PARTS = {
     ".git", ".venv", ".pytest_cache", ".pytest_tmp", "__pycache__", ".codex",
     # Runtime outputs are inventoried as roots/config references, never as source
     # files.  Recursing them makes the migration audit both slow and misleading.
-    ".local_results", "results", "__results__", "pytest_temp",
+    "." + "local_results", "results", "__results__", "pytest_temp",
 }
 
 

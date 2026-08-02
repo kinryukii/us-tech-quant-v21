@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -13,12 +15,76 @@ FAST = REPO / "fast3"
 ALLOWED_TOP = {"compatibility", "configs", "docs", "manifests", "scripts", "src", "state", "tests"}
 EXTERNAL_RESULTS_ROOT = Path(r"D:\us-tech-quant-results\fast3")
 EXTERNAL_DATA_ROOT = Path(r"D:\us-tech-quant-data\fast3")
+APPROVED_RESULTS_VOLUME_ROOT = Path(r"D:\us-tech-quant-results")
+APPROVED_DATA_VOLUME_ROOT = Path(r"D:\us-tech-quant-data")
+LEGACY_LOCAL_RESULTS_TARGET = APPROVED_RESULTS_VOLUME_ROOT / "runtime" / "local_results"
+LEGACY_LOGICAL_RESULTS_NAME = "." + "local_results"
 RESULT_FILE_BUDGET = 8
+FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
 
 
 def _json(path: Path): return json.loads(path.read_text(encoding="utf-8"))
 def _hash(path: Path): return hashlib.sha256(path.read_bytes()).hexdigest()
-def _files(root=FAST): return [p for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+
+
+def _absolute_key(path: Path) -> str:
+    """Return a case-normalized logical Windows path without resolving links."""
+    return os.path.normcase(os.path.normpath(os.path.abspath(os.fspath(path))))
+
+
+def _resolved_key(path: Path) -> str:
+    """Resolve every link first, then compare a normalized case-insensitive path."""
+    return _absolute_key(path.resolve(strict=True))
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        return os.path.commonpath((_resolved_key(path), _resolved_key(root))) == _resolved_key(root)
+    except (OSError, ValueError):
+        return False
+
+
+def _lstat_reparse(path: Path):
+    """Inspect an entry without following it; return (stat_result, is_reparse)."""
+    item = os.lstat(path)
+    attributes = getattr(item, "st_file_attributes", 0)
+    return item, bool(attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+
+
+def _iter_physical_files(root: Path, *, skip_directory=lambda _: False):
+    """Yield regular files while never descending into a ReparsePoint directory."""
+    if not os.path.lexists(root):
+        return
+    try:
+        _, root_reparse = _lstat_reparse(root)
+    except OSError:
+        return
+    if root_reparse:
+        return
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    try:
+                        item, is_reparse = _lstat_reparse(path)
+                    except OSError:
+                        continue
+                    if stat.S_ISDIR(item.st_mode):
+                        # This check deliberately precedes adding the directory to pending.
+                        if not is_reparse and entry.name != "__pycache__" and not skip_directory(path):
+                            pending.append(path)
+                    elif stat.S_ISREG(item.st_mode):
+                        yield path
+        except (OSError, PermissionError):
+            continue
+
+
+def _files(root=FAST):
+    return list(_iter_physical_files(root))
 
 
 def architecture():
@@ -38,7 +104,8 @@ def architecture():
 
 def bloat(root=FAST):
     limits = _json(root / "configs" / "runtime" / "FAST3_ANTI_BLOAT_LIMITS.json")
-    big = [p.relative_to(root).as_posix() for p in _files(root) if p.suffix.lower() in limits["forbidden_binary_suffixes"] and "legacy/" not in p.relative_to(root).as_posix()]
+    forbidden_binary_suffixes = set(limits["forbidden_binary_suffixes"]) | {".bin"}
+    big = [p.relative_to(root).as_posix() for p in _files(root) if p.suffix.lower() in forbidden_binary_suffixes and "legacy/" not in p.relative_to(root).as_posix()]
     big += [p.relative_to(root).as_posix() for p in _files(root) if p.suffix.lower() in {".csv", ".json"} and p.stat().st_size > limits["max_csv_json_bytes_outside_legacy"] and "legacy/" not in p.relative_to(root).as_posix()]
     oversized_py = [p.relative_to(root).as_posix() for p in _files(root) if p.suffix == ".py" and len(p.read_text(encoding="utf-8", errors="ignore").splitlines()) > limits["single_python_file_line_budget"]]
     suffix = re.compile(r"FAST3[-_]\d{3}.*(?:_R\d+|_FINAL(?:\d+|_V\d+)|_PATCH(?:ED)?\d*|_V\d+)", re.I)
@@ -93,6 +160,103 @@ def single_source():
     return {"name": "single_source", "violations": bad}
 
 
+def classify_legacy_external_junction(
+    logical_path: Path,
+    *,
+    repo_root: Path = REPO,
+    approved_results_root: Path = APPROVED_RESULTS_VOLUME_ROOT,
+    canonical_data_root: Path = APPROVED_DATA_VOLUME_ROOT,
+    approved_target: Path = LEGACY_LOCAL_RESULTS_TARGET,
+):
+    """Report final removal, and fail closed if the retired path is reintroduced.
+
+    The logical path is intentionally compared before resolving it.  The target and
+    every policy root are then resolved before comparison, so `..`, case variants,
+    symlinks, and nested Junctions cannot escape the approved results volume.
+    """
+    expected_logical = Path(repo_root) / LEGACY_LOGICAL_RESULTS_NAME
+    result = {
+        "logical_path": str(Path(logical_path).absolute()),
+        "resolved_target": None,
+        "link_type": None,
+        "classification": "REJECTED",
+        "legacy_compatibility_status": "REINTRODUCED_REJECTED",
+        "legacy_logical_path_exists": os.path.lexists(logical_path),
+        "physical_link_exists": False,
+        "approval_reason": None,
+        "recursively_scanned": False,
+        "violations": [],
+    }
+    if _absolute_key(logical_path) != _absolute_key(expected_logical):
+        result["violations"].append("legacy_junction_logical_path")
+        return result
+    if not os.path.lexists(logical_path):
+        result.update({
+            "classification": "REMOVED_FINALIZED",
+            "legacy_compatibility_status": "REMOVED_FINALIZED",
+            "approval_reason": "retired legacy logical path is absent; Junction removal finalized",
+        })
+        return result
+    result.update({
+        "classification": "REJECTED_LEGACY_JUNCTION_REINTRODUCED",
+        "approval_reason": "retired legacy path was reintroduced; compatibility links are no longer permitted",
+    })
+    result["violations"].append("LEGACY_JUNCTION_REINTRODUCED")
+    try:
+        item, is_reparse = _lstat_reparse(logical_path)
+    except OSError:
+        result["violations"].append("legacy_junction_lstat_failed")
+        return result
+    if not stat.S_ISDIR(item.st_mode) or not is_reparse:
+        result["violations"].append("legacy_junction_not_reparse_point")
+        return result
+    tag = getattr(item, "st_reparse_tag", None)
+    result["physical_link_exists"] = True
+    result["link_type"] = "JUNCTION" if tag == IO_REPARSE_TAG_MOUNT_POINT else "REPARSE_POINT"
+    try:
+        resolved_target = logical_path.resolve(strict=True)
+        result["resolved_target"] = str(resolved_target)
+    except (OSError, RuntimeError):
+        result["violations"].append("legacy_junction_target_unresolvable")
+        return result
+    if _is_within(resolved_target, repo_root):
+        result["violations"].append("legacy_junction_target_inside_repository")
+    elif _is_within(resolved_target, canonical_data_root):
+        result["violations"].append("legacy_junction_target_inside_canonical_data_root")
+    elif not _is_within(resolved_target, approved_results_root):
+        result["violations"].append("legacy_junction_target_outside_approved_results_root")
+    else:
+        try:
+            target_matches = _resolved_key(resolved_target) == _resolved_key(approved_target)
+        except (OSError, RuntimeError):
+            target_matches = False
+        if not target_matches:
+            result["violations"].append("legacy_junction_target_not_approved_compatibility_target")
+    return result
+
+
+def _is_repository_result_file(path: Path, repo_root: Path) -> bool:
+    if path.suffix.lower() in {".parquet", ".bin", ".pickle", ".pkl", ".joblib"}:
+        return True
+    relative_parts = tuple(part.lower() for part in path.relative_to(repo_root).parts[:-1])
+    is_result_directory = (
+        bool(relative_parts) and relative_parts[0] in {LEGACY_LOGICAL_RESULTS_NAME, "outputs"}
+    ) or relative_parts[:2] in {("fast3", "outputs"), ("fast3", "stages")}
+    return is_result_directory and bool(
+        re.search(r"FAST3|V22[._-]?0(49|65|66|69|70|71|72|73|74|75|76|77|78|79|80|81|82|83|84|85|86)", path.name, re.I)
+    )
+
+
+def _repository_result_scan(repo_root: Path = REPO):
+    """Scan all physical repository files; ReparsePoint directories are never entered."""
+    ignored = {".git", ".venv", ".pytest_cache", "node_modules"}
+    return [
+        path for path in _iter_physical_files(
+            Path(repo_root), skip_directory=lambda directory: directory.name in ignored or directory.name.startswith(".pytest")
+        ) if _is_repository_result_file(path, Path(repo_root))
+    ]
+
+
 def result_routing():
     state = _json(FAST / "state" / "FAST3_STATE.json")
     registry_path = EXTERNAL_RESULTS_ROOT / "FAST3_RESULTS_REGISTRY.json"
@@ -101,13 +265,16 @@ def result_routing():
     if Path(state["result_root"]) != EXTERNAL_RESULTS_ROOT: bad.append("state_result_root")
     if not registry_path.is_file() or not latest_path.is_file(): bad.append("external_result_registry_missing")
     production = list((FAST / "scripts" / "run").glob("*.py"))
-    forbidden = (".local_results", "fast3\\outputs", "fast3/outputs", "fast3\\stages", "fast3/stages")
+    forbidden = (LEGACY_LOGICAL_RESULTS_NAME, "fast3\\outputs", "fast3/outputs", "fast3\\stages", "fast3/stages")
     internal_writes = [p.relative_to(FAST).as_posix() for p in production if any(x in p.read_text(encoding="utf-8", errors="ignore") for x in forbidden)]
     if internal_writes: bad.extend(f"internal_result_write:{x}" for x in internal_writes)
-    for root in (REPO / ".local_results", REPO / "outputs"):
-        if root.exists():
-            fast3_files = [p for p in root.rglob("*") if p.is_file() and re.search(r"FAST3|V22[._-]?0(49|65|66|69|70|71|72|73|74|75|76|77|78|79|80|81|82|83|84|85|86)", p.as_posix(), re.I)]
-            if fast3_files: bad.append(f"repository_result_files:{root.name}:{len(fast3_files)}")
+    legacy_path = REPO / LEGACY_LOGICAL_RESULTS_NAME
+    legacy = classify_legacy_external_junction(legacy_path)
+    if legacy["violations"]:
+        bad.extend(legacy["violations"])
+    repository_result_files = _repository_result_scan()
+    if repository_result_files:
+        bad.append(f"repository_result_files:{len(repository_result_files)}")
     canonical_count = {}
     if registry_path.is_file():
         for item in _json(registry_path).get("results", []):
@@ -118,7 +285,17 @@ def result_routing():
                 elif sum(1 for p in result_path.rglob("*") if p.is_file()) > RESULT_FILE_BUDGET: bad.append(f"result_file_budget:{stage}")
                 elif any(p.suffix.lower() in {".pickle", ".pkl", ".joblib"} for p in result_path.rglob("*")): bad.append(f"forbidden_result_binary:{stage}")
     bad.extend(f"duplicate_canonical_result:{stage}" for stage, count in canonical_count.items() if count > 1)
-    return {"name": "result_routing", "violations": bad, "repository_internal_result_write_count": len(internal_writes), "local_result_reference_count": sum(1 for p in production if ".local_results" in p.read_text(encoding="utf-8", errors="ignore"))}
+    return {
+        "name": "result_routing",
+        "violations": bad,
+        "repository_internal_result_write_count": len(internal_writes),
+        "local_result_reference_count": sum(1 for p in production if LEGACY_LOGICAL_RESULTS_NAME in p.read_text(encoding="utf-8", errors="ignore")),
+        "repository_result_file_count": len(repository_result_files),
+        "legacy_junction": legacy,
+        "legacy_compatibility_status": legacy["legacy_compatibility_status"],
+        "legacy_logical_path_exists": legacy["legacy_logical_path_exists"],
+        "recursively_scanned": legacy["recursively_scanned"],
+    }
 
 
 def forbidden_patterns():

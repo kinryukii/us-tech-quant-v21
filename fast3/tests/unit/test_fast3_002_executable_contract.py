@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 import importlib.util
 import json
+import os
 import shutil
+import subprocess
 
 import numpy as np
 import pandas as pd
@@ -104,4 +106,196 @@ def test_40_non_test_mode_rejects_repo_result_path(monkeypatch):
     with pytest.raises(ValueError): resolve_output_dir(str(ROOT / "fast3" / "outputs"))
 def test_41_test_mode_allows_pytest_tmp_path(monkeypatch, tmp_path):
     monkeypatch.setenv("FAST3_TEST_MODE", "1"); assert resolve_output_dir(str(tmp_path)) == tmp_path
-def test_42_result_routing_guard_passes(): assert not guard.result_routing()["violations"]
+def test_42_result_routing_guard_passes():
+    result = guard.result_routing()
+    legacy = result["legacy_junction"]
+    assert not result["violations"]
+    assert result["repository_result_file_count"] == 0
+    assert result["legacy_compatibility_status"] == "REMOVED_FINALIZED"
+    assert result["legacy_logical_path_exists"] is False
+    assert result["recursively_scanned"] is False
+    assert legacy == {
+        "logical_path": str(ROOT / ".local_results"),
+        "resolved_target": None,
+        "link_type": None,
+        "classification": "REMOVED_FINALIZED",
+        "legacy_compatibility_status": "REMOVED_FINALIZED",
+        "legacy_logical_path_exists": False,
+        "physical_link_exists": False,
+        "approval_reason": "retired legacy logical path is absent; Junction removal finalized",
+        "recursively_scanned": False,
+        "violations": [],
+    }
+
+
+def _make_junction(logical: Path, target: Path):
+    completed = subprocess.run(["cmd", "/c", "mklink", "/J", str(logical), str(target)], text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stderr or completed.stdout
+    assert os.path.lexists(logical)
+
+
+def _junction_fixture(tmp_path):
+    repo = tmp_path / "repo"; repo.mkdir()
+    results = tmp_path / "results"; results.mkdir()
+    data = tmp_path / "data"; data.mkdir()
+    target = results / "runtime" / "local_results"; target.mkdir(parents=True)
+    return repo, results, data, target
+
+
+def _classify_temp_junction(repo, results, data, target):
+    logical = repo / ".local_results"
+    return guard.classify_legacy_external_junction(
+        logical, repo_root=repo, approved_results_root=results,
+        canonical_data_root=data, approved_target=results / "runtime" / "local_results",
+    )
+
+
+def test_43_reintroduced_approved_external_junction_is_rejected_without_scanning(tmp_path):
+    repo, results, data, target = _junction_fixture(tmp_path)
+    (target / "FAST3_historical.parquet").write_bytes(b"outside")
+    _make_junction(repo / ".local_results", target)
+    result = _classify_temp_junction(repo, results, data, target)
+    assert result["classification"] == "REJECTED_LEGACY_JUNCTION_REINTRODUCED"
+    assert "LEGACY_JUNCTION_REINTRODUCED" in result["violations"]
+    assert result["recursively_scanned"] is False
+    assert guard._repository_result_scan(repo) == []
+
+
+def test_44_plain_local_results_directory_is_rejected(tmp_path):
+    repo, results, data, target = _junction_fixture(tmp_path)
+    (repo / ".local_results").mkdir()
+    violations = _classify_temp_junction(repo, results, data, target)["violations"]
+    assert "LEGACY_JUNCTION_REINTRODUCED" in violations
+    assert "legacy_junction_not_reparse_point" in violations
+
+
+def test_45_junction_into_repository_is_rejected(tmp_path):
+    repo, results, data, target = _junction_fixture(tmp_path)
+    internal = repo / "internal"; internal.mkdir()
+    _make_junction(repo / ".local_results", internal)
+    violations = _classify_temp_junction(repo, results, data, target)["violations"]
+    assert "LEGACY_JUNCTION_REINTRODUCED" in violations
+    assert "legacy_junction_target_inside_repository" in violations
+
+
+def test_46_junction_into_canonical_data_is_rejected(tmp_path):
+    repo, results, data, target = _junction_fixture(tmp_path)
+    _make_junction(repo / ".local_results", data)
+    violations = _classify_temp_junction(repo, results, data, target)["violations"]
+    assert "LEGACY_JUNCTION_REINTRODUCED" in violations
+    assert "legacy_junction_target_inside_canonical_data_root" in violations
+
+
+def test_47_junction_to_unapproved_external_path_is_rejected(tmp_path):
+    repo, results, data, target = _junction_fixture(tmp_path)
+    other = tmp_path / "other"; other.mkdir()
+    _make_junction(repo / ".local_results", other)
+    violations = _classify_temp_junction(repo, results, data, target)["violations"]
+    assert "LEGACY_JUNCTION_REINTRODUCED" in violations
+    assert "legacy_junction_target_outside_approved_results_root" in violations
+
+
+def test_48_junction_with_missing_target_is_rejected(tmp_path):
+    repo, results, data, target = _junction_fixture(tmp_path)
+    _make_junction(repo / ".local_results", target)
+    target.rmdir()
+    violations = _classify_temp_junction(repo, results, data, target)["violations"]
+    assert "LEGACY_JUNCTION_REINTRODUCED" in violations
+    assert "legacy_junction_target_unresolvable" in violations
+
+
+@pytest.mark.parametrize("suffix", [".parquet", ".bin", ".pickle"])
+def test_49_repository_binary_result_files_are_rejected_without_following_junction(tmp_path, suffix):
+    repo, results, data, target = _junction_fixture(tmp_path)
+    outputs = repo / "outputs"; outputs.mkdir()
+    (outputs / f"FAST3_real{suffix}").write_bytes(b"repository")
+    _make_junction(repo / ".local_results", target)
+    files = guard._repository_result_scan(repo)
+    assert [path.name for path in files] == [f"FAST3_real{suffix}"]
+    bloat_root = tmp_path / "bloat"; (bloat_root / "configs" / "runtime").mkdir(parents=True)
+    shutil.copy(ROOT / "fast3" / "configs" / "runtime" / "FAST3_ANTI_BLOAT_LIMITS.json", bloat_root / "configs" / "runtime" / "FAST3_ANTI_BLOAT_LIMITS.json")
+    (bloat_root / f"real{suffix}").write_bytes(b"repository")
+    assert guard.bloat(bloat_root)["violations"]
+
+
+def test_50_windows_case_and_normalization_cannot_bypass_approval(tmp_path):
+    repo, results, data, target = _junction_fixture(tmp_path)
+    escaped = results / "runtime" / "other"; escaped.mkdir(parents=True)
+    _make_junction(repo / ".local_results", escaped)
+    result = _classify_temp_junction(repo, results, data, escaped)
+    assert "LEGACY_JUNCTION_REINTRODUCED" in result["violations"]
+    assert "legacy_junction_target_not_approved_compatibility_target" in result["violations"]
+    # Case variants still identify the same policy root, but a different canonical target remains rejected.
+    assert guard._is_within(escaped, Path(str(results).upper()))
+
+
+STORAGE_RUNNERS = (
+    "run_fast3_minimal_empirical_validation_agent.ps1",
+    "run_fast3_event_factor_law_discovery_agent.ps1",
+    "run_fast3_event_factor_law_discovery_r2_agent.ps1",
+    "run_fast3_event_factor_cohort_r3_agent.ps1",
+    "run_fast3_r3_economic_integrity_audit_agent.ps1",
+)
+STORAGE_AGENT_DIR = ROOT / "scripts" / "fast3" / "agent"
+
+
+def _storage_contract_result(external_root=r"D:\us-tech-quant-results"):
+    helper = STORAGE_AGENT_DIR / "fast3_storage_contract_r1.ps1"
+    command = (
+        f"& {{ . '{helper}'; Resolve-Fast3StorageContract -RepoRoot '{ROOT}' "
+        f"-ExternalResultsRoot '{external_root}' -CacheRoot 'D:\\us-tech-quant-cache' | ConvertTo-Json -Compress }}"
+    )
+    completed = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], text=True, capture_output=True)
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
+
+
+def test_51_all_active_runners_default_to_external_storage_contract():
+    contract = _storage_contract_result()
+    assert set(contract) >= {"RuntimeRoot", "ScratchRoot", "FrozenRoot", "ArchiveRoot", "CacheRoot"}
+    assert all(not guard._is_within(Path(contract[key]), ROOT) for key in ("RuntimeRoot", "ScratchRoot", "FrozenRoot", "ArchiveRoot", "CacheRoot"))
+    for name in STORAGE_RUNNERS:
+        source = (STORAGE_AGENT_DIR / name).read_text(encoding="utf-8")
+        assert ".local_results" not in source
+        assert "Resolve-Fast3StorageContract" in source
+        assert "$RuntimeResultsBase" in source and "$FrozenResultsBase" in source
+
+
+def test_52_legacy_runner_argument_maps_only_to_approved_external_target():
+    legacy = _storage_contract_result(str(ROOT / ".local_results"))
+    assert legacy["ResultsRoot"] == r"D:\us-tech-quant-results"
+    assert legacy["LegacyCompatibilityRoot"] == r"D:\us-tech-quant-results\runtime\local_results"
+    assert legacy["configured_path"] == r"D:\us-tech-quant\.local_results"
+    assert legacy["resolved_path"] == r"D:\us-tech-quant-results\runtime\local_results"
+    assert legacy["classification"] == "LEGACY_PATH_ALIAS_AFTER_JUNCTION_REMOVAL"
+    assert legacy["physical_link_exists"] is False
+    assert legacy["approval_reason"] == "exact retired legacy path mapped to approved external runtime target"
+    assert _storage_contract_result(r"D:\us-tech-quant-results")["RuntimeRoot"] == r"D:\us-tech-quant-results\runtime"
+
+
+def test_53_unapproved_legacy_runner_argument_fails_closed():
+    helper = STORAGE_AGENT_DIR / "fast3_storage_contract_r1.ps1"
+    command = (
+        f"& {{ . '{helper}'; Resolve-Fast3StorageContract -RepoRoot '{ROOT}' "
+        "-ExternalResultsRoot 'D:\\us-tech-quant-data' -CacheRoot 'D:\\us-tech-quant-cache' }"
+    )
+    completed = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], text=True, capture_output=True)
+    assert completed.returncode != 0
+    assert "approved" in completed.stderr.lower()
+
+
+@pytest.mark.parametrize("path", [
+    r"D:\us-tech-quant\.LOCAL_RESULTS",
+    r"D:\us-tech-quant\.local_results\\",
+    r"D:\us-tech-quant\subdir\\..\.local_results",
+    r"D:\us-tech-quant\.local_results\child",
+    r"D:\us-tech-quant\other-missing-path",
+])
+def test_54_only_exact_missing_legacy_alias_is_accepted(path):
+    helper = STORAGE_AGENT_DIR / "fast3_storage_contract_r1.ps1"
+    command = (
+        f"& {{ . '{helper}'; Resolve-Fast3StorageContract -RepoRoot '{ROOT}' "
+        f"-ExternalResultsRoot '{path}' -CacheRoot 'D:\\us-tech-quant-cache' }}"
+    )
+    completed = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], text=True, capture_output=True)
+    assert completed.returncode != 0
