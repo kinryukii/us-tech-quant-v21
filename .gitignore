@@ -78,3 +78,4 @@ tmp/
 us-tech-quanttmppytest/
 __pycache__/
 *.pyc
+*.before_*.bak

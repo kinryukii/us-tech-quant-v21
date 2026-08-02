@@ -1,0 +1,14 @@
+{
+  "stage": "FAST3-002",
+  "status": "FROZEN_IMPLEMENTATION_COMPLETE",
+  "config_path": "fast3/configs/FAST3_002_EXECUTABLE_CONTRACT.json",
+  "config_sha256": "72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead",
+  "confirmation_read_count": 0,
+  "entry_modes": ["MODE_A_NEXT_BAR_OPEN", "MODE_B_NEXT_BAR_VWAP_PROXY"],
+  "default_entry_mode": "MODE_A_NEXT_BAR_OPEN",
+  "real_etf_price_required": true,
+  "underlying_times_three_forbidden": true,
+  "primary_portfolio": {"max_concurrent_positions": 1, "overlap_rejection": true},
+  "nested_walk_forward": {"purge_minutes": 1440, "embargo_minutes": 1440, "development_only": true},
+  "safety": {"broker_action_allowed": false, "live_trading_allowed": false, "official_adoption_allowed": false}
+}

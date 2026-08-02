@@ -1,0 +1,75 @@
+﻿IMPORTANT RESUME AND PRESERVATION INSTRUCTION:
+
+The working tree contains valuable partial and untracked V22.080A implementation
+created by a previous Codex run.
+
+The existing files are:
+
+- scripts/v22/v22_080a_fast3_24h_one_percent_move_atlas_r1.py
+- scripts/v22/test_v22_080a_fast3_24h_one_percent_move_atlas_r1.py
+- scripts/v22/run_v22_080a_fast3_24h_one_percent_move_atlas_r1.ps1
+
+Do not run git clean, git reset --hard, checkout away changes, or delete these files.
+Do not replace them wholesale before inspection.
+
+Before editing:
+
+1. Run git status --short.
+2. Read the complete contents of the three existing V22.080A files.
+3. Inspect the relevant before_fast3_full_chain backup files for context when useful.
+4. Search the existing implementation for TODO, pass, NotImplementedError,
+   placeholder, dummy logic, return None, empty DataFrame placeholders, unused
+   functions, disconnected code paths, and incomplete summary fields.
+5. Preserve correct existing work.
+6. Repair incomplete or incorrect work in place.
+7. Treat interrupted result files and unsupported PASS claims as non-authoritative.
+8. Re-run py_compile, targeted pytest, and the actual full-data runner.
+9. Continue through the complete gated FAST3 chain. Do not stop after V22.080A when
+   its frozen gate passes.
+10. Do not stage or commit .codex, backup files, deployment scripts, local prompts,
+    canonical data, generated CSV results, or profiler/cache output.
+
+Normal code, test, fixture, path, serialization, and PowerShell failures must be
+repaired and rerun. Do not ask for confirmation between research stages.
+
+Read these files in this order:
+
+1. AGENTS.md
+2. fast3/docs/governance/FAST3_AUTONOMOUS_MASTER_DIRECTIVE.md
+3. CODEX_GOAL.md
+4. CODEX_PLAN.md
+5. CODEX_STATUS.md
+
+Take ownership of the entire FAST3 gated research chain, not only V22.080A.
+
+Start from the current repository state. Inspect and complete the existing V22.080A
+files first. Then execute compile, targeted tests, the actual full-data runner, output
+inspection, failure repair, and reruns.
+
+Apply every frozen gate exactly as written in `fast3/docs/governance/FAST3_AUTONOMOUS_MASTER_DIRECTIVE.md`:
+
+- If a stage's research gate passes, continue automatically into the next stage.
+- If a stage's research gate fails, do not weaken the gate or force continuation.
+  Create the required final aggregate summary/report and end the FAST3 chain with the
+  verified negative research decision.
+- Do not ask for user confirmation between stages.
+- Do not stop merely to report intermediate progress.
+- Normal code, fixture, schema, serialization, path, PowerShell, test, or runner
+  failures are repair work, not stopping conditions.
+- Never fabricate, beautify, suppress, relabel, or extrapolate evidence.
+- Never modify canonical data, generate orders, call broker execution, enable paper
+  trading, enable official adoption, push remotely, or merge.
+- Preserve Confirmation isolation and record exact read counts.
+- Update CODEX_PLAN.md and CODEX_STATUS.md after material milestones so the task can
+  resume after context changes.
+- Keep to the version and file-count limits in the master directive.
+- Use one final consolidated response only when the gated chain has ended.
+
+Continue until either:
+
+A. A frozen upstream research gate fails and the required final aggregate outputs are
+   complete; or
+B. V22.080D is implemented, tested, initialized, smoke-run, and honestly reports
+   PROSPECTIVE_SHADOW_DEPLOYED_AWAITING_SAMPLE.
+
+Begin execution now. Do not merely summarize the instructions.

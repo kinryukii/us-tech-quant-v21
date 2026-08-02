@@ -1,0 +1,16 @@
+{
+  "stage": "FAST3-003",
+  "captured_before_moves": true,
+  "branch": "checkpoint/v22-078a-24h-event-entry-strategy-20260731",
+  "fast3_file_count": 72,
+  "fast3_directory_count": 51,
+  "fast3_python_line_count": 716,
+  "fast3_002_contract_sha256": "72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead",
+  "root_fast3_entry_documents": ["FAST3.md"],
+  "compatibility_launcher_count": 3,
+  "legacy_prompt_count": 7,
+  "legacy_authorization_count": 10,
+  "legacy_patch_json_count": 4,
+  "generated_output_count_in_repo": 2,
+  "actions_excluded": ["model_training", "confirmation_access", "canonical_data_move", "external_results_move", "legacy_v22_engine_move"]
+}

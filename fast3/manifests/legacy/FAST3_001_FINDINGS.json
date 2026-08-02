@@ -1,0 +1,14 @@
+{
+  "audit_stage": "FAST3-001",
+  "status": "completed_static_and_artifact_audit",
+  "confirmed_findings": [
+    {"id": "F001", "severity": "CRITICAL", "category": "research_design", "evidence": ["scripts/v22/v22_080a_fast3_24h_one_percent_move_atlas_r1.py:44-66", "scripts/v22/v22_080b_fast3_one_percent_move_predictability_preflight_r1.py:119-155"], "impact": "underlying first-passage label differs from real ETF 3% target/timeout economics", "minimal_reproduction": "fast3/tests/regression/test_fast3_001_label_execution_contract.py::test_one_percent_underlying_label_is_not_the_three_percent_etf_economic_target", "historical_results_change_if_fixed": true},
+    {"id": "F002", "severity": "CRITICAL", "category": "execution_contract", "evidence": ["scripts/v22/v22_080b_fast3_one_percent_move_predictability_preflight_r1.py:139-156"], "impact": "selected overlapping 24-hour outcomes have no portfolio/overlap rule", "minimal_reproduction": "fast3/tests/regression/test_fast3_001_label_execution_contract.py::test_selected_candidates_are_evaluated_independently_without_a_position_overlap_gate", "historical_results_change_if_fixed": true},
+    {"id": "F003", "severity": "HIGH", "category": "model_selection", "evidence": ["scripts/v22/v22_080b_fast3_one_percent_move_predictability_preflight_r1.py:127-136"], "impact": "candidate choice is in-sample Development scoring without nested purge", "minimal_reproduction": "static source inspection", "historical_results_change_if_fixed": true},
+    {"id": "F004", "severity": "HIGH", "category": "objective", "evidence": ["V22.080B summary validation_economics", "scripts/v22/v22_080b_fast3_one_percent_move_predictability_preflight_r1.py:134,190"], "impact": "lift below gate and negative costs coexist", "minimal_reproduction": "frozen V22.080B summary", "historical_results_change_if_fixed": false},
+    {"id": "F005", "severity": "MEDIUM", "category": "session_attribution", "evidence": ["scripts/v22/v22_080b_fast3_one_percent_move_predictability_preflight_r1.py:57", "v22_080b_concentration.csv"], "impact": "39.45% of selected rows use unknown session code 4", "minimal_reproduction": "sum session_code=4 rows", "historical_results_change_if_fixed": false}
+  ],
+  "excluded_or_not_confirmed": ["future feature shift", "centered rolling", "bfill", "merge_asof future matching", "fixed 3x ETF arithmetic", "Confirmation tuning", "same-bar stop/target favourable ordering"],
+  "unresolved_high_risk_count": 4,
+  "unresolved_high_risks": ["direction conditional on opportunity", "regime/session decomposition", "non-overlap portfolio P&L", "nested purged model selection"]
+}

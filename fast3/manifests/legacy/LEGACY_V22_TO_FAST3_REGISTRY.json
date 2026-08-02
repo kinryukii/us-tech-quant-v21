@@ -1,0 +1,14 @@
+{
+  "numbering_scheme": {"display": "FAST3-000", "file": "fast3_000_", "directory": "FAST3_000_<NAME>"},
+  "new_stages": [
+    {"id": "FAST3-000", "name": "repository inventory, historical import, and migration"},
+    {"id": "FAST3-001", "name": "code-level failure analysis"},
+    {"id": "FAST3-002", "name": "executable label and trading-contract rebuild", "reserved": true},
+    {"id": "FAST3-003", "name": "opportunity/direction two-stage model", "reserved": true},
+    {"id": "FAST3-004", "name": "selective trading / abstention gate", "reserved": true},
+    {"id": "FAST3-005", "name": "nested walk-forward robustness", "reserved": true},
+    {"id": "FAST3-006", "name": "prospective shadow validation", "reserved": true}
+  ],
+  "legacy_prefixes": ["V22.049", "V22.065A", "V22.065B", "V22.065C", "V22.065D", "V22.066", "V22.069*", "V22.078*", "V22.080A", "V22.080B", "V22.081", "V22.082", "V22.083", "V22.084", "V22.085", "V22.086"],
+  "legacy_meaning_changed": false
+}

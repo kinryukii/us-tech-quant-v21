@@ -1,0 +1,41 @@
+﻿Read these files in this order:
+
+1. AGENTS.md
+2. fast3/docs/governance/FAST3_AUTONOMOUS_MASTER_DIRECTIVE.md
+3. CODEX_GOAL.md
+4. CODEX_PLAN.md
+5. CODEX_STATUS.md
+
+Take ownership of the entire FAST3 gated research chain, not only V22.080A.
+
+Start from the current repository state. Inspect and complete the existing V22.080A
+files first. Then execute compile, targeted tests, the actual full-data runner, output
+inspection, failure repair, and reruns.
+
+Apply every frozen gate exactly as written in `fast3/docs/governance/FAST3_AUTONOMOUS_MASTER_DIRECTIVE.md`:
+
+- If a stage's research gate passes, continue automatically into the next stage.
+- If a stage's research gate fails, do not weaken the gate or force continuation.
+  Create the required final aggregate summary/report and end the FAST3 chain with the
+  verified negative research decision.
+- Do not ask for user confirmation between stages.
+- Do not stop merely to report intermediate progress.
+- Normal code, fixture, schema, serialization, path, PowerShell, test, or runner
+  failures are repair work, not stopping conditions.
+- Never fabricate, beautify, suppress, relabel, or extrapolate evidence.
+- Never modify canonical data, generate orders, call broker execution, enable paper
+  trading, enable official adoption, push remotely, or merge.
+- Preserve Confirmation isolation and record exact read counts.
+- Update CODEX_PLAN.md and CODEX_STATUS.md after material milestones so the task can
+  resume after context changes.
+- Keep to the version and file-count limits in the master directive.
+- Use one final consolidated response only when the gated chain has ended.
+
+Continue until either:
+
+A. A frozen upstream research gate fails and the required final aggregate outputs are
+   complete; or
+B. V22.080D is implemented, tested, initialized, smoke-run, and honestly reports
+   PROSPECTIVE_SHADOW_DEPLOYED_AWAITING_SAMPLE.
+
+Begin execution now. Do not merely summarize the instructions.

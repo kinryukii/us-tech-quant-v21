@@ -1,0 +1,13 @@
+{
+  "stage_id": "FAST3-003",
+  "new_test_command": "python -m pytest fast3\\tests\\unit\\test_fast3_002_executable_contract.py -q",
+  "new_test_count_including_guard_cases": 38,
+  "new_test_exit_code": 0,
+  "guard_command": "python fast3\\scripts\\audit\\run_fast3_guard.py --write-file-registry",
+  "guard_exit_code": 0,
+  "guard_status": "PASS",
+  "legacy_v22_080_test_count": 17,
+  "legacy_v22_080_exit_code": 0,
+  "confirmation_read_count": 0,
+  "model_training_executed": false
+}

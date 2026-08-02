@@ -1,0 +1,16 @@
+{
+  "stage": "FAST3-002",
+  "new_unit_test_command": "PYTHONPATH=D:\\us-tech-quant\\fast3\\src python -m pytest fast3\\tests\\unit\\test_fast3_002_executable_contract.py -q",
+  "new_unit_test_exit_code": 0,
+  "new_unit_test_count": 28,
+  "new_unit_test_duration_seconds": 1.12,
+  "smoke_command": "PYTHONPATH=D:\\us-tech-quant\\fast3\\src python fast3\\scripts\\run\\fast3_002_contract_smoke.py",
+  "smoke_exit_code": 0,
+  "smoke_event_count": 12,
+  "smoke_accepted_trade_count": 6,
+  "confirmation_read_count": 0,
+  "legacy_regression": {"command": "python -m pytest scripts\\v22\\test_v22_080a_fast3_24h_one_percent_move_atlas_r1.py scripts\\v22\\test_v22_080b_fast3_one_percent_move_predictability_preflight_r1.py -q", "exit_code": 0, "test_count": 17},
+  "combined_contract_and_legacy_test_count": 45,
+  "combined_contract_and_legacy_exit_code": 0,
+  "combined_duration_seconds": 3.24
+}
