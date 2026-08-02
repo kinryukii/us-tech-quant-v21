@@ -1,0 +1,19 @@
+{
+  "max_complete_experiments": 50,
+  "model_families": ["logistic", "elastic_net", "tree", "random_forest", "hgb"],
+  "random_seeds": [81081, 81082, 81083, 81084, 81085],
+  "inner_train_days": [120, 180, 252, 378],
+  "inner_oos_days": [20, 40, 60],
+  "feature_count_range": [10, 17],
+  "purge_minutes": 120,
+  "exit_horizon_minutes": 60,
+  "cost_bps": [5, 10, 20, 30],
+  "delay_minutes": [0, 1, 3, 5],
+  "time_contract": {
+    "development": {"start": "2023-03-01", "end": "2026-02-28 23:59:59.999999", "minimum_metadata_days": 500},
+    "first_embargo": {"start": "2026-03-01", "end": "2026-03-31 23:59:59.999999"},
+    "validation": {"start": "2026-04-01", "end": "2026-05-31 23:59:59.999999", "minimum_metadata_days": 20},
+    "second_embargo": {"start": "2026-06-01", "end": "2026-06-30 23:59:59.999999"},
+    "confirmation": {"start": "2026-07-01", "end": "2026-07-28 23:59:59.999999", "minimum_metadata_days": 15}
+  }
+}

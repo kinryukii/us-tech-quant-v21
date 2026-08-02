@@ -1,0 +1,11 @@
+{
+  "model_families": ["elastic_net_logistic", "hist_gradient_boosting"],
+  "candidate_grid": [
+    {"model_type": "elastic_net_logistic", "horizon": 30, "opportunity_threshold": 0.50, "absolute_floor": 0.55, "risk_vol_quantile": 0.95},
+    {"model_type": "elastic_net_logistic", "horizon": 60, "opportunity_threshold": 0.52, "absolute_floor": 0.57, "risk_vol_quantile": 0.90},
+    {"model_type": "elastic_net_logistic", "horizon": 180, "opportunity_threshold": 0.54, "absolute_floor": 0.59, "risk_vol_quantile": 0.85},
+    {"model_type": "hist_gradient_boosting", "horizon": 30, "opportunity_threshold": 0.50, "absolute_floor": 0.55, "risk_vol_quantile": 0.95},
+    {"model_type": "hist_gradient_boosting", "horizon": 60, "opportunity_threshold": 0.52, "absolute_floor": 0.57, "risk_vol_quantile": 0.90},
+    {"model_type": "hist_gradient_boosting", "horizon": 180, "opportunity_threshold": 0.54, "absolute_floor": 0.59, "risk_vol_quantile": 0.85}
+  ]
+}

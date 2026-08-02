@@ -1,0 +1,12 @@
+{
+  "candidate_templates": [
+    {"model_type":"auditable_rule_ranker","horizon":30,"absolute_floor":0.54,"risk_vol_quantile":0.98,"C":0.25,"l1_ratio":0.5},
+    {"model_type":"auditable_rule_ranker","horizon":60,"absolute_floor":0.56,"risk_vol_quantile":0.95,"C":0.25,"l1_ratio":0.5},
+    {"model_type":"auditable_rule_ranker","horizon":180,"absolute_floor":0.58,"risk_vol_quantile":0.92,"C":0.25,"l1_ratio":0.5},
+    {"model_type":"auditable_rule_ranker","horizon":180,"absolute_floor":0.60,"risk_vol_quantile":0.90,"C":0.25,"l1_ratio":0.5},
+    {"model_type":"elastic_net_logistic","horizon":30,"absolute_floor":0.56,"risk_vol_quantile":0.95,"C":0.15,"l1_ratio":0.5},
+    {"model_type":"elastic_net_logistic","horizon":60,"absolute_floor":0.58,"risk_vol_quantile":0.92,"C":0.25,"l1_ratio":0.5},
+    {"model_type":"elastic_net_logistic","horizon":180,"absolute_floor":0.60,"risk_vol_quantile":0.90,"C":0.35,"l1_ratio":0.7},
+    {"model_type":"hist_gradient_boosting","horizon":60,"absolute_floor":0.58,"risk_vol_quantile":0.92,"C":0.25,"l1_ratio":0.5}
+  ]
+}

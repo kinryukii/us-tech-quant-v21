@@ -1,0 +1,16 @@
+{
+  "stage": "V22.083_FAST3_DELAY_ROBUST_SPARSE_EVENT_ENGINE_R1",
+  "maximum_label_horizon_minutes": 180,
+  "purge_minutes": 180,
+  "decision_grid_minutes": 5,
+  "cost_bps": [5, 10, 20, 30],
+  "delay_minutes": [1, 3, 5],
+  "horizons_minutes": [30, 60, 180],
+  "model_families": ["elastic_net_logistic", "hist_gradient_boosting"],
+  "seeds": [2208301, 2208302, 2208303],
+  "minimum_independent_trade_days": 10,
+  "minimum_holdout_trades": 10,
+  "active_feature_limit": 25,
+  "candidate_limit": 3,
+  "experiments_per_generation": 40
+}

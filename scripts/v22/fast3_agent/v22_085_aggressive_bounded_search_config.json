@@ -1,0 +1,20 @@
+{
+  "stage": "V22.085_FAST3_AGGRESSIVE_BOUNDED_SEARCH_ENGINE_R1",
+  "max_generations": 8,
+  "experiments_per_generation": 40,
+  "max_total_experiments": 320,
+  "max_model_families": 3,
+  "max_active_features": 24,
+  "max_active_candidates": 3,
+  "label_horizons_minutes": [30, 60, 120, 180],
+  "delay_minutes": [1, 3, 5],
+  "cost_bps": [5, 10, 20, 30],
+  "minimum_validation_trades": 60,
+  "minimum_validation_unique_days": 40,
+  "preferred_validation_trades": 80,
+  "natural_trades_per_month_min": 8,
+  "natural_trades_per_month_max": 20,
+  "max_new_entries_per_day": 2,
+  "max_new_entries_per_side_per_day": 1,
+  "purge_minutes": 180
+}
