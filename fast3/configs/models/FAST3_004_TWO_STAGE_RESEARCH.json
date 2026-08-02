@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0.0",
+  "stage_id": "FAST3-004",
+  "name": "two-stage opportunity-direction research architecture",
+  "frozen_executable_contract_sha256": "72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead",
+  "safety": {
+    "development_only": true,
+    "confirmation_read_count": 0,
+    "live_trading_allowed": false,
+    "broker_action_allowed": false,
+    "final_model_training_allowed": false
+  },
+  "data": {
+    "decision_timestamp_column": "decision_timestamp_et",
+    "label_end_timestamp_column": "label_end_timestamp_et",
+    "feature_availability_column": "feature_available_at_et",
+    "development_end_et": "2025-01-31T23:59:59-05:00",
+    "confirmation_start_et": "2025-02-08T00:00:00-05:00"
+  },
+  "features": {
+    "sets": [{"id": "PIT_CORE_V1", "columns": ["feature_ret_1", "feature_volume_z"]}],
+    "availability_rule": "feature_available_at_et must be <= decision_timestamp_et for every row"
+  },
+  "validation": {
+    "outer_splits": 3,
+    "inner_splits": 2,
+    "purge_minutes": 1440,
+    "embargo_minutes": 1440,
+    "random_kfold_forbidden": true,
+    "outer_test_selection_forbidden": true,
+    "scaler_fit": "train_fold_only"
+  },
+  "opportunity": {
+    "target_column": "opportunity_target",
+    "eligibility_rule": {"kind": "score_gte", "threshold": 0.6, "selection": "pre_registered_not_optimized"},
+    "candidates": ["dummy_prior", "logistic_regression", "hist_gradient_boosting"]
+  },
+  "direction": {
+    "target_column": "direction_target",
+    "positive_class": "UP",
+    "candidates": ["dummy_prior", "logistic_regression", "hist_gradient_boosting"],
+    "run_only_when": "opportunity_score_gte_0.60"
+  },
+  "selection": {
+    "inner_metric": "balanced_accuracy",
+    "candidate_limit": 6,
+    "fixed_seeds": [17],
+    "selection_bias_exposure_accounting": true
+  },
+  "reporting": {
+    "cost_scenarios_bps_round_trip": [10, 20],
+    "diagnostics": ["symbol", "month", "regime", "side"],
+    "portfolio": "FAST3-002 single account / single position"
+  }
+}

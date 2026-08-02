@@ -23,3 +23,12 @@
 - Kept eleven pre-existing external autoresearch result directories in place:
   their contents were not hashed or moved because the frozen Confirmation
   access prohibition applies to this maintenance turn.
+# Changelog
+
+## FAST3-004
+
+- Added a Development-only two-stage Opportunity/Direction architecture with a
+  fixed 0.60 opportunity gate, PIT availability validation, fold-local fit-call
+  ledger, bounded baseline/nonlinear candidates, and FAST3-002 portfolio adapter.
+- Added synthetic-only smoke and focused tests. No Confirmation read, full run,
+  final model, broker action, order, or position occurred.

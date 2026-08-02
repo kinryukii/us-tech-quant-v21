@@ -1,0 +1,21 @@
+{
+  "stage_id": "FAST3-004",
+  "status": "PASS_SYNTHETIC_ARCHITECTURE_VALIDATION",
+  "confirmation_read_count": 0,
+  "live_trading_allowed": false,
+  "research_fit_call_count": 56,
+  "synthetic_research_fit_executed": true,
+  "final_model_training_executed": false,
+  "real_development_run_executed": false,
+  "frozen_validation_run_executed": false,
+  "fast3_004_empirical_validation_status": "NOT_RUN",
+  "commands": [
+    {"command": "python -m py_compile fast3\\src\\fast3\\models\\two_stage_pipeline.py fast3\\scripts\\run\\fast3_004_two_stage_smoke.py fast3\\tests\\unit\\test_fast3_004_two_stage_pipeline.py", "exit_code": 0},
+    {"command": "python -m pytest fast3\\tests\\unit\\test_fast3_004_two_stage_pipeline.py -q", "exit_code": 0, "passed": 8},
+    {"command": "python -m fast3.scripts.run.fast3_004_two_stage_smoke", "exit_code": 0, "synthetic_only": true, "outer_test_rows": 36, "fold_count": 3, "fit_call_count": 56},
+    {"command": "python -m pytest fast3\\tests\\unit fast3\\tests\\regression -q", "exit_code": 0, "passed": 54},
+    {"command": "python -m pytest scripts\\v22\\test_v22_080a_fast3_24h_one_percent_move_atlas_r1.py scripts\\v22\\test_v22_080b_fast3_one_percent_move_predictability_preflight_r1.py -q", "exit_code": 0, "passed": 17},
+    {"command": "python fast3\\scripts\\audit\\run_fast3_guard.py", "exit_code": 0},
+    {"command": "PowerShell Parser::ParseFile on three root compatibility wrappers", "exit_code": 0, "parse_error_count": 0}
+  ]
+}

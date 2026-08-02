@@ -1,0 +1,18 @@
+{
+  "stage_id": "FAST3-004",
+  "name": "two-stage opportunity-direction research architecture",
+  "status": "IMPLEMENTATION_VALIDATED_SYNTHETIC_ONLY",
+  "parent_stage": "FAST3-003",
+  "frozen_contract_hashes": ["72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead"],
+  "scope": ["development-only", "PIT feature availability", "nested purged walk-forward", "single-account evaluation adapter"],
+  "confirmation_read_count": 0,
+  "live_trading_allowed": false,
+  "research_fit_call_count": 56,
+  "synthetic_research_fit_executed": true,
+  "final_model_training_executed": false,
+  "real_development_run_executed": false,
+  "frozen_validation_run_executed": false,
+  "fast3_004_empirical_validation_status": "NOT_RUN",
+  "synthetic_smoke": {"executed": true, "outer_test_rows": 36, "fold_count": 3, "fit_call_count": 56},
+  "patches": []
+}
