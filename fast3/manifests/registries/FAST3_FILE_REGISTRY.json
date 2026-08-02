@@ -12,7 +12,7 @@
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "0498b6b9dbec5e544f979421cb69d93f5b3b8af850f8978244a6d970d66259eb"
+      "sha256": "7fdcae1df502dd0184a2d42ea651c1c0edd49f9aeba8c58fbedf70e968e22caa"
     },
     {
       "path": "fast3/FAST3_REGISTRY.md",
@@ -25,7 +25,7 @@
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "72183c4bdbad1846d0d43e129c9211b972a16e5c73593d92bd8ff26baa7f6200"
+      "sha256": "6e7fbb58112a2361838dc5000746be850b1f0ed3fa7767aa3b66329f215f9a1d"
     },
     {
       "path": "fast3/FAST3_STATUS.md",
@@ -38,7 +38,7 @@
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "86f928ee9337128c724b1163c80fe4577d6700703c2ace4dac34fdd402c46060"
+      "sha256": "973bead2b74953756fe948f721aaf586c1bf6ca630a1ce469ea991ce9528a326"
     },
     {
       "path": "fast3/README.md",
@@ -98,12 +98,12 @@
       "category": "json",
       "canonical": true,
       "generated": false,
-      "tracked": false,
+      "tracked": true,
       "external": false,
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "4c6b632d27a84c46d9faf6c082cf128dc1a3ebdec114278a9c8be37bf4f80151"
+      "sha256": "74891cbf0ddf897a53bb743a11b57464fdf1cd24610e9359e6290debf1e03616"
     },
     {
       "path": "fast3/configs/contracts/FAST3_002_EXECUTABLE_CONTRACT.json",
@@ -111,7 +111,7 @@
       "category": "json",
       "canonical": true,
       "generated": false,
-      "tracked": false,
+      "tracked": true,
       "external": false,
       "deprecated": false,
       "replacement": null,
@@ -124,7 +124,7 @@
       "category": "json",
       "canonical": true,
       "generated": false,
-      "tracked": false,
+      "tracked": true,
       "external": false,
       "deprecated": false,
       "replacement": null,
@@ -132,12 +132,25 @@
       "sha256": "2ae2e248c70c7f71fc5bbad6c90260c48b9dcb78f5f2e8b456d94346ccd269aa"
     },
     {
-      "path": "fast3/configs/runtime/FAST3_ANTI_BLOAT_LIMITS.json",
+      "path": "fast3/configs/models/FAST3_005_ABSTENTION_POLICY.json",
       "owner_stage": "FAST3-003",
       "category": "json",
       "canonical": true,
       "generated": false,
       "tracked": false,
+      "external": false,
+      "deprecated": false,
+      "replacement": null,
+      "reason": "FAST3 canonical project file",
+      "sha256": "3993cd34476200bdf44b10743cb3cb7cb8ceb29388f30cc47ae0c4e100d50ea3"
+    },
+    {
+      "path": "fast3/configs/runtime/FAST3_ANTI_BLOAT_LIMITS.json",
+      "owner_stage": "FAST3-003",
+      "category": "json",
+      "canonical": true,
+      "generated": false,
+      "tracked": true,
       "external": false,
       "deprecated": false,
       "replacement": null,
@@ -189,12 +202,25 @@
       "category": "md",
       "canonical": true,
       "generated": false,
-      "tracked": false,
+      "tracked": true,
       "external": false,
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
       "sha256": "2c434e2ebcdb94e91c352630d46d2c07e5a0ea64b5d2806bef8c8e1d724c452a"
+    },
+    {
+      "path": "fast3/docs/architecture/FAST3_005_ABSTENTION_CONTRACT.md",
+      "owner_stage": "FAST3-003",
+      "category": "md",
+      "canonical": true,
+      "generated": false,
+      "tracked": false,
+      "external": false,
+      "deprecated": false,
+      "replacement": null,
+      "reason": "FAST3 canonical project file",
+      "sha256": "75025f7af7f802f0fb97a8dc3e23bbceea28a055bb30847f2954b36a555be3c0"
     },
     {
       "path": "fast3/docs/governance/FAST3_ANTI_BLOAT_POLICY.md",
@@ -384,12 +410,25 @@
       "category": "md",
       "canonical": true,
       "generated": false,
+      "tracked": true,
+      "external": false,
+      "deprecated": false,
+      "replacement": null,
+      "reason": "FAST3 canonical project file",
+      "sha256": "34897e48736f7c0959b610b38d4ee8527240233a4d5cbf8ac8002ce2a825cc9a"
+    },
+    {
+      "path": "fast3/docs/reports/FAST3_005_REPORT.md",
+      "owner_stage": "FAST3-003",
+      "category": "md",
+      "canonical": true,
+      "generated": false,
       "tracked": false,
       "external": false,
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "3964e3b037682aa8b829ebdda6717196d0496a78eb9af0b4d3bc8e217f14a370"
+      "sha256": "17d7f3098c90ea32911b5b34b3ad018792492d2826f65d3a51eb28bb80a341f5"
     },
     {
       "path": "fast3/docs/legacy/maintenance/fast3_migration_worklog.md",
@@ -740,7 +779,7 @@
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "5e8e48e601280bd0a93b66b6ccd4f775c4c670745b652a02095987d4cd2a10d6"
+      "sha256": "ea62f9e600f4a8c5755d11e9030ece73e9ed8b7a2982109d843dadb3de5c949f"
     },
     {
       "path": "fast3/manifests/registries/FAST3_STAGE_REGISTRY.json",
@@ -753,7 +792,7 @@
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "cdb93cb6058a3881100eccb41004b852bc726a59f878abb435c31d25cb50e509"
+      "sha256": "a016ef73f0fffb9106615a70864ab0acd2718fbd10a695c013262367e1b25f8b"
     },
     {
       "path": "fast3/manifests/stages/FAST3_003_MANIFEST.json",
@@ -800,15 +839,41 @@
       "category": "json",
       "canonical": true,
       "generated": false,
+      "tracked": true,
+      "external": false,
+      "deprecated": false,
+      "replacement": null,
+      "reason": "FAST3 canonical project file",
+      "sha256": "23cac839ebf95add1b3983d478498bdd5c0553052ac51d7e959d5b8d909aacff"
+    },
+    {
+      "path": "fast3/manifests/stages/FAST3_004_TEST_EVIDENCE.json",
+      "owner_stage": "FAST3-003",
+      "category": "json",
+      "canonical": true,
+      "generated": true,
+      "tracked": true,
+      "external": false,
+      "deprecated": false,
+      "replacement": null,
+      "reason": "FAST3 canonical project file",
+      "sha256": "eb0378fdbf4dc20f50b87628a8ba5109628443961ae6e7ea4b61b9e57613b93d"
+    },
+    {
+      "path": "fast3/manifests/stages/FAST3_005_MANIFEST.json",
+      "owner_stage": "FAST3-003",
+      "category": "json",
+      "canonical": true,
+      "generated": false,
       "tracked": false,
       "external": false,
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "5906a544145ec34e64e7382fd67ba44bc14447f28ed4895015621cba3c0e5221"
+      "sha256": "0723f518294bb8542c0b8d1b3b6a04f0a6f139cef5f6052efacbba2bf9e12422"
     },
     {
-      "path": "fast3/manifests/stages/FAST3_004_TEST_EVIDENCE.json",
+      "path": "fast3/manifests/stages/FAST3_005_TEST_EVIDENCE.json",
       "owner_stage": "FAST3-003",
       "category": "json",
       "canonical": true,
@@ -818,7 +883,7 @@
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "9aa1bc0a5b8067151dbbc55bd9f321a185afc8671e69e220e872f14c78fab22e"
+      "sha256": "9eb32fbe895313f9b8cd00a8ee8448b08973b71850dd783b04c9c70c7e472600"
     },
     {
       "path": "fast3/manifests/legacy/patches/archive/FAST3_V22_083_PATCH_APPLIED.json",
@@ -982,12 +1047,25 @@
       "category": "py",
       "canonical": true,
       "generated": false,
+      "tracked": true,
+      "external": false,
+      "deprecated": false,
+      "replacement": null,
+      "reason": "FAST3 canonical project file",
+      "sha256": "23e2373d019a9208440dbf0cf0f8edb5af68c2b92eaae3aee1b94b23d68019b1"
+    },
+    {
+      "path": "fast3/scripts/run/fast3_005_abstention_smoke.py",
+      "owner_stage": "FAST3-003",
+      "category": "py",
+      "canonical": true,
+      "generated": false,
       "tracked": false,
       "external": false,
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
-      "sha256": "92bfbba8f3c6c75c34f392d16f9c9206e04d5aa2e1c7a294ab6afd89a276b063"
+      "sha256": "385a6f3cdf78e27656f3aae70575ab7bcf29a24cfefd411d08b59f52f3a35596"
     },
     {
       "path": "fast3/src/fast3/__init__.py",
@@ -1081,12 +1159,25 @@
       "sha256": "ecd10841b36a230882a28ccf08b1a490945b3cc96e6268bf9362be631f96e82d"
     },
     {
-      "path": "fast3/src/fast3/models/two_stage_pipeline.py",
+      "path": "fast3/src/fast3/models/abstention_policy.py",
       "owner_stage": "FAST3-003",
       "category": "py",
       "canonical": true,
       "generated": false,
       "tracked": false,
+      "external": false,
+      "deprecated": false,
+      "replacement": null,
+      "reason": "FAST3 canonical project file",
+      "sha256": "8f9acdaf0c33d6af4d1ed71ecddec6c3b46c439fba14ba43a275509d3361a944"
+    },
+    {
+      "path": "fast3/src/fast3/models/two_stage_pipeline.py",
+      "owner_stage": "FAST3-003",
+      "category": "py",
+      "canonical": true,
+      "generated": false,
+      "tracked": true,
       "external": false,
       "deprecated": false,
       "replacement": null,
@@ -1138,12 +1229,25 @@
       "category": "py",
       "canonical": true,
       "generated": false,
-      "tracked": false,
+      "tracked": true,
       "external": false,
       "deprecated": false,
       "replacement": null,
       "reason": "FAST3 canonical project file",
       "sha256": "d345b1eb058a9355301e9faf88b41c6d049a7fe47e4c74ff0ee5a4adce842727"
+    },
+    {
+      "path": "fast3/tests/unit/test_fast3_005_abstention_policy.py",
+      "owner_stage": "FAST3-003",
+      "category": "py",
+      "canonical": true,
+      "generated": false,
+      "tracked": false,
+      "external": false,
+      "deprecated": false,
+      "replacement": null,
+      "reason": "FAST3 canonical project file",
+      "sha256": "2d8162af09e0eb2044594d7ba422809ebc500abce0f4dc189415ca4b73a4c91e"
     }
   ]
 }

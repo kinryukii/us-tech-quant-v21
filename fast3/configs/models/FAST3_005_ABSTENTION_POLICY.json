@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "stage_id": "FAST3-005",
+  "name": "pre-registered selective prediction abstention policy",
+  "frozen_fast3_002_contract_sha256": "72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead",
+  "frozen_fast3_004_opportunity_threshold": 0.6,
+  "safety": {"development_or_validation_run_allowed": false, "confirmation_read_count": 0, "live_trading_allowed": false, "broker_action_allowed": false, "final_model_training_allowed": false},
+  "thresholds": {"direction_confidence_minimum": 0.6, "model_disagreement_maximum": 0.2, "expected_net_return_minimum": 0.0},
+  "cost_scenarios_bps_round_trip": [10, 20],
+  "priority_order": ["DATA_TRUST_FAILED", "OPPORTUNITY_BELOW_FROZEN_GATE", "DIRECTION_CONFIDENCE_BELOW_FLOOR", "MODEL_DISAGREEMENT_EXCEEDS_LIMIT", "COST_EXPECTANCY_NON_POSITIVE_10BPS", "COST_EXPECTANCY_NON_POSITIVE_20BPS"],
+  "output_contract": {"abstain_position_count": 0, "orders_emitted": 0, "portfolio_contract": "FAST3-002 single account / single position", "accepted_signal_is_not_an_order": true}
+}

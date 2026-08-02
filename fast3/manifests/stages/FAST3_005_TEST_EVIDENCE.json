@@ -1,0 +1,15 @@
+{
+  "stage_id": "FAST3-005",
+  "status": "PASS_SYNTHETIC_ABSTENTION_VALIDATION",
+  "confirmation_read_count": 0,
+  "synthetic_research_fit_executed": false,
+  "final_model_training_executed": false,
+  "real_development_run_executed": false,
+  "frozen_validation_run_executed": false,
+  "empirical_validation_status": "NOT_RUN",
+  "commands": [
+    {"command": "python -m py_compile fast3\\src\\fast3\\models\\abstention_policy.py fast3\\scripts\\run\\fast3_005_abstention_smoke.py fast3\\tests\\unit\\test_fast3_005_abstention_policy.py", "exit_code": 0},
+    {"command": "python -m pytest fast3\\tests\\unit\\test_fast3_005_abstention_policy.py -q", "exit_code": 0, "passed": 9},
+    {"command": "python -m fast3.scripts.run.fast3_005_abstention_smoke", "exit_code": 0, "synthetic_only": true, "decision_count": 7, "abstention_count": 6, "eligible_signal_count": 1, "orders_emitted": 0, "proposed_position_count": 0}
+  ]
+}

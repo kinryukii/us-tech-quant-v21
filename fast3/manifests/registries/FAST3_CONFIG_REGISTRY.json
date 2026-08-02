@@ -3,6 +3,7 @@
   "configs": [
     {"stage_id":"FAST3-002","path":"fast3/configs/contracts/FAST3_002_EXECUTABLE_CONTRACT.json","canonical":true,"frozen":true,"sha256":"72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead"},
     {"stage_id":"FAST3-003","path":"fast3/configs/runtime/FAST3_ANTI_BLOAT_LIMITS.json","canonical":true,"frozen":true,"sha256":"5864b811ce5f7592efc6d3fb670423c8afa806d5dad11ba93445af01926be261"},
-    {"stage_id":"FAST3-004","path":"fast3/configs/models/FAST3_004_TWO_STAGE_RESEARCH.json","canonical":true,"frozen":true,"sha256":"2ae2e248c70c7f71fc5bbad6c90260c48b9dcb78f5f2e8b456d94346ccd269aa"}
+    {"stage_id":"FAST3-004","path":"fast3/configs/models/FAST3_004_TWO_STAGE_RESEARCH.json","canonical":true,"frozen":true,"sha256":"2ae2e248c70c7f71fc5bbad6c90260c48b9dcb78f5f2e8b456d94346ccd269aa"},
+    {"stage_id":"FAST3-005","path":"fast3/configs/models/FAST3_005_ABSTENTION_POLICY.json","canonical":true,"frozen":true,"sha256":"3993cd34476200bdf44b10743cb3cb7cb8ceb29388f30cc47ae0c4e100d50ea3"}
   ]
 }

@@ -1,8 +1,8 @@
 {
   "schema_version": "1.0.0",
   "project": "FAST3",
-  "current_stage": "FAST3-004",
-  "last_completed_stage": "FAST3-003",
+  "current_stage": "FAST3-005",
+  "last_completed_stage": "FAST3-004",
   "current_status": "IMPLEMENTATION_VALIDATED_SYNTHETIC_ONLY",
   "live_trading_allowed": false,
   "confirmation_read_count": 0,
@@ -12,9 +12,9 @@
   "confirmation_data_boundary": "2025-02-08T00:00:00-05:00",
   "result_root": "D:\\us-tech-quant-results\\fast3",
   "data_root": "D:\\us-tech-quant-data\\fast3",
-  "active_runner": "fast3/scripts/run/fast3_004_two_stage_smoke.py",
-  "updated_at": "2026-08-02T15:10:00+09:00",
-  "updated_by": "FAST3-004",
-  "git_commit": "8d86867",
-  "unresolved_blockers": ["No FAST3-004 full Development run is authorized by this implementation checkpoint.", "Eleven pre-existing external legacy autoresearch result directories remain outside the canonical root because their SHA256 migration would access frozen Confirmation artifacts, which this maintenance task forbids."]
+  "active_runner": "fast3/scripts/run/fast3_005_abstention_smoke.py",
+  "updated_at": "2026-08-02T15:35:00+09:00",
+  "updated_by": "FAST3-005",
+  "git_commit": "06f96a6",
+  "unresolved_blockers": ["FAST3-005 is synthetic-only; no real Development or frozen Validation run is authorized by this implementation checkpoint.", "Eleven pre-existing external legacy autoresearch result directories remain outside the canonical root because their SHA256 migration would access frozen Confirmation artifacts, which this maintenance task forbids."]
 }

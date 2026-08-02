@@ -32,3 +32,9 @@
   ledger, bounded baseline/nonlinear candidates, and FAST3-002 portfolio adapter.
 - Added synthetic-only smoke and focused tests. No Confirmation read, full run,
   final model, broker action, order, or position occurred.
+
+## FAST3-005
+
+- Added a pre-registered selective-prediction abstention layer over FAST3-004
+  scores, with deterministic data-trust, Opportunity, confidence, disagreement,
+  and 10/20bps cost-aware reasons.

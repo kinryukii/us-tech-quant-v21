@@ -4,9 +4,9 @@ Machine source: `state/FAST3_STATE.json`.
 
 | Field | Value |
 |---|---|
-| CURRENT_STAGE | FAST3-004 |
+| CURRENT_STAGE | FAST3-005 |
 | CURRENT_STATUS | IMPLEMENTATION_VALIDATED_SYNTHETIC_ONLY |
-| LAST_COMPLETED_STAGE | FAST3-003 |
+| LAST_COMPLETED_STAGE | FAST3-004 |
 | CONFIRMATION_READ_COUNT | 0 |
 | LIVE_TRADING_ALLOWED | false |
 | FROZEN_FAST3_002_HASH | 72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead |
@@ -14,9 +14,10 @@ Machine source: `state/FAST3_STATE.json`.
 | RESULT_ROOT | D:\us-tech-quant-results\fast3 |
 | LATEST_FORMAL_RESULT | D:\us-tech-quant-results\fast3\FAST3_002_EXECUTABLE_CONTRACT |
 
-FAST3-002 remains contract-only. FAST3-004 has only a synthetic architecture
-smoke: no real Development run, final model, Validation comparison, or economic
-conclusion exists.
+FAST3-004 implementation is PASS, while empirical validation and economic
+conclusions remain NOT_RUN/NONE. FAST3-005 is synthetic-only abstention
+architecture: no real Development run, final model, Validation comparison, or
+economic conclusion exists.
 
 The current audit does not reopen Validation or Confirmation and does not alter
 any historical result.

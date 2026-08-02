@@ -1,0 +1,17 @@
+{
+  "stage_id": "FAST3-005",
+  "name": "abstention and selective prediction architecture",
+  "status": "IMPLEMENTATION_VALIDATED_SYNTHETIC_ONLY",
+  "parent_stage": "FAST3-004",
+  "frozen_contract_hashes": ["72186180b40e0c4b866d482fd35033597334c89ba3ef2bca33da5ad2d637eead"],
+  "confirmation_read_count": 0,
+  "synthetic_research_fit_executed": false,
+  "synthetic_smoke_executed": true,
+  "synthetic_decision_count": 7,
+  "synthetic_abstention_count": 6,
+  "final_model_training_executed": false,
+  "real_development_run_executed": false,
+  "frozen_validation_run_executed": false,
+  "empirical_validation_status": "NOT_RUN",
+  "economic_conclusion": "NONE"
+}
