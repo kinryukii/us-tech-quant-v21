@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fast3.src.fast3.models.two_stage_pipeline import TwoStageResearchPipeline, load_fast3_004_config
+from fast3.models.two_stage_pipeline import TwoStageResearchPipeline, load_fast3_004_config
 
 
 REPO = Path(__file__).resolve().parents[3]

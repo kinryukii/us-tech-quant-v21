@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from fast3.src.fast3.common.contracts import ContractViolation
-from fast3.src.fast3.models.abstention_policy import apply_abstention_policy, load_abstention_policy, safety_summary
-from fast3.scripts.run.fast3_005_abstention_smoke import synthetic_scored_events
+from fast3.common.contracts import ContractViolation
+from fast3.models.abstention_policy import apply_abstention_policy, load_abstention_policy, safety_summary
 
 
 ROOT = Path(__file__).resolve().parents[3]
 POLICY = ROOT / "fast3" / "configs" / "models" / "FAST3_005_ABSTENTION_POLICY.json"
+RUNNER_PATH = ROOT / "fast3" / "scripts" / "run" / "fast3_005_abstention_smoke.py"
+RUNNER_SPEC = importlib.util.spec_from_file_location("fast3_005_abstention_smoke", RUNNER_PATH)
+runner = importlib.util.module_from_spec(RUNNER_SPEC); assert RUNNER_SPEC.loader is not None; RUNNER_SPEC.loader.exec_module(runner)
+synthetic_scored_events = runner.synthetic_scored_events
 
 
 @pytest.fixture

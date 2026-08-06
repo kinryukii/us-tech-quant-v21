@@ -8,9 +8,9 @@ from pathlib import Path
 import pandas as pd
 
 REPO = Path(__file__).resolve().parents[3]
-from fast3.src.fast3.backtest.portfolio_contract import simulate_primary_portfolio
-from fast3.src.fast3.common.contracts import ExecutableContract
-from fast3.src.fast3.labels.executable_trade_label import build_executable_trade_labels
+from fast3.backtest.portfolio_contract import simulate_primary_portfolio
+from fast3.common.contracts import ExecutableContract
+from fast3.labels.executable_trade_label import build_executable_trade_labels
 
 CANONICAL = Path(r"D:\us-tech-quant-data\fast3\moomoo_24h_1m\canonical")
 STATE = REPO / "fast3" / "state" / "FAST3_STATE.json"

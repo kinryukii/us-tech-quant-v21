@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fast3.src.fast3.models.abstention_policy import apply_abstention_policy, load_abstention_policy, safety_summary
+from fast3.models.abstention_policy import apply_abstention_policy, load_abstention_policy, safety_summary
 
 
 REPO = Path(__file__).resolve().parents[3]

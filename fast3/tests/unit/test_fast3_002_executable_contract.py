@@ -12,19 +12,22 @@ import pandas as pd
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-from fast3.src.fast3.backtest.cost_model import RoundTripCost
-from fast3.src.fast3.backtest.exit_engine import evaluate_exit
-from fast3.src.fast3.backtest.portfolio_contract import simulate_primary_portfolio
-from fast3.src.fast3.common.contracts import ContractViolation, ExecutableContract
-from fast3.src.fast3.labels.executable_trade_label import ETF_MAP, build_executable_trade_labels, stable_event_id
-from fast3.src.fast3.validation.nested_purged_walk_forward import NestedPurgedWalkForward
-from fast3.src.fast3.compatibility.legacy_v22 import legacy_hash
-from fast3.scripts.run.fast3_002_contract_smoke import resolve_output_dir, resolve_result_root
+from fast3.backtest.cost_model import RoundTripCost
+from fast3.backtest.exit_engine import evaluate_exit
+from fast3.backtest.portfolio_contract import simulate_primary_portfolio
+from fast3.common.contracts import ContractViolation, ExecutableContract
+from fast3.labels.executable_trade_label import ETF_MAP, build_executable_trade_labels, stable_event_id
+from fast3.validation.nested_purged_walk_forward import NestedPurgedWalkForward
+from fast3.compatibility.legacy_v22 import legacy_hash
 
 CONFIG = ROOT / "fast3" / "configs" / "contracts" / "FAST3_002_EXECUTABLE_CONTRACT.json"
 GUARD_PATH = ROOT / "fast3" / "scripts" / "audit" / "run_fast3_guard.py"
 GUARD_SPEC = importlib.util.spec_from_file_location("fast3_guard", GUARD_PATH)
 guard = importlib.util.module_from_spec(GUARD_SPEC); assert GUARD_SPEC.loader is not None; GUARD_SPEC.loader.exec_module(guard)
+RUNNER_PATH = ROOT / "fast3" / "scripts" / "run" / "fast3_002_contract_smoke.py"
+RUNNER_SPEC = importlib.util.spec_from_file_location("fast3_002_contract_smoke", RUNNER_PATH)
+runner = importlib.util.module_from_spec(RUNNER_SPEC); assert RUNNER_SPEC.loader is not None; RUNNER_SPEC.loader.exec_module(runner)
+resolve_output_dir, resolve_result_root = runner.resolve_output_dir, runner.resolve_result_root
 
 def bars(values=None, session="RTH", start="2024-01-02 09:30"):
     values = values or [(100, 100, 100, 100), (100, 101, 99, 100), (100, 100, 100, 100)]

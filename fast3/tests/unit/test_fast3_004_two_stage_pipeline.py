@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from fast3.src.fast3.common.contracts import ContractViolation
-from fast3.src.fast3.models.two_stage_pipeline import TwoStageResearchPipeline, load_fast3_004_config, validate_pit_features
-from fast3.scripts.run.fast3_004_two_stage_smoke import synthetic_events
+from fast3.common.contracts import ContractViolation
+from fast3.models.two_stage_pipeline import TwoStageResearchPipeline, load_fast3_004_config, validate_pit_features
 
 
 ROOT = Path(__file__).resolve().parents[3]
 CONFIG = ROOT / "fast3" / "configs" / "models" / "FAST3_004_TWO_STAGE_RESEARCH.json"
+RUNNER_PATH = ROOT / "fast3" / "scripts" / "run" / "fast3_004_two_stage_smoke.py"
+RUNNER_SPEC = importlib.util.spec_from_file_location("fast3_004_two_stage_smoke", RUNNER_PATH)
+runner = importlib.util.module_from_spec(RUNNER_SPEC); assert RUNNER_SPEC.loader is not None; RUNNER_SPEC.loader.exec_module(runner)
+synthetic_events = runner.synthetic_events
 
 
 @pytest.fixture
