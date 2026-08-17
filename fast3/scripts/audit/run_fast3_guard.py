@@ -8,10 +8,12 @@ import os
 import re
 import stat
 import subprocess
+import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]
 FAST = REPO / "fast3"
+POLICY_PATH = REPO / "configs" / "anti_bloat_policy.toml"
 ALLOWED_TOP = {"compatibility", "configs", "docs", "manifests", "scripts", "src", "state", "tests"}
 EXTERNAL_RESULTS_ROOT = Path(r"D:\us-tech-quant-results\fast3")
 EXTERNAL_DATA_ROOT = Path(r"D:\us-tech-quant-data\fast3")
@@ -25,7 +27,18 @@ IO_REPARSE_TAG_MOUNT_POINT = 0xA0000003
 
 
 def _json(path: Path): return json.loads(path.read_text(encoding="utf-8"))
+def _toml(path: Path):
+    with path.open("rb") as handle:
+        return tomllib.load(handle)
 def _hash(path: Path): return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def repository_policy(policy_path: Path = POLICY_PATH) -> dict:
+    """Load the single machine-readable repository governance source."""
+    policy = _toml(policy_path)
+    repository = dict(policy["repository"])
+    repository["forbid_repo_local_venv"] = policy["forbid_repo_local_venv"]
+    return repository
 
 
 def _absolute_key(path: Path) -> str:
@@ -111,6 +124,106 @@ def bloat(root=FAST):
     suffix = re.compile(r"FAST3[-_]\d{3}.*(?:_R\d+|_FINAL(?:\d+|_V\d+)|_PATCH(?:ED)?\d*|_V\d+)", re.I)
     forbidden = [p.relative_to(root).as_posix() for p in _files(root) if suffix.search(p.name) and "legacy/" not in p.relative_to(root).as_posix()]
     return {"name": "bloat", "violations": [f"large:{x}" for x in big] + [f"python_lines:{x}" for x in oversized_py] + [f"suffix:{x}" for x in forbidden]}
+
+
+def repository_budget(repo_root=REPO):
+    """Enforce the physical main-worktree budget without hiding local content."""
+    limits = repository_policy()
+    allowlist = {Path(item).as_posix() for item in limits["large_file_allowlist"]}
+    tracked = set(subprocess.run(
+        ["git", "ls-files"], cwd=repo_root, text=True, capture_output=True, check=False
+    ).stdout.splitlines())
+    introduced = set(subprocess.run(
+        ["git", "ls-files", "--others"],
+        cwd=repo_root, text=True, capture_output=True, check=False,
+    ).stdout.splitlines())
+    introduced.update(subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=A", "HEAD"],
+        cwd=repo_root, text=True, capture_output=True, check=False,
+    ).stdout.splitlines())
+    files = []
+    access_errors = []
+    pending = [Path(repo_root)]
+    git_root = Path(repo_root) / ".git"
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    if path == git_root:
+                        continue
+                    try:
+                        item, is_reparse = _lstat_reparse(path)
+                    except OSError as exc:
+                        access_errors.append(f"{path}:{type(exc).__name__}")
+                        continue
+                    if stat.S_ISDIR(item.st_mode):
+                        if not is_reparse:
+                            pending.append(path)
+                    elif stat.S_ISREG(item.st_mode):
+                        files.append((path, item.st_size))
+        except (OSError, PermissionError) as exc:
+            access_errors.append(f"{directory}:{type(exc).__name__}")
+
+    worktree_bytes = sum(size for _, size in files)
+    git_database_bytes = sum(path.stat().st_size for path in _iter_physical_files(git_root))
+    file_rows = [(path.relative_to(repo_root).as_posix(), size) for path, size in files]
+    oversized = [
+        {"path": rel, "bytes": size}
+        for rel, size in file_rows
+        if size > limits["individual_file_allowlist_threshold_bytes"] and rel not in allowlist
+    ]
+    newly_introduced_large = [
+        {"path": rel, "bytes": size, "tracked": rel in tracked}
+        for rel, size in file_rows
+        if size > limits["new_file_surface_threshold_bytes"] and rel in introduced
+    ]
+    forbidden_roots = set(limits["large_artifact_roots"])
+    forbidden_suffixes = set(limits["large_artifact_suffixes"])
+    forbidden_artifacts = [
+        {"path": rel, "bytes": size}
+        for rel, size in file_rows
+        if rel not in allowlist and (
+            Path(rel).suffix.lower() in forbidden_suffixes
+            and size > limits["new_file_surface_threshold_bytes"]
+        )
+    ]
+    forbidden_root_bytes = {
+        name: sum(size for rel, size in file_rows if rel.split("/", 1)[0].lower() == name)
+        for name in forbidden_roots
+    }
+    forbidden_large_roots = [
+        {"path": name, "bytes": size}
+        for name, size in sorted(forbidden_root_bytes.items())
+        if size > limits["new_file_surface_threshold_bytes"] and name not in allowlist
+    ]
+    violations = []
+    if worktree_bytes >= limits["required_maximum_bytes"]:
+        violations.append(f"repository_worktree_budget:{worktree_bytes}")
+    if limits["forbid_repo_local_venv"] and os.path.lexists(Path(repo_root) / ".venv"):
+        violations.append("repository_local_venv")
+    violations.extend(f"oversized_file:{row['path']}:{row['bytes']}" for row in oversized)
+    violations.extend(f"forbidden_artifact:{row['path']}:{row['bytes']}" for row in forbidden_artifacts)
+    violations.extend(f"forbidden_large_root:{row['path']}:{row['bytes']}" for row in forbidden_large_roots)
+    return {
+        "name": "repository_budget",
+        "violations": violations,
+        "repository_worktree_bytes": worktree_bytes,
+        "git_database_bytes": git_database_bytes,
+        "repository_local_venv_exists": os.path.lexists(Path(repo_root) / ".venv"),
+        "target_300m_status": "PASS" if worktree_bytes < limits["required_maximum_bytes"] else "FAIL",
+        "preferred_150m_status": "PASS" if worktree_bytes < limits["preferred_bytes"] else "NOT_MET",
+        "warning_400m_status": "WARNING" if worktree_bytes >= limits["warning_bytes"] else "PASS",
+        "hard_limit_500m_status": "HARD_FAIL" if worktree_bytes >= limits["hard_fail_bytes"] else "PASS",
+        "oversized_files": oversized,
+        "new_files_over_10m": newly_introduced_large,
+        "forbidden_artifacts": forbidden_artifacts,
+        "forbidden_large_roots": forbidden_large_roots,
+        "access_errors": access_errors,
+        "accounting_complete": not access_errors,
+        "accounting_note": "access errors are surfaced and bytes are a lower bound; no directory is silently allowlisted",
+    }
 
 
 def registry_hygiene():
@@ -332,7 +445,7 @@ def write_file_registry():
 def main(argv=None):
     parser = argparse.ArgumentParser(); parser.add_argument("--write-file-registry", action="store_true"); args = parser.parse_args(argv)
     if args.write_file_registry: write_file_registry()
-    checks = [architecture(), bloat(), single_source(), registry_hygiene(), forbidden_patterns(), compatibility(), result_routing()]
+    checks = [architecture(), bloat(), repository_budget(), single_source(), registry_hygiene(), forbidden_patterns(), compatibility(), result_routing()]
     violations = [v for check in checks for v in check["violations"]]
     result = {"status": "PASS" if not violations else "FAIL", "checks": checks, "violations": violations}
     print(json.dumps(result, indent=2))

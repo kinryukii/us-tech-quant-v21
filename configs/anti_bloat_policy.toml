@@ -1,0 +1,56 @@
+policy_version = "1.0"
+status = "ACTIVE"
+initial_date = "2026-08-17"
+forbid_repo_local_venv = true
+canonical_data_default_read_only = true
+fail_closed_on_unknown = true
+policy_weakening_requires_user_authorization = true
+
+[repository]
+root = "D:\\us-tech-quant"
+preferred_bytes = 157286400
+required_maximum_bytes = 314572800
+warning_bytes = 419430400
+hard_fail_bytes = 524288000
+new_file_surface_threshold_bytes = 10485760
+individual_file_allowlist_threshold_bytes = 26214400
+large_file_allowlist = []
+large_artifact_roots = [
+  "outputs",
+  "data",
+  "cache",
+  "daily",
+  "models",
+  "checkpoints",
+  "predictions",
+  "oof",
+  "backtest_outputs",
+  "daily_archives",
+  "moomoo_cache",
+  "option_history",
+]
+large_artifact_suffixes = [
+  ".parquet",
+  ".pickle",
+  ".pkl",
+  ".joblib",
+  ".ckpt",
+  ".onnx",
+  ".h5",
+  ".hdf5",
+]
+
+[runtime]
+canonical_python = "D:\\us-tech-quant-envs\\us-tech-quant-main\\Scripts\\python.exe"
+
+[storage]
+runtime_paths_config = "config/storage_paths.json"
+required_external_root_keys = [
+  "data_root",
+  "cache_root",
+  "daily_root",
+  "backtest_root",
+  "results_root",
+  "envs_root",
+]
+worktrees_root = "D:\\us-tech-quant_worktrees"
