@@ -547,10 +547,14 @@ def date_stats(records: list[dict[str, Any]]) -> tuple[str, str]:
     return (vals[0], vals[-1]) if vals else ("", "")
 
 
-def build_canonical(paths: dict[str, Path], snapshot_id: str, adjustment: str, source_files: list[Path], resume: bool) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def build_canonical(paths: dict[str, Path], snapshot_id: str, adjustment: str, source_files: list[Path], resume: bool, as_of_date: str | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Materialize daily canonical rows, optionally with a strict PIT as-of cutoff."""
     rows: list[dict[str, Any]] = []
     for path in source_files:
         rows.extend(read_csv_rows(path))
+    cutoff = str(as_of_date or "")[:10]
+    if cutoff:
+        rows = [row for row in rows if str(row.get("date", ""))[:10] <= cutoff]
     out = paths["canonical"] / f"canonical_moomoo_ohlcv_daily_{adjustment}.csv"
     ok, digest, size, row_count, written, already = write_records(out, rows, resume)
     first, latest = date_stats(rows)
@@ -560,7 +564,7 @@ def build_canonical(paths: dict[str, Path], snapshot_id: str, adjustment: str, s
         "ticker_count": len({r.get("ticker") for r in rows if r.get("ticker")}),
         "first_date": first, "latest_date": latest, "sha256": digest,
         "source_policy": "MOOMOO_ONLY", "yfinance_used": "False", "external_fallback_used": "False",
-        "notes": "new immutable canonical snapshot" if ok else "write blocked",
+        "notes": ("new immutable canonical snapshot; strict_as_of_date=" + cutoff if cutoff else "new immutable canonical snapshot") if ok else "write blocked",
     }
     write_rows = [{"source_path_or_api": "canonical_builder", "cache_path": str(out), "file_exists": bool_text(out.exists()), "size_bytes": size, "sha256": digest, "written_now": bool_text(written), "already_present_verified": bool_text(already), "verified": bool_text(ok), "notes": "canonical output"}]
     return manifest, write_rows
@@ -783,14 +787,18 @@ def run(
         except Exception as exc:
           reconnect_rows.append({"timestamp_utc": utc_now(), "event": "CLOSE_FAILED", "detail": str(exc)})
 
-    raw_canon, raw_write = build_canonical(paths, snapshot, "raw", raw_files, resume)
-    qfq_canon, qfq_write = build_canonical(paths, snapshot, "qfq", qfq_files, resume)
+    # An explicit end_date is a historical as-of request.  The immutable
+    # canonical artifacts (not merely their summaries) must exclude later bars.
+    target_date = str(end_date or "")[:10]
+    raw_canon, raw_write = build_canonical(paths, snapshot, "raw", raw_files, resume, target_date or None)
+    qfq_canon, qfq_write = build_canonical(paths, snapshot, "qfq", qfq_files, resume, target_date or None)
+    if target_date and (raw_canon["latest_date"] > target_date or qfq_canon["latest_date"] > target_date):
+        raise RuntimeError(f"PIT_CANONICAL_CUTOFF_VIOLATION:{target_date}:raw={raw_canon['latest_date']}:qfq={qfq_canon['latest_date']}")
     write_rows.extend(raw_write + qfq_write)
     canonical_manifest = [raw_canon, qfq_canon]
     quality_rows = quality_audit(raw_rows_all, qfq_rows_all)
     quality_errors = sum(1 for r in quality_rows if r["severity"] == "ERROR")
     quality_warnings = sum(1 for r in quality_rows if r["severity"] == "WARN")
-    target_date = str(end_date or "")[:10]
     coverage_rows = coverage(raw_manifest, qfq_manifest, intra_manifest, target_date, exclusion_rows)
     coverage_warnings = sum(1 for r in coverage_rows if r["coverage_status"] not in {"OK_TARGET_DATE", "LEGALLY_EXCLUDED"})
     daily_raw_attempted = len(raw_manifest); daily_qfq_attempted = len(qfq_manifest); intra_attempted = len(intra_manifest)
@@ -817,6 +825,7 @@ def run(
         status = FAIL_DAILY
         error_count = max(error_count, 1)
     pointer = pointer_payload(cache_root, paths, snapshot, raw_canon["path"], qfq_canon["path"])
+    pointer["canonical_as_of_date"] = target_date
     pointer.update(universe_cov)
     write_json(paths["canonical"] / "canonical_manifest.json", {"snapshot": pointer, "canonical_manifest": canonical_manifest})
     write_csv(paths["canonical"] / "canonical_quality_audit.csv", quality_rows, QUALITY_FIELDS)

@@ -1,0 +1,47 @@
+{
+  "contract_version": "FAST3_MINIMAL_EMPIRICAL_VALIDATION_R2",
+  "purpose": "Bounded evidence-ledger, frozen-contract and real-development run",
+  "legacy_baseline": {
+    "top5_lift": 1.36122855,
+    "net_return_10bps": -0.001966,
+    "pre_registered_lift_gate": 1.5
+  },
+  "frozen_research_constraints": {
+    "opportunity_threshold": 0.6,
+    "top_k": 5,
+    "feature_addition_allowed": false,
+    "feature_deletion_for_performance_allowed": false,
+    "label_change_allowed": false,
+    "prediction_window_change_allowed": false,
+    "threshold_search_allowed": false,
+    "regime_filter_selection_allowed": false,
+    "transaction_cost_bps": [10, 20]
+  },
+  "search_budget": {
+    "max_model_families": 3,
+    "max_initial_configs": 8,
+    "max_refinement_configs": 4,
+    "max_total_configs": 12,
+    "max_refinement_rounds": 1,
+    "random_seeds": [104729, 130363, 155921, 196613, 262147]
+  },
+  "anti_expansion": {
+    "max_new_code_files": 2,
+    "max_new_test_files": 1,
+    "max_new_config_or_manifest_files": 2,
+    "new_atlas_allowed": false,
+    "new_guard_subsystem_allowed": false,
+    "new_registry_subsystem_allowed": false,
+    "nested_runner_allowed": false,
+    "git_commit_or_push_allowed": false
+  },
+  "allowed_final_decisions": [
+    "PASS_DEVELOPMENT_READY_FOR_FROZEN_VALIDATION",
+    "PASS_DEVELOPMENT_READY_FOR_FORWARD_SHADOW",
+    "STOP_NO_SIGNIFICANT_IMPROVEMENT_OVER_V22_080B",
+    "STOP_NOT_ECONOMIC_AFTER_COST",
+    "STOP_MODEL_INSTABILITY",
+    "STOP_NO_UNCONTAMINATED_HISTORICAL_HOLDOUT",
+    "STOP_DATA_OR_IMPLEMENTATION_INVALID"
+  ]
+}

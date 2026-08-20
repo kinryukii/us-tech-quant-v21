@@ -5,8 +5,8 @@ function Get-UstqStoragePaths {
     $keys = 'repo_root','data_root','cache_root','daily_root','backtest_root','results_root','envs_root'
     $out = @{}
     foreach ($key in $keys) { $envName = 'USTQ_' + $key.ToUpper(); $out[$key] = if ([Environment]::GetEnvironmentVariable($envName)) {[Environment]::GetEnvironmentVariable($envName)} else {$cfg.$key} }
-    $preferred = Join-Path $out['envs_root'] 'daily-python312\Scripts\python.exe'
-    $out['python_exe'] = if ($env:USTQ_PYTHON_EXE) {$env:USTQ_PYTHON_EXE} elseif(Test-Path $preferred){$preferred} else {(Join-Path $out['envs_root'] '.venv\Scripts\python.exe')}
+    $canonical = Join-Path $out['envs_root'] 'us-tech-quant-main\Scripts\python.exe'
+    $out['python_exe'] = if ($env:USTQ_PYTHON_EXE) {$env:USTQ_PYTHON_EXE} else {$canonical}
     return $out
 }
 function Get-UstqRepoRoot { (Get-UstqStoragePaths).repo_root }

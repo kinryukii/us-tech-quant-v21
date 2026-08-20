@@ -1,0 +1,8 @@
+ticker,instrument_name,instrument_type,known_listing_or_inception_date,listing_date_source,listing_date_confidence,source_notes,research_only
+TQQQ,ProShares UltraPro QQQ,LEVERAGED_LONG_ETF,2010-02-09,USER_SPECIFIED_STAGE_REFERENCE,HIGH,Established ETF; listing reference is classification-only and grants no score eligibility.,TRUE
+QQQ,Invesco QQQ Trust,CORE_ETF,UNKNOWN_ESTABLISHED,LOCAL_LINEAGE_ESTABLISHED_INSTRUMENT,MEDIUM,Established ETF with deep local history; exact inception date not required for this repair.,TRUE
+SPY,SPDR S&P 500 ETF Trust,CORE_ETF,UNKNOWN_ESTABLISHED,LOCAL_LINEAGE_ESTABLISHED_INSTRUMENT,MEDIUM,Established ETF with deep local history; exact inception date not required for this repair.,TRUE
+SQQQ,ProShares UltraPro Short QQQ,INVERSE_ETF,UNKNOWN_ESTABLISHED,USER_SPECIFIED_ESTABLISHED_INSTRUMENT,MEDIUM,Established inverse ETF; short local history is not IPO evidence.,TRUE
+SOXL,Direxion Daily Semiconductor Bull 3X Shares,LEVERAGED_LONG_ETF,UNKNOWN_ESTABLISHED,USER_SPECIFIED_ESTABLISHED_INSTRUMENT,MEDIUM,Established leveraged ETF; listing reference is classification-only.,TRUE
+DRAM,Roundhill DRAM and Memory ETF,THEMATIC_ETF,2026-04-02,USER_SPECIFIED_APPROXIMATE_INCEPTION_REFERENCE,MEDIUM,Recent thematic ETF reference; scoring still requires exact-symbol local prices.,TRUE
+SPCX,Space Exploration Technologies candidate,STOCK,,ALIAS_AUDIT_PENDING_LOCAL_CONFIRMATION,LOW,Do not assume a public listing; local exact-ticker price evidence is required.,TRUE

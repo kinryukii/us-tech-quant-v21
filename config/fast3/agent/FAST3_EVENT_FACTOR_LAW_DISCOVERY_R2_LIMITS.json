@@ -1,0 +1,300 @@
+{
+  "contract_version": "FAST3_EVENT_FACTOR_LAW_DISCOVERY_R2_REPAIR",
+  "purpose": "One bounded repair of the R1 matched-control integrity failure plus a frozen null-economic audit; no factor, target, model-family, threshold, execution, or search-space expansion.",
+  "r1_invalid_run": {
+    "run_id": "20260802_184840",
+    "expected_external_path": "D:/us-tech-quant-results/fast3/agent_runs/event_factor_law_discovery/20260802_184840",
+    "expected_legacy_compatibility_path": "D:/us-tech-quant-results/runtime/local_results/fast3/event_factor_law_discovery/20260802_184840",
+    "final_status": "EXECUTED_REAL_DATA_CONTRACT_INTEGRITY_FAILURE",
+    "final_decision": "STOP_IMPLEMENTATION_INVALID",
+    "event_count": 517196,
+    "events_with_matched_control": 505308,
+    "events_without_matched_control": 11888,
+    "r1_results_are_invalid_for_adoption": true,
+    "r1_results_may_be_read_only_for": [
+      "importing and quarantining all retired random blocks",
+      "freezing the exact R1 factor dictionary and model configuration list",
+      "diagnosing unmatched-control strata",
+      "verifying source hashes and prior implementation scope"
+    ],
+    "r1_results_may_not_be_used_for": [
+      "claiming performance",
+      "adding or deleting factors based on observed R1 results",
+      "choosing new thresholds or interactions",
+      "reusing any observed random block for discovery, fitting, selection, or audit"
+    ]
+  },
+  "repair_scope": {
+    "allowed_source_change": "Modify only fast3/src/fast3/event_factor_law_discovery.py for control matching, pre-training integrity gates, R1 block quarantine, null audit, and exact report corrections.",
+    "new_core_code_files_allowed": 0,
+    "modified_core_code_files_max": 1,
+    "new_test_files_max": 1,
+    "factor_family_changes_allowed": false,
+    "factor_column_addition_allowed": false,
+    "factor_deletion_for_performance_allowed": false,
+    "label_or_horizon_change_allowed": false,
+    "model_family_or_config_change_allowed": false,
+    "threshold_or_top_fraction_search_allowed": false,
+    "execution_mapping_or_cost_change_allowed": false,
+    "post_final_audit_retraining_allowed": false
+  },
+  "frozen_target": {
+    "underlyings": [
+      "QQQ",
+      "SOXX"
+    ],
+    "execution_mapping": {
+      "QQQ_UP": "TQQQ",
+      "QQQ_DOWN": "SQQQ",
+      "SOXX_UP": "SOXL",
+      "SOXX_DOWN": "SOXS"
+    },
+    "decision_grid_minutes": 5,
+    "barrier_percent": 0.01,
+    "horizon_natural_hours": 24,
+    "classes": [
+      "UP_FIRST",
+      "DOWN_FIRST",
+      "NO_EVENT"
+    ],
+    "same_bar_dual_hit": "AMBIGUOUS_EXCLUDE",
+    "entry": "NEXT_VALID_MINUTE_OPEN",
+    "opportunity_probability_threshold": 0.6,
+    "top_fraction": 0.05,
+    "transaction_cost_bps_round_trip": [
+      10,
+      20
+    ],
+    "single_account_single_position": true,
+    "confirmation_start_et": "2025-02-08T00:00:00-05:00"
+  },
+  "frozen_factor_and_model_contract": {
+    "factor_dictionary_source": "R1 FAST3_FACTOR_DICTIONARY.json; hash must be imported and frozen before any R2 law result",
+    "factor_dictionary_must_match_r1_exactly": true,
+    "magical_nine_turn_definition_must_match_r1_exactly": true,
+    "pre_registered_interactions_must_match_r1_exactly": true,
+    "stable_r1_factor_subset_is_not_preapproved": true,
+    "law_discovery_must_be_recomputed_after_valid_matching": true,
+    "model_configs": [
+      "linear_0.1",
+      "linear_1.0",
+      "spline_0.1",
+      "spline_1.0",
+      "hgb_leaf7",
+      "hgb_leaf15"
+    ],
+    "model_family_count": 3,
+    "total_config_count": 6,
+    "random_seeds": [
+      104729,
+      130363,
+      155921,
+      196613,
+      262147
+    ]
+  },
+  "control_match_protocol": {
+    "fixed_primary_controls_per_event": 1,
+    "eligible_control_label": "NO_EVENT",
+    "minimum_decision_time_separation_hours": 48,
+    "maximum_control_reuse": 8,
+    "reuse_policy": "Choose lowest current reuse count first, then lowest frozen match distance, then earliest timestamp, then lexical control id.",
+    "matching_covariates_are_pit_only": true,
+    "matching_tiers_in_fixed_order": [
+      {
+        "tier": 0,
+        "name": "EXACT",
+        "required_equal": [
+          "underlying",
+          "session",
+          "era",
+          "volatility_bucket",
+          "time_of_week_bucket"
+        ]
+      },
+      {
+        "tier": 1,
+        "name": "ADJACENT_VOLATILITY",
+        "required_equal": [
+          "underlying",
+          "session",
+          "era",
+          "time_of_week_bucket"
+        ],
+        "max_volatility_bucket_distance": 1
+      },
+      {
+        "tier": 2,
+        "name": "ADJACENT_TIME_BUCKET",
+        "required_equal": [
+          "underlying",
+          "session",
+          "era",
+          "volatility_bucket",
+          "weekday"
+        ],
+        "max_time_of_week_bucket_distance": 1
+      },
+      {
+        "tier": 3,
+        "name": "SAME_ERA_NEAREST",
+        "required_equal": [
+          "underlying",
+          "session",
+          "era"
+        ],
+        "distance_fields": [
+          "volatility_percentile",
+          "minute_of_week_scaled"
+        ],
+        "maximum_standardized_distance": 1.5
+      },
+      {
+        "tier": 4,
+        "name": "ADJACENT_ERA_NEAREST",
+        "required_equal": [
+          "underlying",
+          "session"
+        ],
+        "maximum_era_distance": 1,
+        "distance_fields": [
+          "volatility_percentile",
+          "minute_of_week_scaled"
+        ],
+        "maximum_standardized_distance": 2.0
+      }
+    ],
+    "no_tier_widening_after_results": true,
+    "all_events_must_be_matched_before_law_discovery": true,
+    "unmatched_event_count_required": 0,
+    "tier_0_to_3_ratio_min": 0.95,
+    "tier_4_ratio_max": 0.03,
+    "absolute_standardized_mean_difference_max": 0.1,
+    "if_any_integrity_gate_fails": "STOP_CONTROL_MATCH_INCOMPLETE_BEFORE_TRAINING"
+  },
+  "r1_block_quarantine": {
+    "source": "R1 FAST3_ROUND_LEDGER.jsonl",
+    "all_observed_r1_blocks_must_be_imported": true,
+    "expected_retired_block_count_min": 14,
+    "quarantine_buffer_hours_each_side": 24,
+    "quarantined_rows_forbidden_in": [
+      "factor-law selection",
+      "model fitting",
+      "model selection",
+      "R2 training robustness blocks",
+      "R2 final audit blocks"
+    ],
+    "reuse_count_required": 0
+  },
+  "r2_random_block_protocol": {
+    "block_length_calendar_days_fixed": 60,
+    "training_round_count": 3,
+    "blocks_per_training_round": 3,
+    "final_audit_block_count": 5,
+    "total_new_blocks": 14,
+    "minimum_gap_calendar_days": 5,
+    "purge_hours": 24,
+    "embargo_hours": 24,
+    "schedule_frozen_after_r1_quarantine_import_and_before_control_or_factor_results": true,
+    "blocks_non_overlapping": true,
+    "r1_or_r2_observed_block_reuse_forbidden": true,
+    "historical_blocks_are_robustness_not_clean_validation": true
+  },
+  "null_economic_audit": {
+    "evaluated_only_in_final_audit": true,
+    "may_not_trigger_retraining": true,
+    "nulls": [
+      "SHUFFLED_DIRECTION_SAME_SELECTED_TIMESTAMPS",
+      "SHUFFLED_SCORE_FULL_CANDIDATES",
+      "RANDOM_SCORE_RANDOM_DIRECTION",
+      "ALWAYS_UP_SAME_SELECTED_TIMESTAMPS",
+      "ALWAYS_DOWN_SAME_SELECTED_TIMESTAMPS"
+    ],
+    "same_execution_contract_as_learned_model": true,
+    "same_cost_surfaces": [
+      10,
+      20
+    ],
+    "same_single_account_portfolio": true,
+    "same_random_seeds_for_stochastic_nulls": true,
+    "learned_minus_strongest_null_paired_bootstrap_resamples": 10000,
+    "learned_minus_strongest_null_net10_ci_low_must_exceed": 0.0,
+    "learned_minus_strongest_null_lift_ci_low_must_exceed": 0.0,
+    "failure_decision": "STOP_NULL_ECONOMIC_BASELINE_NOT_BEATEN"
+  },
+  "execution_sanity_gates": {
+    "selection_must_use_only_model_scores_and_frozen_tie_breakers": true,
+    "actual_label_for_selection_or_priority_forbidden": true,
+    "future_etf_path_as_feature_forbidden": true,
+    "gross_target_return": 0.03,
+    "gross_target_assigned_only_after_real_path_crossing": true,
+    "maximum_target_hit_net_10bps": 0.0290001,
+    "required_reports": [
+      "accepted_direction_accuracy",
+      "target_hit_rate",
+      "timeout_rate",
+      "mean_timeout_return",
+      "selected_signal_count",
+      "accepted_trade_count",
+      "rejected_overlap_count",
+      "learned_vs_each_null"
+    ],
+    "data_leakage_tests_must_all_pass": true,
+    "confirmation_rows_read_required": 0
+  },
+  "final_pass_gates": {
+    "pooled_top5_lift_min": 1.5,
+    "legacy_top5_lift": 1.36122855,
+    "lift_delta_ci_lower_vs_legacy_min_exclusive": 0.0,
+    "median_random_block_net_10bps_min_exclusive": 0.0,
+    "median_random_block_net_20bps_min": 0.0,
+    "positive_random_block_ratio_10bps_min": 0.6,
+    "positive_seed_count_10bps_min": 4,
+    "trimmed_best_1pct_net_10bps_min_exclusive": 0.0,
+    "minimum_accepted_trades_total": 300,
+    "minimum_accepted_trades_per_final_block": 30,
+    "max_single_block_positive_pnl_contribution": 0.35,
+    "unknown_session_rows_max": 0,
+    "control_match_integrity_must_pass": true,
+    "r1_retired_block_reuse_count_max": 0,
+    "null_audit_must_pass": true
+  },
+  "anti_expansion": {
+    "new_v22_chain_allowed": false,
+    "new_factor_or_atlas_subsystem_allowed": false,
+    "new_guard_or_registry_subsystem_allowed": false,
+    "nested_runner_allowed": false,
+    "hidden_background_process_allowed": false,
+    "unrelated_refactor_allowed": false,
+    "git_stage_commit_push_allowed": false,
+    "external_canonical_write_allowed": false,
+    "broker_or_order_action_allowed": false
+  },
+  "required_artifacts": [
+    "FAST3_EVIDENCE_LEDGER.json",
+    "FAST3_R2_REPAIR_CONTRACT.json",
+    "FAST3_R1_RETIREMENT_IMPORT.json",
+    "FAST3_UNMATCHED_CONTROL_DIAGNOSTIC.csv",
+    "FAST3_CONTROL_MATCH_AUDIT.json",
+    "fast3_event_control_pairs.parquet",
+    "fast3_factor_linear_results.csv",
+    "fast3_factor_nonlinear_results.csv",
+    "fast3_random_time_block_results.csv",
+    "fast3_null_model_results.csv",
+    "fast3_event_predictions.parquet",
+    "FAST3_ROUND_LEDGER.jsonl",
+    "fast3_event_factor_r2_summary.json",
+    "FAST3_EVENT_FACTOR_R2_REPORT.md"
+  ],
+  "allowed_final_decisions": [
+    "PASS_READY_FOR_PROSPECTIVE_FORWARD_SHADOW",
+    "STOP_CONTROL_MATCH_INCOMPLETE_BEFORE_TRAINING",
+    "STOP_NULL_ECONOMIC_BASELINE_NOT_BEATEN",
+    "STOP_NO_STABLE_FACTOR_LAWS",
+    "STOP_NO_SIGNIFICANT_PREDICTIVE_GAIN",
+    "STOP_NOT_ECONOMIC_AFTER_COST",
+    "STOP_RANDOM_TIME_BLOCK_INSTABILITY",
+    "STOP_DATA_CONTRACT_INVALID",
+    "STOP_IMPLEMENTATION_INVALID"
+  ]
+}

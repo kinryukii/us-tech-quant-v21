@@ -18,8 +18,7 @@ class StoragePaths:
     def python_exe(self) -> Path:
         value = os.environ.get("USTQ_PYTHON_EXE")
         if value: return Path(value).expanduser()
-        preferred = self.envs_root / "daily-python312/Scripts/python.exe"
-        return preferred if preferred.exists() else self.envs_root / ".venv/Scripts/python.exe"
+        return self.envs_root / "us-tech-quant-main/Scripts/python.exe"
 
 def resolve(repo_root: Path | None = None, **overrides: str | Path | None) -> StoragePaths:
     repo = Path(repo_root or overrides.get("repo_root") or os.environ.get(ENV["repo_root"]) or DEFAULTS["repo_root"]).resolve()

@@ -20,6 +20,9 @@ def now_utc() -> str: return datetime.now(timezone.utc).isoformat().replace("+00
 def root() -> Path:
     value = os.environ.get("USTQ_DATA_ROOT", r"D:\us-tech-quant-data")
     p = (Path(value) / "fast3" / "moomoo_24h_1m").resolve(); p.mkdir(parents=True, exist_ok=True); return p
+def runtime_summary_path() -> Path:
+    value = os.environ.get("USTQ_RESULTS_ROOT", r"D:\us-tech-quant-results")
+    return (Path(value) / "runtime" / "fast3" / VERSION / "v22_049_summary.json").resolve()
 def port_open(host: str, port: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=2): return True
@@ -128,7 +131,7 @@ def run(full_refresh: bool=False, preflight_only: bool=False, incremental_only: 
     if preflight_only:
         summary={"final_status":"PASS","final_decision":"PREFLIGHT_ONLY","data_ready_for_v22_050":False,"external_data_directory":str(data_root),"preflight":pre}
         (data_root/"v22_049_summary.json").write_text(json.dumps(summary,indent=2,default=str)+"\n",encoding="utf-8")
-        pointer=REPO/"outputs/v22"/VERSION; pointer.mkdir(parents=True,exist_ok=True); (pointer/"v22_049_summary.json").write_text(json.dumps(summary,indent=2,default=str)+"\n",encoding="utf-8")
+        pointer=runtime_summary_path(); pointer.parent.mkdir(parents=True,exist_ok=True); pointer.write_text(json.dumps(summary,indent=2,default=str)+"\n",encoding="utf-8")
         return summary,0
     if full_refresh and incremental_only: raise RuntimeError("--full-refresh and --incremental-only are mutually exclusive")
     ctx=api.OpenQuoteContext(host=CFG["host"],port=int(CFG["port"])); downloaded=now_utc(); results=[]; failures=[]; audit={"candidate_partition_count":0,"unchanged_partition_count":0,"changed_partition_count":0,"canonical_partition_read_count":0,"rewritten_partition_list":[],"skipped_unchanged_partition_list":[]}
@@ -206,7 +209,7 @@ def run(full_refresh: bool=False, preflight_only: bool=False, incremental_only: 
     summary={"final_status":status,"final_decision":"DATA_READY_FOR_V22_050" if status=="PASS" else "DATA_DOWNLOADED_WITH_SESSION_COVERAGE_LIMITATIONS","opend_version":pre["opend_version"],"sdk_name":name,"sdk_version":version,"session_all_supported":bool(pre["session_all_supported"]),"symbol_count_requested":6,"symbol_count_succeeded":len(res),"symbol_count_failed":len(fail),"requested_symbols":CFG["symbols"],"earliest_timestamp_by_symbol":dict(zip(res.code,res.earliest)) if len(res) else {},"latest_timestamp_by_symbol":dict(zip(res.code,res.latest)) if len(res) else {},"row_count_by_symbol":dict(zip(res.code,res.rows)) if len(res) else {},"row_count_by_session":all_data.session.value_counts().to_dict() if not all_data.empty else {},"common_coverage_start":common_start,"common_coverage_end":common_end,"night_data_available_by_symbol":dict(zip(res.code,res.night_available)) if len(res) else {},"premarket_data_available_by_symbol":dict(zip(res.code,res.premarket_available)) if len(res) else {},"rth_data_available_by_symbol":dict(zip(res.code,res.rth_available)) if len(res) else {},"afterhours_data_available_by_symbol":dict(zip(res.code,res.afterhours_available)) if len(res) else {},"duplicate_count":dup,"invalid_ohlc_count":inv,"timezone_validation_pass":True,"broker_trade_date_validation_pass":broker_date(pd.Timestamp("2026-07-24 21:00",tz=ET))=="2026-07-25","canonical_write_pass":not res.empty,"incremental_update_pass":not full_refresh,"data_ready_for_v22_050":ready,"external_data_directory":str(data_root),"preflight":pre}
     summary.update(mode_audit)
     (data_root/"v22_049_summary.json").write_text(json.dumps(summary,indent=2,default=str)+"\n",encoding="utf-8"); (data_root/"v22_049_run_manifest.json").write_text(json.dumps({"version":VERSION,"downloaded_at_utc":downloaded,"config":CFG,"preflight":pre},indent=2,default=str)+"\n",encoding="utf-8")
-    pointer=REPO/"outputs/v22"/VERSION; pointer.mkdir(parents=True,exist_ok=True); (pointer/"v22_049_summary.json").write_text(json.dumps(summary,indent=2,default=str)+"\n",encoding="utf-8")
+    pointer=runtime_summary_path(); pointer.parent.mkdir(parents=True,exist_ok=True); pointer.write_text(json.dumps(summary,indent=2,default=str)+"\n",encoding="utf-8")
     return summary, (0 if status=="PASS" else 1)
 def main() -> int:
     p=argparse.ArgumentParser(); p.add_argument("--full-refresh",action="store_true"); p.add_argument("--preflight-only",action="store_true"); p.add_argument("--incremental-only",action="store_true"); a=p.parse_args();

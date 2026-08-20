@@ -1,0 +1,18 @@
+{
+  "contract_id": "FAST3_R28_MULTISIGNAL_RESEARCH_CONTRACT_R1",
+  "baseline_feature_count": 10,
+  "canonical_source": "D:\\us-tech-quant-data\\fast3\\moomoo_24h_1m\\canonical",
+  "decision": "R28 Phase 1 feature-generation only; no model training, scoring, optimization, labels, or backtest.",
+  "new_feature_families": {
+    "cross_asset": ["peer_return_15m", "relative_return_15m"],
+    "flow": ["volume_zscore_60m", "signed_volume_pressure_15m"],
+    "trend_structure": ["trend_ema_gap_60m", "breakout_position_120m"],
+    "volatility_risk": ["downside_vol_60m", "intrabar_range_15m"]
+  },
+  "pit_rule": "All bars are completed one-minute bars. Every rolling window ends at decision bar t; QQQ/SOXX peer values use exact timestamp joins only; no forward or as-of join is permitted.",
+  "blocked_factors": {
+    "external_flow_or_options_metrics": "No PIT-safe canonical source.",
+    "spy_relative_return": "SPY absent from canonical source.",
+    "vix_level_or_term_structure": "VIX absent from canonical source."
+  }
+}

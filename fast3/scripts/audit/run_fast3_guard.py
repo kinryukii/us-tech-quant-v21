@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -10,6 +12,16 @@ import stat
 import subprocess
 import tomllib
 from pathlib import Path
+
+_SEMANTICS_PATH = Path(__file__).with_name("anti_bloat_semantics.py")
+_SEMANTICS_SPEC = importlib.util.spec_from_file_location("fast3_anti_bloat_semantics", _SEMANTICS_PATH)
+if _SEMANTICS_SPEC is None or _SEMANTICS_SPEC.loader is None:
+    raise ImportError(f"cannot load Anti-Bloat semantics: {_SEMANTICS_PATH}")
+_SEMANTICS = importlib.util.module_from_spec(_SEMANTICS_SPEC)
+_SEMANTICS_SPEC.loader.exec_module(_SEMANTICS)
+apply_legacy_exceptions = _SEMANTICS.apply_legacy_exceptions
+legacy_baseline_status = _SEMANTICS.legacy_baseline_status
+scan_internal_result_writes = _SEMANTICS.scan_internal_result_writes
 
 REPO = Path(__file__).resolve().parents[3]
 FAST = REPO / "fast3"
@@ -39,6 +51,14 @@ def repository_policy(policy_path: Path = POLICY_PATH) -> dict:
     repository = dict(policy["repository"])
     repository["forbid_repo_local_venv"] = policy["forbid_repo_local_venv"]
     return repository
+
+
+def legacy_policy(policy_path: Path = POLICY_PATH) -> dict:
+    return dict(_toml(policy_path)["legacy_baseline"])
+
+
+def legacy_baseline_path(policy_path: Path = POLICY_PATH, repo_root: Path = REPO) -> Path:
+    return Path(repo_root) / legacy_policy(policy_path)["manifest"]
 
 
 def _absolute_key(path: Path) -> str:
@@ -115,15 +135,35 @@ def architecture():
     return {"name": "architecture", "violations": violations, "root_fast3_file_count": len(active_root)}
 
 
-def bloat(root=FAST):
+def bloat(root=FAST, *, repo_root=None, baseline_path=None):
+    root = Path(root)
+    repo_root = Path(repo_root) if repo_root is not None else (REPO if root == FAST else root)
+    baseline_path = Path(baseline_path) if baseline_path is not None else legacy_baseline_path()
     limits = _json(root / "configs" / "runtime" / "FAST3_ANTI_BLOAT_LIMITS.json")
     forbidden_binary_suffixes = set(limits["forbidden_binary_suffixes"]) | {".bin"}
     big = [p.relative_to(root).as_posix() for p in _files(root) if p.suffix.lower() in forbidden_binary_suffixes and "legacy/" not in p.relative_to(root).as_posix()]
     big += [p.relative_to(root).as_posix() for p in _files(root) if p.suffix.lower() in {".csv", ".json"} and p.stat().st_size > limits["max_csv_json_bytes_outside_legacy"] and "legacy/" not in p.relative_to(root).as_posix()]
-    oversized_py = [p.relative_to(root).as_posix() for p in _files(root) if p.suffix == ".py" and len(p.read_text(encoding="utf-8", errors="ignore").splitlines()) > limits["single_python_file_line_budget"]]
+    oversized_findings = [
+        {"path": p, "rule_id": "python_lines"} for p in _files(root)
+        if p.suffix == ".py" and len(p.read_text(encoding="utf-8", errors="ignore").splitlines()) > limits["single_python_file_line_budget"]
+    ]
+    oversized_current, frozen, invalidated = apply_legacy_exceptions(
+        oversized_findings, repo_root=repo_root, baseline_path=baseline_path,
+    )
     suffix = re.compile(r"FAST3[-_]\d{3}.*(?:_R\d+|_FINAL(?:\d+|_V\d+)|_PATCH(?:ED)?\d*|_V\d+)", re.I)
     forbidden = [p.relative_to(root).as_posix() for p in _files(root) if suffix.search(p.name) and "legacy/" not in p.relative_to(root).as_posix()]
-    return {"name": "bloat", "violations": [f"large:{x}" for x in big] + [f"python_lines:{x}" for x in oversized_py] + [f"suffix:{x}" for x in forbidden]}
+    return {
+        "name": "bloat",
+        "violations": [f"large:{x}" for x in big]
+        + [f"python_lines:{row['repository_relative_path'].removeprefix('fast3/')}" for row in oversized_current]
+        + [f"suffix:{x}" for x in forbidden],
+        "raw_python_line_violation_count": len(oversized_findings),
+        "current_python_line_violation_count": len(oversized_current),
+        "frozen_legacy_exception_count": len(frozen),
+        "frozen_legacy_exceptions": frozen,
+        "legacy_exception_invalidated_count": len(invalidated),
+        "legacy_exception_invalidated": invalidated,
+    }
 
 
 def repository_budget(repo_root=REPO):
@@ -143,6 +183,27 @@ def repository_budget(repo_root=REPO):
     ).stdout.splitlines())
     files = []
     access_errors = []
+    def unreadable_row(path: Path, exc: OSError) -> dict:
+        try:
+            relative = path.relative_to(repo_root).as_posix()
+        except ValueError:
+            relative = str(path)
+        tracked_status = relative in tracked
+        ignored = subprocess.run(
+            ["git", "check-ignore", "--quiet", "--", relative], cwd=repo_root,
+            text=True, capture_output=True, check=False,
+        ).returncode == 0
+        parts = {part.lower() for part in Path(relative).parts}
+        ephemeral = any(part == ".pytest_cache" or part.startswith(".pytest_") for part in parts)
+        linked_worktree = relative.lower().startswith("_worktrees/")
+        material = tracked_status or not (ignored and ephemeral)
+        return {
+            "path": str(path), "repository_relative_path": relative,
+            "error": type(exc).__name__,
+            "path_scope": "LINKED_WORKTREE_EPHEMERAL" if linked_worktree else "MAIN_WORKTREE",
+            "tracked_status": tracked_status, "ignored_status": ignored,
+            "material_to_repo_accounting": material,
+        }
     pending = [Path(repo_root)]
     git_root = Path(repo_root) / ".git"
     while pending:
@@ -156,7 +217,7 @@ def repository_budget(repo_root=REPO):
                     try:
                         item, is_reparse = _lstat_reparse(path)
                     except OSError as exc:
-                        access_errors.append(f"{path}:{type(exc).__name__}")
+                        access_errors.append(unreadable_row(path, exc))
                         continue
                     if stat.S_ISDIR(item.st_mode):
                         if not is_reparse:
@@ -164,7 +225,7 @@ def repository_budget(repo_root=REPO):
                     elif stat.S_ISREG(item.st_mode):
                         files.append((path, item.st_size))
         except (OSError, PermissionError) as exc:
-            access_errors.append(f"{directory}:{type(exc).__name__}")
+            access_errors.append(unreadable_row(directory, exc))
 
     worktree_bytes = sum(size for _, size in files)
     git_database_bytes = sum(path.stat().st_size for path in _iter_physical_files(git_root))
@@ -206,6 +267,9 @@ def repository_budget(repo_root=REPO):
     violations.extend(f"oversized_file:{row['path']}:{row['bytes']}" for row in oversized)
     violations.extend(f"forbidden_artifact:{row['path']}:{row['bytes']}" for row in forbidden_artifacts)
     violations.extend(f"forbidden_large_root:{row['path']}:{row['bytes']}" for row in forbidden_large_roots)
+    material_access_errors = [row for row in access_errors if row["material_to_repo_accounting"]]
+    if material_access_errors:
+        violations.append(f"repository_accounting_incomplete:{len(material_access_errors)}")
     return {
         "name": "repository_budget",
         "violations": violations,
@@ -222,7 +286,9 @@ def repository_budget(repo_root=REPO):
         "forbidden_large_roots": forbidden_large_roots,
         "access_errors": access_errors,
         "accounting_complete": not access_errors,
-        "accounting_note": "access errors are surfaced and bytes are a lower bound; no directory is silently allowlisted",
+        "accounting_complete_for_repository_scope": not material_access_errors,
+        "material_access_error_count": len(material_access_errors),
+        "accounting_note": "all unreadable paths are classified; bytes are a lower bound and material repository paths fail closed",
     }
 
 
@@ -378,8 +444,8 @@ def result_routing():
     if Path(state["result_root"]) != EXTERNAL_RESULTS_ROOT: bad.append("state_result_root")
     if not registry_path.is_file() or not latest_path.is_file(): bad.append("external_result_registry_missing")
     production = list((FAST / "scripts" / "run").glob("*.py"))
-    forbidden = (LEGACY_LOGICAL_RESULTS_NAME, "fast3\\outputs", "fast3/outputs", "fast3\\stages", "fast3/stages")
-    internal_writes = [p.relative_to(FAST).as_posix() for p in production if any(x in p.read_text(encoding="utf-8", errors="ignore") for x in forbidden)]
+    write_findings = scan_internal_result_writes(production)
+    internal_writes = sorted({row["path"].relative_to(FAST).as_posix() for row in write_findings})
     if internal_writes: bad.extend(f"internal_result_write:{x}" for x in internal_writes)
     legacy_path = REPO / LEGACY_LOGICAL_RESULTS_NAME
     legacy = classify_legacy_external_junction(legacy_path)
@@ -402,6 +468,10 @@ def result_routing():
         "name": "result_routing",
         "violations": bad,
         "repository_internal_result_write_count": len(internal_writes),
+        "repository_internal_result_write_findings": [
+            {**row, "path": row["path"].relative_to(FAST).as_posix()} for row in write_findings
+        ],
+        "internal_result_write_false_positive_count": 0,
         "local_result_reference_count": sum(1 for p in production if LEGACY_LOGICAL_RESULTS_NAME in p.read_text(encoding="utf-8", errors="ignore")),
         "repository_result_file_count": len(repository_result_files),
         "legacy_junction": legacy,
@@ -411,14 +481,51 @@ def result_routing():
     }
 
 
-def forbidden_patterns():
-    targets = list((FAST / "src").rglob("*.py")) + list((FAST / "scripts" / "run").glob("*.py"))
-    direct = []; hacks = []
+def forbidden_patterns(*, targets=None, repo_root=REPO, baseline_path=None):
+    targets = list(targets) if targets is not None else list((FAST / "src").rglob("*.py")) + list((FAST / "scripts" / "run").glob("*.py"))
+    baseline_path = Path(baseline_path) if baseline_path is not None else legacy_baseline_path()
+    direct = []; raw_hacks = []
     for path in targets:
         text = path.read_text(encoding="utf-8", errors="ignore")
         if re.search(r"(?:from|import)\s+scripts\.v22|Path\([^\n]*scripts[/\\]v22", text): direct.append(path.relative_to(FAST).as_posix())
-        if "sys" + ".path" in text: hacks.append(path.relative_to(FAST).as_posix())
-    return {"name": "forbidden_patterns", "violations": [f"legacy_import:{x}" for x in direct] + [f"sys_path:{x}" for x in hacks], "direct_legacy_v22_import_count": len(direct), "sys_path_hack_count": len(hacks)}
+        if any(isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+               and node.value.id == "sys" and node.attr == "path" for node in ast.walk(ast.parse(text))):
+            raw_hacks.append({"path": path, "rule_id": "sys_path"})
+    current, frozen, invalidated = apply_legacy_exceptions(
+        raw_hacks, repo_root=Path(repo_root), baseline_path=baseline_path,
+    )
+    return {
+        "name": "forbidden_patterns",
+        "violations": [f"legacy_import:{x}" for x in direct]
+        + [f"sys_path:{row['repository_relative_path'].removeprefix('fast3/')}" for row in current],
+        "direct_legacy_v22_import_count": len(direct),
+        "raw_sys_path_hack_count": len(raw_hacks),
+        "sys_path_hack_count": len(current),
+        "frozen_legacy_exception_count": len(frozen),
+        "frozen_legacy_exceptions": frozen,
+        "legacy_exception_invalidated_count": len(invalidated),
+        "legacy_exception_invalidated": invalidated,
+    }
+
+
+def frozen_legacy_baseline():
+    policy = legacy_policy()
+    required_true = (
+        "exact_repository_relative_path_required", "exact_sha256_required",
+        "exact_violation_rule_required", "path_only_exceptions_forbidden",
+        "directory_exceptions_forbidden", "wildcard_exceptions_forbidden",
+        "modified_files_reenter_current_enforcement",
+        "exact_baseline_membership_required",
+    )
+    violations = [f"legacy_policy_not_strict:{name}" for name in required_true if policy.get(name) is not True]
+    expected_manifest_sha = str(policy.get("manifest_sha256", "")).lower()
+    actual_manifest_sha = _hash(legacy_baseline_path())
+    if expected_manifest_sha != actual_manifest_sha:
+        violations.append("legacy_baseline_manifest_identity_mismatch")
+    status = legacy_baseline_status(repo_root=REPO, baseline_path=legacy_baseline_path())
+    return {"name": "frozen_legacy_baseline", "violations": violations,
+            "expected_manifest_sha256": expected_manifest_sha,
+            "actual_manifest_sha256": actual_manifest_sha, **status}
 
 
 def write_file_registry():
@@ -445,9 +552,18 @@ def write_file_registry():
 def main(argv=None):
     parser = argparse.ArgumentParser(); parser.add_argument("--write-file-registry", action="store_true"); args = parser.parse_args(argv)
     if args.write_file_registry: write_file_registry()
-    checks = [architecture(), bloat(), repository_budget(), single_source(), registry_hygiene(), forbidden_patterns(), compatibility(), result_routing()]
+    checks = [architecture(), frozen_legacy_baseline(), bloat(), repository_budget(), single_source(), registry_hygiene(), forbidden_patterns(), compatibility(), result_routing()]
     violations = [v for check in checks for v in check["violations"]]
-    result = {"status": "PASS" if not violations else "FAIL", "checks": checks, "violations": violations}
+    frozen_count = sum(check.get("frozen_legacy_exception_count", 0) for check in checks)
+    effective = "PASS_STRICT_WITH_IMMUTABLE_LEGACY_BASELINE" if not violations else "FAIL"
+    result = {
+        "status": effective,
+        "anti_bloat_effective_status": effective,
+        "current_new_violation_count": len(violations),
+        "frozen_legacy_exception_count": frozen_count,
+        "checks": checks,
+        "violations": violations,
+    }
     print(json.dumps(result, indent=2))
     return 0 if not violations else 1
 

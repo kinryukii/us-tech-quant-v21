@@ -1,0 +1,50 @@
+{
+  "component": {
+    "enabled": true,
+    "benchmark_symbol": "US.QQQ",
+    "allowed_execution_symbols": [
+      "US.IQQ",
+      "US.TQQQ",
+      "US.SQQQ"
+    ],
+    "symbol_roles": {
+      "US.IQQ": "NASDAQ_1X_LONG_QQQ_REPLACEMENT",
+      "US.TQQQ": "NASDAQ_3X_LONG",
+      "US.SQQQ": "NASDAQ_3X_INVERSE_LONG"
+    }
+  },
+  "risk": {
+    "account_reference_usd": 400.0,
+    "max_open_positions": 1,
+    "max_order_notional_usd": 120.0,
+    "max_gross_exposure_usd": 120.0,
+    "max_daily_loss_usd": 6.0,
+    "max_weekly_loss_usd": 16.0,
+    "allow_fractional": true,
+    "market_orders_allowed": false,
+    "margin_allowed": false,
+    "short_selling_allowed": false,
+    "options_allowed": false,
+    "averaging_down_allowed": false,
+    "max_quote_age_seconds": 15.0,
+    "max_spread_ratio": 0.006
+  },
+  "benchmark": {
+    "primary_metric": "STRATEGY_NAV_RETURN_MINUS_QQQ_BUY_AND_HOLD_RETURN",
+    "underperformance_pause_enabled": true,
+    "underperformance_threshold_pct": -0.02,
+    "recovery_threshold_pct": -0.005,
+    "minimum_observations": 20,
+    "lookback_observations": 390
+  },
+  "strategy_plugin": {
+    "path": "scripts/v22/v22_047_r1b_strategy_plugin_template.py",
+    "entrypoint": "generate_decision",
+    "parameters": {}
+  },
+  "control": {
+    "default_switch_mode": "OFF",
+    "require_execute_flag_for_broker_action": true,
+    "require_live_environment_confirmation": true
+  }
+}

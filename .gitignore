@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_*/
 .venv/
 outputs/
 cache/
@@ -13,6 +14,13 @@ cache/
 *.duckdb.tmp
 venv/
 env/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+build/
+dist/
 
 # OS / IDE
 .DS_Store
@@ -39,6 +47,19 @@ price_cache/
 *.pkl
 *.sqlite
 *.db
+*.joblib
+*.ckpt
+*.onnx
+*.h5
+*.hdf5
+checkpoints/
+models/
+predictions/
+oof/
+backtest_outputs/
+daily_archives/
+moomoo_cache/
+option_history/
 
 # Logs
 *.log
@@ -64,9 +85,7 @@ inputs/**/*.pkl
 outputs/
 *.large.csv
 
-# Local config / runtime state / raw inputs
-config/
-configs/
+# Local runtime state / raw inputs
 data/
 inputs/
 state/

@@ -1,0 +1,11 @@
+{
+  "version": "V22.049_FAST3_SIX_ETF_24H_MINUTE_DATA_INGEST_R1",
+  "host": "127.0.0.1",
+  "port": 18441,
+  "symbols": ["US.QQQ", "US.SOXX", "US.TQQQ", "US.SQQQ", "US.SOXL", "US.SOXS"],
+  "page_size": 1000,
+  "segment_days": 31,
+  "incremental_overlap_days": 3,
+  "retry_attempts": 4,
+  "retry_base_seconds": 1.0
+}

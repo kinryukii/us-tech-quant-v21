@@ -148,14 +148,16 @@ Run from the repository root:
 
 ```powershell
 cd D:\us-tech-quant
-.\.venv\Scripts\python.exe --version
+. .\scripts\common\storage_paths.ps1; $python = Get-UstqPythonExecutable
+& $python --version
 .\scripts\v21\run_v21_256_daily_chain_master_wrapper_with_context_r1.ps1 -Execute
 ```
 
-After the run, inspect the generated summary files under:
+After the run, inspect the generated summary files under the configured external
+results root (available from `Get-UstqResultsRoot`), for example:
 
 ```text
-outputs/v21/
+D:\us-tech-quant-results\
 ```
 
 Typical post-run checks:
@@ -498,13 +500,14 @@ scripts/v21/test_v21_*.py
 Run an individual test:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q scripts\v21\test_v21_xxx.py
+. .\scripts\common\storage_paths.ps1
+& (Get-UstqPythonExecutable) -m pytest -q scripts\v21\test_v21_xxx.py
 ```
 
 Run a specific known test module, for example:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q scripts\v21\test_v21_247_technical_subfactor_effectiveness_pit_lite_audit.py
+& (Get-UstqPythonExecutable) -m pytest -q scripts\v21\test_v21_247_technical_subfactor_effectiveness_pit_lite_audit.py
 ```
 
 Expected style:
@@ -521,10 +524,11 @@ final_decision recorded
 
 ## Output Conventions
 
-Each major V21 module should write outputs under:
+Each major V21 module should write outputs under a unique directory below the
+configured external results root returned by `Get-UstqResultsRoot`, for example:
 
 ```text
-outputs/v21/V21.xxx_MODULE_NAME/
+D:\us-tech-quant-results\V21.xxx_MODULE_NAME\
 ```
 
 Typical output files:
@@ -596,7 +600,7 @@ When adding a new V21 module:
 1. Add the Python script under `scripts/v21/`.
 2. Add a matching pytest file.
 3. Add a PowerShell wrapper if the module is run directly.
-4. Write all outputs to a unique `outputs/v21/V21.xxx_*` folder.
+4. Write all outputs to a unique folder below the configured external results root.
 5. Include `final_status` and `final_decision`.
 6. Include explicit research/broker/adoption gates.
 7. Avoid hidden data mutation.
@@ -610,7 +614,7 @@ Suggested naming:
 scripts/v21/v21_265_example_module_name_r1.py
 scripts/v21/test_v21_265_example_module_name_r1.py
 scripts/v21/run_v21_265_example_module_name_r1.ps1
-outputs/v21/V21.265_EXAMPLE_MODULE_NAME_R1/
+D:\us-tech-quant-results\V21.265_EXAMPLE_MODULE_NAME_R1\
 ```
 
 ---

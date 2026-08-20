@@ -1,0 +1,49 @@
+{
+  "active_chain": [
+    {
+      "active_role": "LOCAL_CACHE_IO_ROUTER",
+      "module_or_file": "scripts/v21/v21_cache_io.py"
+    },
+    {
+      "active_role": "LOCAL_CACHE_IO_ROUTER",
+      "module_or_file": "scripts/v21/v21_223_local_cache_architecture_and_io_router.py"
+    },
+    {
+      "active_role": "MANIFEST_POINTER_AUDIT",
+      "module_or_file": "scripts/v21/v21_data_source_policy_guard.py"
+    },
+    {
+      "active_role": "MOOMOO_ONLY_DATA_CHAIN",
+      "module_or_file": "V21.230_MOOMOO_ONLY_HISTORICAL_REFETCH_DRY_RUN"
+    },
+    {
+      "active_role": "MOOMOO_ONLY_DATA_CHAIN",
+      "module_or_file": "V21.231_MOOMOO_ONLY_CANONICAL_REBUILD"
+    },
+    {
+      "active_role": "DRAM_DAILY_INTRADAY_CHAIN",
+      "module_or_file": "V21.232_MOOMOO_ONLY_DRAM_RERUN"
+    },
+    {
+      "active_role": "MINIMAL_ABCDE_COMPACT_RESEARCH",
+      "module_or_file": "V21.233_MOOMOO_ONLY_ABCDE_RERUN"
+    },
+    {
+      "active_role": "MANIFEST_POINTER_AUDIT",
+      "module_or_file": "V21.234_MINIMAL_DAILY_RESEARCH_CHAIN"
+    },
+    {
+      "active_role": "DRAM_DAILY_INTRADAY_CHAIN",
+      "module_or_file": "DRAM_DAILY_INTRADAY_CHAIN"
+    },
+    {
+      "active_role": "DRAM_RISK_EVENT_AND_NO_TRADE_GATE",
+      "module_or_file": "DRAM_NO_TRADE_TRIGGER_OUTCOME_DASHBOARD"
+    },
+    {
+      "active_role": "MINIMAL_ABCDE_COMPACT_RESEARCH",
+      "module_or_file": "ABCDE_COMPACT_RANKING_CHAIN"
+    }
+  ],
+  "policy_version": "V21.229_R1"
+}

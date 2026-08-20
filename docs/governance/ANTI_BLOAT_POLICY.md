@@ -135,6 +135,23 @@ embedded datasets, repeated policy prose, and version-suffix file families.
 The root Markdown policy owns human governance, the root TOML owns enforcement
 values, and the existing guard owns enforcement.
 
+### Immutable frozen legacy baseline
+
+Pre-existing authoritative or frozen source debt may be registered only in the
+canonical immutable legacy baseline. Every exception is bound to one exact
+repository-relative file path, one exact SHA-256, and one exact violation rule.
+The policy pins the baseline manifest hash, and the manifest pins the normalized
+path/rule/content identity set that existed when the baseline was registered.
+Path-only, directory, wildcard, regex-wide, and hash-free exceptions are
+forbidden.
+
+An exact match is reported transparently as frozen legacy debt and is not a
+current violation. Any content change, rename, copy, new rule violation, or
+path mismatch invalidates the exception and restores normal current
+enforcement. New files receive no grandfathering. The baseline cannot change
+budgets, permit new runtime path mutation, or permit repository-local result
+writes.
+
 ## Deletion gates
 
 Every candidate must be classified with evidence:

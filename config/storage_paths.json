@@ -1,0 +1,9 @@
+{
+  "repo_root": "D:\\us-tech-quant",
+  "data_root": "D:\\us-tech-quant-data",
+  "cache_root": "D:\\us-tech-quant-cache",
+  "daily_root": "D:\\us-tech-quant-daily",
+  "backtest_root": "D:\\us-tech-quant-backtests",
+  "results_root": "D:\\us-tech-quant-results",
+  "envs_root": "D:\\us-tech-quant-envs"
+}

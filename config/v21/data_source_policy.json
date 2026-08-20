@@ -1,0 +1,25 @@
+{
+  "allowed_active_sources": [
+    "MOOMOO_OPEND",
+    "LOCAL_MOOMOO_CACHE",
+    "MANUAL_MOOMOO_IMPORT_WITH_TAG"
+  ],
+  "broker_action_allowed": false,
+  "default_data_source_policy": "MOOMOO_ONLY",
+  "external_fallback_allowed_for_abcde": false,
+  "external_fallback_allowed_for_canonical": false,
+  "external_fallback_allowed_for_dram": false,
+  "external_fallback_policy": "DIAGNOSTIC_ONLY_EXPLICIT_APPROVAL_REQUIRED",
+  "forbidden_default_sources": [
+    "YFINANCE",
+    "YAHOO"
+  ],
+  "official_adoption_allowed": false,
+  "policy_version": "V21.229_R1",
+  "research_only": true,
+  "yahoo_allowed_by_default": false,
+  "yfinance_allowed_by_default": false,
+  "yfinance_allowed_for_abcde": false,
+  "yfinance_allowed_for_canonical": false,
+  "yfinance_allowed_for_dram": false
+}

@@ -7,7 +7,7 @@
 * 代码仓库：`D:\us-tech-quant`
 * 数据根目录：`D:\us-tech-quant-data`
 * 结果根目录：`D:\us-tech-quant-results`
-* Python 虚拟环境：`D:\us-tech-quant\.venv`
+* Python 虚拟环境：`D:\us-tech-quant-envs\us-tech-quant-main`
 * 时区：`America/New_York`
 * 逻辑时间字段：`timestamp_et`
 * 辅助时间字段：`timestamp_utc`

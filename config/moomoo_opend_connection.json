@@ -1,0 +1,16 @@
+{
+    "schema_version":  1,
+    "profile_name":  "LOCAL_MOOMOO_OPEND_18441",
+    "host":  "127.0.0.1",
+    "port":  18441,
+    "allow_remote_host":  false,
+    "tcp_timeout_seconds":  2.0,
+    "quote_probe_symbols":  [
+                                "US.QQQ",
+                                "US.IQQ",
+                                "US.TQQQ",
+                                "US.SQQQ"
+                            ],
+    "trade_unlock_required_for_data":  false,
+    "notes":  "Local loopback OpenD profile. No trade password or account identifier is stored here."
+}

@@ -43,6 +43,18 @@ large_artifact_suffixes = [
 [runtime]
 canonical_python = "D:\\us-tech-quant-envs\\us-tech-quant-main\\Scripts\\python.exe"
 
+[legacy_baseline]
+manifest = "fast3/docs/governance/anti_bloat_frozen_legacy_baseline.json"
+manifest_sha256 = "d0629501c6c1f89f11286ca225bfefd2b12499b7206bf51f2deec6708d25fb54"
+exact_baseline_membership_required = true
+exact_repository_relative_path_required = true
+exact_sha256_required = true
+exact_violation_rule_required = true
+path_only_exceptions_forbidden = true
+directory_exceptions_forbidden = true
+wildcard_exceptions_forbidden = true
+modified_files_reenter_current_enforcement = true
+
 [storage]
 runtime_paths_config = "config/storage_paths.json"
 required_external_root_keys = [

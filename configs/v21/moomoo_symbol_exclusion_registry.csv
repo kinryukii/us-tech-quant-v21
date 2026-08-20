@@ -1,0 +1,2 @@
+internal_symbol,moomoo_code,exclusion_reason,active_exclusion,preserve_historical_manifests,notes
+SATS,US.SATS,UNKNOWN_TICKER_ON_MOOMOO,True,True,Moomoo request_history_kline returned unknown ticker for QFQ and RAW; future fetches skip this active symbol.

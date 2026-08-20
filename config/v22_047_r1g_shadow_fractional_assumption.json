@@ -1,0 +1,20 @@
+{
+  "revision": "V22.047_R1G",
+  "strategy_runtime_mode": "ENABLED",
+  "execution_mode": "SHADOW",
+  "effective_execution_mode": "SHADOW_ONLY",
+  "execution_authorization_default": "DISARMED",
+  "fractional_capability_status": "USER_CONFIRMED_RTH_APP",
+  "assumption_symbols": ["US.QQQ", "US.TQQQ", "US.SQQQ", "US.IQQQ"],
+  "default_quantity_increment": "0.001",
+  "cash_utilization_pct": "99.5",
+  "minimum_cash_buffer_usd": "1.00",
+  "order_type": "LIMIT",
+  "session": "RTH",
+  "allowed_window_et": "09:45:00-15:50:00",
+  "paper_arm_ttl_minutes": 30,
+  "paper_environment": "TrdEnv.SIMULATE",
+  "live_available": false,
+  "broker_fractional_api_confirmed": false,
+  "execution_assumption_only": true
+}

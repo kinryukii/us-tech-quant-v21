@@ -1,0 +1,23 @@
+{
+  "revision": "V22.047_R1F_R2A",
+  "effective_execution_mode": "SHADOW_ONLY",
+  "symbols": {
+    "US.QQQ": {"enabled": true},
+    "US.TQQQ": {"enabled": true},
+    "US.SQQQ": {"enabled": true},
+    "US.IQQQ": {"enabled": true, "default_v8_weight_pct": 0},
+    "US.IQQ": {"enabled": false, "reason": "WAITING_FOR_MOOMOO_AVAILABILITY"}
+  },
+  "execution_whitelist": ["US.QQQ", "US.TQQQ", "US.SQQQ", "US.IQQQ"],
+  "portfolio_target_pct": 100.0,
+  "execution_cash_utilization_pct": 99.5,
+  "minimum_cash_buffer_usd": 1.0,
+  "allow_fractional": true,
+  "margin_allowed": false,
+  "short_selling_allowed": false,
+  "options_allowed": false,
+  "order_type": "LIMIT",
+  "session": "RTH",
+  "order_window_et": {"start": "09:45:00", "end": "15:50:00"},
+  "strategy_remark_prefix": "V22_047_R1F_"
+}

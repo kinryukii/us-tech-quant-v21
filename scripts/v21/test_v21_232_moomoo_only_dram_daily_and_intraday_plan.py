@@ -157,6 +157,19 @@ def test_does_not_mutate_cache_snapshot(tmp_path):
     assert v232.sha256(target) == before
 
 
+def test_historical_as_of_date_excludes_future_intraday_sentinel(tmp_path):
+    root, cache, out231 = make_repo(tmp_path)
+    pointer_path = out231 / "canonical_snapshot_pointer.json"
+    pointer = json.loads(pointer_path.read_text()); pointer["canonical_as_of_date"] = "2026-06-15"
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+    for path in (cache / "raw/moomoo/intraday/DRAM/snapshot_id=snap").glob("*/DRAM.csv"):
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("DRAM,US.DRAM,US,2026-08-13,999999,999999,999999,999999,999999,999999,qfq,MOOMOO_OPEND,MOOMOO_ONLY,snap,t\n")
+    s = v232.run(root, tmp_path / "out", out231, cache)
+    assert s["latest_price_date"] <= "2026-06-15"
+    assert s["latest_intraday_timestamp"] <= "2026-06-15"
+
+
 def test_no_large_market_data_in_repo_outputs(tmp_path):
     root, cache, out231 = make_repo(tmp_path, n=100)
     out = tmp_path / "out"; v232.run(root, out, out231, cache)

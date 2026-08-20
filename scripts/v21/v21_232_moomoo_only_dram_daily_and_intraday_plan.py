@@ -193,6 +193,14 @@ def load_rows(path: Path) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: r.get("date") or r.get("time_key") or "")
 
 
+def as_of_rows(rows: list[dict[str, Any]], as_of_date: str) -> list[dict[str, Any]]:
+    """Keep only rows knowable at the canonical daily as-of session."""
+    cutoff = str(as_of_date or "")[:10]
+    if not cutoff:
+        return rows
+    return [row for row in rows if str(row.get("date") or row.get("time_key") or "")[:10] <= cutoff]
+
+
 def indicator_row(ticker: str, freq: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     closes=series(rows,"close"); vols=series(rows,"volume")
     latest=rows[-1] if rows else {}
@@ -232,13 +240,16 @@ def run(repo_root: Path, output_dir: Path, v21_231_output_dir: Path | None = Non
         status=FAIL_DATA if not input_ok else FAIL_POLICY if (violation or not policy_ok or not source_ok) else FAIL_DATA
         return write_all(output_dir, base_summary(status, repo_root, output_dir, croot, snap, pointer, False, {}, {}, 0, 0, 1), [], [], [], [], [], [], source_audits(pointer), snapshot_audits(pointer, summary231, input_ok, source_ok), [], risk_rows(), trade_rows(), cross, audit)
     daily_path=Path(pointer.get("canonical_qfq_path") or pointer.get("canonical_raw_path",""))
+    as_of_date = str(pointer.get("canonical_as_of_date") or summary231.get("target_date") or "")[:10]
     daily=[r for r in load_rows(daily_path) if r.get("ticker")=="DRAM"]
+    daily=as_of_rows(daily, as_of_date)
     manifest=read_csv_rows(v231_dir/"dram_intraday_fetch_manifest.csv")
     intraday: dict[str,list[dict[str,Any]]]={}
     cache_audit=[]
     for freq in ["1m","5m","15m","1h"]:
         row=next((r for r in manifest if r.get("frequency")==freq),{})
         p=Path(row.get("cache_path","")); rows=load_rows(p) if p.exists() else []
+        rows=as_of_rows(rows, as_of_date)
         intraday[freq]=rows
         cache_audit.append({"frequency":freq,"path":str(p),"exists":bool_text(p.exists()),"row_count":len(rows),"latest_timestamp":rows[-1].get("date","") if rows else "","source_policy":"MOOMOO_ONLY","passed":bool_text(bool(rows)),"notes":"read-only cache audit"})
     if not daily or not any(intraday.values()):

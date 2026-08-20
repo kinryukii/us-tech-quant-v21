@@ -1,0 +1,63 @@
+{
+  "manifest_version": "V22.037_R2G_CHILD_MANIFEST_R1",
+  "stages": [
+    {
+      "stage_name": "R2D_OPTION_SNAPSHOT_REFRESH",
+      "enabled": true,
+      "required": false,
+      "runner": "auto",
+      "patterns": [
+        "scripts/v22/run_v22_037_r2d*.ps1",
+        "scripts/v22/v22_037_r2d*.py"
+      ],
+      "notes": "Optional same-snapshot multi-underlying refresh when installed."
+    },
+    {
+      "stage_name": "R2E_LIQUID_CONTRACT_PANEL_BUILD",
+      "enabled": true,
+      "required": true,
+      "runner": "auto",
+      "patterns": [
+        "scripts/v22/run_v22_037_r2e*.ps1",
+        "scripts/v22/v22_037_r2e*.py"
+      ],
+      "notes": "Required fresh IV/Greeks eligibility and liquid-contract panel."
+    },
+    {
+      "stage_name": "V22_042_R2_DIRECTION_REFRESH",
+      "enabled": true,
+      "required": true,
+      "runner": "python",
+      "path": "scripts/v22/v22_042_r2_direction_gate_reason_and_shadow_mode_audit.py",
+      "args": [
+        "--repo-root",
+        "{repo_root}",
+        "--execute"
+      ],
+      "notes": "Uses the installed latest-window/pagination direction implementation."
+    },
+    {
+      "stage_name": "V22_037_R2F_DIRECTION_AWARE_RANKING",
+      "enabled": true,
+      "required": true,
+      "runner": "python",
+      "path": "scripts/v22/v22_037_r2f_direction_aware_liquid_option_contract_ranking_and_no_trade_gate_research_only.py",
+      "args": [
+        "--repo-root",
+        "{repo_root}",
+        "--output-dir",
+        "{r2f_output_dir}",
+        "--r2e-output-dir",
+        "{r2e_output_dir}",
+        "--direction-summary-path",
+        "{direction_summary_path}",
+        "--max-direction-panel-gap-minutes",
+        "{max_direction_panel_gap_minutes}",
+        "--max-panel-age-minutes",
+        "{max_panel_age_minutes}",
+        "--execute"
+      ],
+      "notes": "Explicit input paths prevent accidental stale-summary discovery."
+    }
+  ]
+}

@@ -1,0 +1,287 @@
+{
+  "contract_version": "FAST3_R3_ECONOMIC_INTEGRITY_AUDIT_R1",
+  "mission": "Read-only post-model audit of the frozen R3 economic outputs. No factor discovery, fitting, model selection, prediction regeneration, threshold change, or portfolio-rule optimization is permitted.",
+  "frozen_r3": {
+    "run_id": "20260802_211307",
+    "expected_final_status": "EXECUTED_REAL_DATA_COMPLETE_COHORT_R3",
+    "expected_final_decision": "STOP_NO_SIGNIFICANT_GAIN_OVER_LEGACY",
+    "expected_cohort_row_count": 729487,
+    "expected_best_model_name": "hgb_leaf7",
+    "expected_best_top5_lift": 1.2616783227785404,
+    "expected_legacy_top5_lift": 1.36122855,
+    "expected_accepted_trade_record_count": 696,
+    "expected_target_hit_record_count": 691,
+    "expected_timeout_record_count": 5,
+    "expected_confirmation_rows_read": 0,
+    "r3_predictive_decision_must_not_change": true
+  },
+  "read_only_inputs": [
+    "fast3_event_factor_r3_summary.json",
+    "FAST3_EVENT_FACTOR_R3_REPORT.md",
+    "FAST3_MODEL_FREEZE.json",
+    "FAST3_FACTOR_LAW_FREEZE.json",
+    "FAST3_RANDOM_BLOCK_SCHEDULE.json",
+    "FAST3_EXECUTION_SANITY_AUDIT.json",
+    "fast3_event_predictions.parquet",
+    "fast3_final_audit_results.csv",
+    "fast3_null_model_results.csv"
+  ],
+  "canonical_access": {
+    "allowed": "Read-only ETF minute bars only for accepted frozen R3 trades and their frozen entry-to-horizon intervals.",
+    "symbols": [
+      "TQQQ",
+      "SQQQ",
+      "SOXL",
+      "SOXS"
+    ],
+    "writes_allowed": false,
+    "confirmation_start_et": "2025-02-08T00:00:00-05:00",
+    "confirmation_rows_read_max": 0,
+    "future_range_beyond_frozen_trade_horizons_allowed": false
+  },
+  "dedup_audit": {
+    "accepted_filter": "trade_accepted == True and mapping_status == SUCCESS",
+    "primary_unique_trade_key": [
+      "candidate_id",
+      "predicted_label",
+      "execution_etf"
+    ],
+    "secondary_unique_candidate_key": [
+      "candidate_id"
+    ],
+    "decision_time_key": [
+      "underlying",
+      "decision_timestamp_et",
+      "predicted_label",
+      "execution_etf"
+    ],
+    "required_checks": [
+      "accepted record count",
+      "unique candidate_id count",
+      "unique primary trade count",
+      "unique decision-time trade count",
+      "multiplicity distribution across five seeds",
+      "same candidate selected with conflicting directions",
+      "same candidate selected with conflicting economic outcomes",
+      "seed-pair Jaccard overlap",
+      "block-by-block unique trade counts"
+    ],
+    "representative_rule": "For a primary unique trade, require identical frozen entry, horizon, direction, ETF, target-hit flag, exit timestamp and gross return across duplicate records. If identical, retain the lexical-lowest seed record only for deduplicated economic summaries; otherwise stop invalid."
+  },
+  "target_hit_timing_audit": {
+    "time_origin": "frozen entry timestamp",
+    "time_end": "frozen actual exit timestamp for target hits",
+    "bins_minutes_upper": [
+      1,
+      5,
+      15,
+      60,
+      180,
+      360,
+      720,
+      1440
+    ],
+    "required_quantiles": [
+      0.1,
+      0.25,
+      0.5,
+      0.75,
+      0.9,
+      0.95,
+      0.99
+    ],
+    "required_views": [
+      "seed-weighted accepted records",
+      "deduplicated primary trades",
+      "by block",
+      "by execution ETF",
+      "by predicted direction",
+      "by session"
+    ],
+    "timestamp_unit_check_required": true,
+    "target_hit_must_precede_or_equal_horizon": true,
+    "timeout_exit_must_equal_frozen_timeout_timestamp": true
+  },
+  "execution_stress_scenarios": {
+    "BASELINE_FROZEN": {
+      "definition": "Use frozen R3 gross return and exact target execution convention without modification."
+    },
+    "TARGET_EXIT_HAIRCUT_5BPS": {
+      "definition": "For target-hit trades, realized exit price equals frozen target price multiplied by 0.9995; timeout trades remain frozen. Then subtract the same frozen 10bps/20bps round-trip costs."
+    },
+    "TARGET_EXIT_HAIRCUT_10BPS": {
+      "definition": "For target-hit trades, realized exit price equals frozen target price multiplied by 0.9990; timeout trades remain frozen. Then subtract the same frozen 10bps/20bps round-trip costs."
+    },
+    "NEXT_VALID_MINUTE_OPEN_AFTER_HIT": {
+      "definition": "For target-hit trades, execute at the open of the next valid ETF minute strictly after the frozen first-hit minute. If no valid next minute exists at or before the frozen horizon, use the frozen timeout exit. Do not search or optimize another price."
+    },
+    "POSITIVE_VOLUME_HIT_REQUIRED": {
+      "definition": "A target hit is eligible only when the frozen first-hit ETF minute is valid and has finite volume > 0. If ineligible, use the frozen timeout exit; do not scan for a later hit."
+    }
+  },
+  "stress_evaluation": {
+    "views": [
+      "seed-weighted",
+      "primary-trade-deduplicated",
+      "block-deduplicated"
+    ],
+    "costs_bps_round_trip": [
+      10,
+      20
+    ],
+    "required_metrics": [
+      "record_count",
+      "unique_trade_count",
+      "target_hit_rate",
+      "mean_net_return",
+      "median_net_return",
+      "positive_trade_ratio",
+      "compound_return_single_account_chronological",
+      "max_drawdown_single_account_chronological"
+    ],
+    "portfolio_rule": "For deduplicated chronological stress, preserve the frozen accepted trade timestamps and reject no additional trades. This is an audit of already accepted trades, not a new signal selection."
+  },
+  "subgroup_audit": {
+    "dimensions": [
+      "underlying",
+      "execution_etf",
+      "predicted_label",
+      "session_normalized",
+      "block_id",
+      "seed"
+    ],
+    "metrics": [
+      "accepted_records",
+      "unique_primary_trades",
+      "direction_accuracy",
+      "target_hit_rate",
+      "median_hit_minutes",
+      "mean_net_10bps",
+      "median_net_10bps",
+      "mean_net_20bps",
+      "positive_pnl_contribution"
+    ],
+    "missing_dimension_policy": "Use the semantically equivalent existing column and document the mapping; do not infer a missing session from future data."
+  },
+  "clustered_uncertainty": {
+    "resamples": 10000,
+    "seeds": {
+      "final_block_cluster": 104729,
+      "natural_week_cluster": 130363,
+      "unique_trade_bootstrap": 155921,
+      "learned_vs_null_block_cluster": 196613
+    },
+    "methods": [
+      "Resample five FINAL_AUDIT blocks with replacement; keep all seed records within each sampled block.",
+      "Resample natural decision weeks with replacement on the primary-trade-deduplicated ledger.",
+      "Resample primary unique trades with replacement.",
+      "For learned minus strongest null, resample FINAL_AUDIT blocks, not block-by-seed rows."
+    ],
+    "confidence_level": 0.95,
+    "required_outputs": [
+      "baseline net10 CI",
+      "baseline net20 CI",
+      "10bps haircut net10 CI",
+      "next-minute-open net10 CI",
+      "learned minus strongest-null net10 block-cluster CI",
+      "learned minus strongest-null lift block-cluster CI"
+    ]
+  },
+  "hard_audit_gates": {
+    "input_hashes_recorded": true,
+    "accepted_record_count_exact": 696,
+    "target_hit_record_count_exact": 691,
+    "timeout_record_count_exact": 5,
+    "conflicting_duplicate_outcomes_max": 0,
+    "timestamp_or_unit_mismatch_max": 0,
+    "target_hit_after_horizon_max": 0,
+    "confirmation_rows_read_max": 0,
+    "canonical_writes_max": 0,
+    "repo_code_changes_max": 0,
+    "primary_unique_trade_count_min": 100,
+    "deduplicated_baseline_median_net10_min_exclusive": 0.0,
+    "deduplicated_haircut_10bps_median_net10_min_exclusive": 0.0,
+    "deduplicated_next_minute_open_median_net10_min_exclusive": 0.0,
+    "final_block_cluster_baseline_net10_ci_low_min_exclusive": 0.0,
+    "learned_minus_strongest_null_block_cluster_net10_ci_low_min_exclusive": 0.0,
+    "max_single_block_positive_pnl_contribution": 0.35,
+    "max_single_etf_positive_pnl_contribution": 0.5
+  },
+  "decision_order": [
+    "STOP_R3_DATA_OR_IMPLEMENTATION_INVALID",
+    "STOP_R3_DUPLICATE_INFLATION_MATERIAL",
+    "STOP_R3_EXECUTION_ASSUMPTION_FRAGILE",
+    "STOP_R3_CLUSTER_UNCERTAINTY_NOT_ROBUST",
+    "PASS_R3_ECONOMIC_IMPLEMENTATION_AUDIT_CLEAN"
+  ],
+  "decision_rules": {
+    "STOP_R3_DATA_OR_IMPLEMENTATION_INVALID": "Any frozen input mismatch, conflicting duplicate outcome, timestamp/unit failure, target after horizon, Confirmation read, canonical write, repo code change, missing mandatory artifact, or audit computation failure.",
+    "STOP_R3_DUPLICATE_INFLATION_MATERIAL": "Primary unique trade count is below 100, or deduplicated baseline median net10 is not positive, or duplicate handling materially reverses the sign of the frozen economic result.",
+    "STOP_R3_EXECUTION_ASSUMPTION_FRAGILE": "Deduplicated 10bps target-haircut median net10 or deduplicated next-valid-minute-open median net10 is not positive, or execution stress reveals invalid/missing minute mappings.",
+    "STOP_R3_CLUSTER_UNCERTAINTY_NOT_ROBUST": "Final-block clustered baseline net10 CI lower bound is not above zero, learned-minus-strongest-null block-cluster net10 CI lower bound is not above zero, or block/ETF concentration exceeds frozen limits.",
+    "PASS_R3_ECONOMIC_IMPLEMENTATION_AUDIT_CLEAN": "All integrity, deduplication, execution-stress, clustered-uncertainty, and concentration gates pass."
+  },
+  "interpretation": {
+    "pass_does_not_promote_r3": true,
+    "r3_final_decision_remains": "STOP_NO_SIGNIFICANT_GAIN_OVER_LEGACY",
+    "pass_only_authorizes": "Consider one separately pre-registered two-stage R4 architecture study on fresh blocks.",
+    "failure_only_authorizes": "Implementation-only economic recomputation from frozen R3 predictions; no model or factor retraining."
+  },
+  "forbidden": [
+    "factor discovery or factor ranking",
+    "model fit, refit or retraining",
+    "model selection",
+    "prediction regeneration",
+    "threshold or Top5 change",
+    "label, horizon, ETF mapping, cost or target change",
+    "R3 final decision rewrite",
+    "new strategy search",
+    "Git stage, commit or push",
+    "Broker or order action",
+    "canonical write",
+    "detached/background Python"
+  ],
+  "required_artifacts": [
+    "FAST3_R3_POST_AUDIT_EVIDENCE.json",
+    "FAST3_R3_DEDUP_AUDIT.json",
+    "fast3_r3_unique_trade_ledger.parquet",
+    "FAST3_R3_TARGET_HIT_TIMING_AUDIT.json",
+    "fast3_r3_target_hit_timing.csv",
+    "FAST3_R3_EXECUTION_STRESS_AUDIT.json",
+    "fast3_r3_execution_stress_results.csv",
+    "fast3_r3_subgroup_audit.csv",
+    "FAST3_R3_CLUSTERED_UNCERTAINTY_AUDIT.json",
+    "fast3_r3_post_audit_summary.json",
+    "FAST3_R3_POST_AUDIT_REPORT.md"
+  ],
+  "required_summary_keys": [
+    "FINAL_STATUS",
+    "FINAL_DECISION",
+    "AUDIT_RUN_ID",
+    "SOURCE_R3_RUN_ID",
+    "SOURCE_R3_DECISION",
+    "ACCEPTED_RECORD_COUNT",
+    "TARGET_HIT_RECORD_COUNT",
+    "TIMEOUT_RECORD_COUNT",
+    "UNIQUE_CANDIDATE_COUNT",
+    "UNIQUE_PRIMARY_TRADE_COUNT",
+    "UNIQUE_DECISION_TIME_TRADE_COUNT",
+    "CONFLICTING_DUPLICATE_OUTCOME_COUNT",
+    "MEAN_SEED_MULTIPLICITY",
+    "MAX_SEED_MULTIPLICITY",
+    "DEDUP_BASELINE_MEDIAN_NET_10BPS",
+    "DEDUP_HAIRCUT_10BPS_MEDIAN_NET_10BPS",
+    "DEDUP_NEXT_MINUTE_OPEN_MEDIAN_NET_10BPS",
+    "TARGET_HIT_MEDIAN_MINUTES",
+    "TARGET_HIT_P90_MINUTES",
+    "FINAL_BLOCK_CLUSTER_BASELINE_NET10_CI_LOW",
+    "LEARNED_MINUS_STRONGEST_NULL_BLOCK_CLUSTER_NET10_CI_LOW",
+    "MAX_SINGLE_BLOCK_POSITIVE_PNL_CONTRIBUTION",
+    "MAX_SINGLE_ETF_POSITIVE_PNL_CONTRIBUTION",
+    "CONFIRMATION_ROWS_READ",
+    "CANONICAL_WRITES",
+    "MODEL_OR_FACTOR_RETRAINING_PERFORMED",
+    "REPO_CODE_FILES_CHANGED",
+    "REPORT_PATH"
+  ]
+}

@@ -1,0 +1,340 @@
+{
+  "contract_version": "FAST3_R4_TWO_STAGE_DIRECTION_HARD_STORAGE_R23",
+  "storage_contract": {
+    "name": "FAST3_STORAGE_CONTRACT_R1",
+    "repo_root": "D:\\us-tech-quant",
+    "data_root": "D:\\us-tech-quant-data",
+    "results_root": "D:\\us-tech-quant-results",
+    "cache_root": "D:\\us-tech-quant-cache",
+    "runtime_relative": "runtime\\fast3\\r4_two_stage_direction",
+    "scratch_relative": "scratch\\fast3\\r4_two_stage_direction",
+    "frozen_relative": "frozen\\fast3\\r4_two_stage_direction",
+    "archive_relative": "archive\\fast3\\r4_two_stage_direction",
+    "deployment_backup_relative": "archive\\fast3\\deployment_backups\\r4_two_stage_direction_hard_r23",
+    "deployment_manifest_relative": "frozen\\fast3\\deployments\\r4_two_stage_direction_hard_r23",
+    "canonical_acl_write_deny_required": true,
+    "canonical_filesystem_watcher_required": true,
+    "repo_filesystem_watcher_required": true,
+    "repo_postrun_snapshot_audit_required": true,
+    "local_results_tripwire_required": true,
+    "archive_completed_runtime_and_scratch": true,
+    "forbid_new_local_results": true,
+    "forbid_repo_result_writes": true,
+    "canonical_read_only": true,
+    "tests_and_cache_external_only": true,
+    "preserve_preexisting_untracked_files": true,
+    "fail_closed": true,
+    "legacy_opaque_repo_directories": [
+      ".pytest_cache",
+      ".venv",
+      "node_modules",
+      ".mypy_cache",
+      ".ruff_cache",
+      ".cache",
+      "__pycache__",
+      ".tox"
+    ],
+    "legacy_opaque_policy": "Do not enumerate protected legacy cache contents. Preserve the directory, compare directory metadata and ACL state before/after, and treat every FileSystemWatcher event beneath it as a storage violation.",
+    "git_command_blocker_required": true,
+    "reference_selftest_required": true,
+    "empty_collection_selftest_required": true,
+    "null_safe_launcher_audit_required": true
+  },
+  "source_freeze": {
+    "r3_run_id": "20260802_211307",
+    "r3_expected_status": "EXECUTED_REAL_DATA_COMPLETE_COHORT_R3",
+    "r3_expected_decision": "STOP_NO_SIGNIFICANT_GAIN_OVER_LEGACY",
+    "r3_expected_best_model": "hgb_leaf7",
+    "r3_expected_stable_feature_count": 20,
+    "r3_expected_top5_lift": 1.2616783227785404,
+    "legacy_top5_lift": 1.36122855,
+    "audit_run_id": "20260802_230000",
+    "audit_expected_decision": "PASS_R3_ECONOMIC_IMPLEMENTATION_AUDIT_CLEAN",
+    "audit_expected_unique_primary_trades": 429,
+    "r3_decision_must_remain_unchanged": true
+  },
+  "research_contract": {
+    "single_hypothesis": "Two-stage EVENT/NO_EVENT then UP/DOWN improves conditional direction discrimination versus the R3-style direct three-class architecture.",
+    "historical_use": "DEVELOPMENT_AND_NON_PROSPECTIVE_INTERNAL_HOLDOUT_ONLY",
+    "historical_pass_meaning": "May freeze exactly one prospective blind research-shadow model. It does not authorize paper trading, broker access or live trading.",
+    "outcome_as_label_only": true,
+    "future_feature_forbidden": true,
+    "random_row_split_forbidden": true,
+    "model_factor_threshold_search_forbidden": true,
+    "unbounded_agent_loop_forbidden": true
+  },
+  "labels": {
+    "decision_grid": "QQQ and SOXX five-minute decision timestamps",
+    "horizon_hours": 24,
+    "up": "UP_FIRST",
+    "down": "DOWN_FIRST",
+    "no_event": "NO_EVENT",
+    "ambiguous": "AMBIGUOUS",
+    "event_classes": [
+      "UP_FIRST",
+      "DOWN_FIRST"
+    ],
+    "ambiguous_policy": "EXCLUDE"
+  },
+  "frozen_architectures": {
+    "direct": {
+      "name": "R3_STYLE_DIRECT_HGB_LEAF7",
+      "classes": [
+        "UP_FIRST",
+        "DOWN_FIRST",
+        "NO_EVENT"
+      ],
+      "opportunity_probability": "P_UP_FIRST + P_DOWN_FIRST",
+      "direction": "UP_FIRST if P_UP_FIRST >= P_DOWN_FIRST else DOWN_FIRST"
+    },
+    "two_stage": {
+      "name": "R4_TWO_STAGE_HGB_LEAF7",
+      "stage1": "EVENT vs NO_EVENT",
+      "stage2": "UP_FIRST vs DOWN_FIRST on EVENT training rows only",
+      "composition": {
+        "P_UP_FIRST": "P_EVENT * P_UP_GIVEN_EVENT",
+        "P_DOWN_FIRST": "P_EVENT * P_DOWN_GIVEN_EVENT",
+        "P_NO_EVENT": "1 - P_EVENT"
+      }
+    }
+  },
+  "frozen_inputs": {
+    "ordered_feature_source": "Exact R3 factor/model freeze artifacts",
+    "feature_count": 20,
+    "active_interactions": [
+      "nine_turn_x_realized_volatility",
+      "nine_turn_x_vix_level",
+      "nine_turn_x_vwap_distance"
+    ],
+    "model_family": "HistGradientBoostingClassifier",
+    "model_parameters": {
+      "max_iter": 100,
+      "learning_rate": 0.08,
+      "max_leaf_nodes": 7,
+      "l2_regularization": 1.0
+    },
+    "opportunity_threshold": 0.6,
+    "top_fraction": 0.05,
+    "combined_score": "max(P_UP_FIRST, P_DOWN_FIRST)",
+    "target_return": 0.03,
+    "horizon_hours": 24,
+    "cost_bps": [
+      10,
+      20
+    ],
+    "single_account_single_position": true,
+    "etf_map": {
+      "QQQ|UP_FIRST": "TQQQ",
+      "QQQ|DOWN_FIRST": "SQQQ",
+      "SOXX|UP_FIRST": "SOXL",
+      "SOXX|DOWN_FIRST": "SOXS"
+    }
+  },
+  "training": {
+    "expanding_window": true,
+    "purge_hours": 24,
+    "embargo_hours": 24,
+    "weight_formula": "uniqueness_weight * training_fold_class_weight * training_fold_era_weight",
+    "preprocessing_scope": "training fold only",
+    "test_distribution": "natural",
+    "max_workers": 2,
+    "checkpoint_each_block_seed": true,
+    "resume_exact_hash_only": true
+  },
+  "schedule": {
+    "master_seed": 20260803,
+    "block_length_calendar_days": 60,
+    "minimum_gap_calendar_days": 5,
+    "development_blocks": 4,
+    "internal_holdout_blocks": 4,
+    "development_seeds": [
+      104729,
+      130363,
+      155921
+    ],
+    "internal_holdout_seeds": [
+      104729,
+      130363,
+      155921,
+      196613,
+      262147
+    ],
+    "freeze_all_eight_blocks_before_training": true,
+    "observed_interval_registry_required": true,
+    "historical_disclosure": "All eight blocks are historical architecture-study blocks, not clean prospective validation."
+  },
+  "development_gate": {
+    "minimum_completed_blocks": 4,
+    "event_lift_delta_mean_min": -0.05,
+    "conditional_balanced_accuracy_delta_mean_min_exclusive": 0.01,
+    "positive_direction_delta_block_count_min": 3,
+    "up_recall_min": 0.45,
+    "down_recall_min": 0.45,
+    "minimum_unique_primary_trades": 60
+  },
+  "internal_holdout_gate": {
+    "minimum_completed_blocks": 4,
+    "conditional_balanced_accuracy_delta_block_cluster_ci_low_min_exclusive": 0.0,
+    "event_lift_delta_block_cluster_ci_low_min": -0.05,
+    "end_to_end_exact_accuracy_delta_block_cluster_ci_low_min": 0.0,
+    "positive_direction_delta_seed_count_min": 4,
+    "positive_direction_delta_block_count_min": 3,
+    "up_recall_min": 0.45,
+    "down_recall_min": 0.45,
+    "minimum_unique_primary_trades": 100,
+    "mean_net_10bps_min_exclusive": 0.0,
+    "median_net_10bps_min_exclusive": 0.0,
+    "median_net_20bps_min": 0.0,
+    "remove_best_one_percent_mean_net_10bps_min_exclusive": 0.0,
+    "learned_minus_strongest_null_net10_ci_low_min_exclusive": 0.0,
+    "maximum_single_block_positive_pnl_contribution": 0.35,
+    "maximum_single_etf_positive_pnl_contribution": 0.5
+  },
+  "metrics": {
+    "opportunity": [
+      "event_hit_rate",
+      "event_lift",
+      "event_auroc",
+      "event_brier"
+    ],
+    "direction": [
+      "conditional_direction_accuracy",
+      "conditional_direction_balanced_accuracy",
+      "up_recall",
+      "down_recall",
+      "up_precision",
+      "down_precision"
+    ],
+    "end_to_end": [
+      "end_to_end_exact_accuracy",
+      "legacy_compatible_top5_lift"
+    ],
+    "economic": [
+      "accepted_records",
+      "unique_primary_trades",
+      "target_hit_rate",
+      "mean_net_10bps",
+      "median_net_10bps",
+      "mean_net_20bps",
+      "median_net_20bps",
+      "positive_trade_ratio",
+      "max_drawdown",
+      "remove_best_one_percent_mean_net_10bps",
+      "maximum_single_block_positive_pnl_contribution",
+      "maximum_single_etf_positive_pnl_contribution"
+    ],
+    "baselines": [
+      "ALWAYS_UP",
+      "ALWAYS_DOWN",
+      "TRAIN_PRIOR_RANDOM_DIRECTION",
+      "FIFTY_FIFTY_RANDOM_DIRECTION",
+      "SHUFFLED_SCORE_FULL_CANDIDATES"
+    ]
+  },
+  "agent_repo_write_allowlist": [
+    "fast3/src/fast3/models/two_stage_direction_hard_r23.py",
+    "fast3/scripts/run/fast3_r4_two_stage_direction_hard_r23.py",
+    "fast3/scripts/run/fast3_r4_prospective_shadow_hard_r23.py",
+    "fast3/tests/unit/test_fast3_r4_two_stage_direction_hard_r23.py",
+    "fast3/tests/unit/test_fast3_r4_prospective_shadow_hard_r23.py",
+    "fast3/docs/architecture/FAST3_R4_TWO_STAGE_DIRECTION_HARD_R23.md"
+  ],
+  "fixed_runner_contract": {
+    "research_script": "fast3/scripts/run/fast3_r4_two_stage_direction_hard_r23.py",
+    "required_cli_arguments": [
+      "--repo-root",
+      "--data-root",
+      "--runtime-root",
+      "--scratch-root",
+      "--frozen-root",
+      "--cache-root",
+      "--source-r3-root",
+      "--source-r3-audit-root",
+      "--limits",
+      "--run-id"
+    ],
+    "full_research_must_be_started_by_outer_launcher_only": true
+  },
+  "forbidden": [
+    "Create, rename, modify or delete any path under .local_results.",
+    "Write any result, log, model, prediction, checkpoint, parquet, JSON decision, report, manifest, hash, cache or temporary file into the repository.",
+    "Modify canonical file content, timestamps, names, partitions or directory layout.",
+    "Read Confirmation data.",
+    "Use future values as features.",
+    "Randomly split rows.",
+    "Search factors, interactions, model families, hyperparameters, thresholds, Top fractions, targets, horizons, costs or schedules.",
+    "Change the frozen eight-block schedule after any model output exists.",
+    "Use the internal holdout for tuning.",
+    "Start detached or background Python.",
+    "Run any Git command during implementation or execution.",
+    "Run git add -A, git add ., git clean, git reset or git stash under any circumstance.",
+    "Delete, rename or overwrite unrelated tracked or untracked repository files.",
+    "Access a broker or generate paper/live orders.",
+    "Run an unbounded self-improvement or token-consumption loop."
+  ],
+  "decisions": [
+    "STOP_R4_HARD_STORAGE_PREFLIGHT_FAILED",
+    "STOP_R4_STORAGE_CONTRACT_VIOLATION",
+    "STOP_R4_SOURCE_FREEZE_INVALID",
+    "STOP_R4_IMPLEMENTATION_OR_TEST_FAILED",
+    "STOP_R4_INSUFFICIENT_HISTORICAL_BLOCKS",
+    "STOP_R4_DEV_DIRECTION_NOT_SUPPORTED",
+    "STOP_R4_INTERNAL_HOLDOUT_DIRECTION_NOT_SUPPORTED",
+    "PASS_R4_HISTORICAL_ARCHITECTURE_SUPPORTED_PROSPECTIVE_MODEL_FROZEN"
+  ],
+  "required_frozen_artifacts": [
+    "FAST3_R4_HARD_STORAGE_PREFLIGHT.json",
+    "FAST3_R4_STORAGE_CONTRACT_AUDIT.json",
+    "FAST3_R4_SOURCE_FREEZE_MANIFEST.json",
+    "FAST3_R4_OBSERVED_INTERVAL_REGISTRY.json",
+    "FAST3_R4_RANDOM_BLOCK_SCHEDULE.json",
+    "FAST3_R4_FEATURE_MODEL_FREEZE.json",
+    "FAST3_R4_DEV_COMPARISON.json",
+    "FAST3_R4_INTERNAL_HOLDOUT_COMPARISON.json",
+    "FAST3_R4_NULL_AND_ECONOMIC_AUDIT.json",
+    "FAST3_R4_DAILY_MONTHLY_DIAGNOSTICS.json",
+    "FAST3_R4_PROSPECTIVE_FREEZE.json",
+    "fast3_r4_two_stage_direction_summary.json",
+    "FAST3_R4_TWO_STAGE_DIRECTION_REPORT.md",
+    "FAST3_R4_ARTIFACT_HASH_MANIFEST.json"
+  ],
+  "required_summary_keys": [
+    "FINAL_STATUS",
+    "FINAL_DECISION",
+    "RUN_ID",
+    "SOURCE_R3_RUN_ID",
+    "SOURCE_R3_DECISION",
+    "SOURCE_R3_AUDIT_DECISION",
+    "STORAGE_CONTRACT_PASS",
+    "CANONICAL_ACL_GUARD_ACTIVE_DURING_RUN",
+    "CANONICAL_WATCH_EVENT_COUNT",
+    "REPO_WATCH_VIOLATION_COUNT",
+    "NEW_LOCAL_RESULTS_WRITE_COUNT",
+    "REPO_RESULT_WRITE_COUNT",
+    "CANONICAL_WRITE_COUNT",
+    "CONFIRMATION_ROWS_READ",
+    "RANDOM_BLOCK_SCHEDULE_HASH",
+    "DEVELOPMENT_GATE_PASS",
+    "INTERNAL_HOLDOUT_GATE_PASS",
+    "R4_EVENT_LIFT",
+    "R3_STYLE_EVENT_LIFT",
+    "EVENT_LIFT_DELTA",
+    "R4_CONDITIONAL_DIRECTION_BALANCED_ACCURACY",
+    "R3_STYLE_CONDITIONAL_DIRECTION_BALANCED_ACCURACY",
+    "CONDITIONAL_DIRECTION_BALANCED_ACCURACY_DELTA",
+    "CONDITIONAL_DIRECTION_DELTA_CI_LOW",
+    "UP_RECALL",
+    "DOWN_RECALL",
+    "R4_END_TO_END_EXACT_ACCURACY",
+    "R3_STYLE_END_TO_END_EXACT_ACCURACY",
+    "UNIQUE_PRIMARY_TRADE_COUNT",
+    "MEAN_NET_10BPS",
+    "MEDIAN_NET_10BPS",
+    "MEDIAN_NET_20BPS",
+    "PROSPECTIVE_MODEL_FROZEN",
+    "MODEL_OR_FACTOR_SEARCH_PERFORMED",
+    "BROKER_ACTION_PERFORMED",
+    "ARCHIVE_FINALIZED",
+    "REPORT_PATH"
+  ]
+}

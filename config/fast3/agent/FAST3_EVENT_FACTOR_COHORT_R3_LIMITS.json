@@ -1,0 +1,439 @@
+{
+  "contract_version": "FAST3_EVENT_FACTOR_COHORT_R3",
+  "purpose": "Bounded complete-cohort event-factor discovery and out-of-time robustness validation after R2 proved that 100% matched NO_EVENT controls are structurally infeasible. Matching is auxiliary only; factor/model/threshold expansion is forbidden.",
+  "prior_runs": {
+    "r1_invalid": {
+      "run_id": "20260802_184840",
+      "expected_external_path": "D:/us-tech-quant-results/fast3/agent_runs/event_factor_law_discovery/20260802_184840",
+      "expected_legacy_compatibility_path": "D:/us-tech-quant-results/runtime/local_results/fast3/event_factor_law_discovery/20260802_184840",
+      "required_final_decision": "STOP_IMPLEMENTATION_INVALID",
+      "event_count": 517196,
+      "observed_random_block_count": 14,
+      "use_policy": "Read-only evidence, exact factor dictionary, exact nine-turn definition, exact model configurations, legacy metrics, and quarantine of observed blocks only."
+    },
+    "r2_control_stop": {
+      "run_id": "20260802_194125",
+      "expected_external_path": "D:/us-tech-quant-results/fast3/agent_runs/event_factor_law_discovery_r2/20260802_194125",
+      "expected_legacy_compatibility_path": "D:/us-tech-quant-results/runtime/local_results/fast3/event_factor_law_discovery_r2/20260802_194125",
+      "required_final_decision": "STOP_CONTROL_MATCH_INCOMPLETE_BEFORE_TRAINING",
+      "event_count": 517196,
+      "matched_event_count": 477456,
+      "unmatched_event_count": 39740,
+      "training_round_count": 0,
+      "factor_law_or_model_fit_performed": false,
+      "null_economic_audit_performed": false,
+      "schedule_only_blocks_are_not_observed_results": true,
+      "use_policy": "Read-only evidence and auxiliary common-support matched diagnostic only. R2 schedule-only blocks are not treated as observed model-result blocks."
+    }
+  },
+  "source_and_isolation": {
+    "canonical_symbols": [
+      "QQQ",
+      "SOXX",
+      "TQQQ",
+      "SQQQ",
+      "SOXL",
+      "SOXS"
+    ],
+    "canonical_root_relative": "fast3/moomoo_24h_1m/canonical",
+    "timezone": "America/New_York",
+    "development_data_cutoff_et": "2025-01-31T23:59:59-05:00",
+    "confirmation_start_et": "2025-02-08T00:00:00-05:00",
+    "confirmation_rows_read_required": 0,
+    "canonical_write_allowed": false,
+    "expected_cohort_counts": {
+      "candidate_rows": 729487,
+      "UP_FIRST": 263118,
+      "DOWN_FIRST": 254078,
+      "NO_EVENT": 212213,
+      "AMBIGUOUS": 78,
+      "event_rows": 517196
+    },
+    "count_mismatch_policy": "STOP_DATA_OR_IMPLEMENTATION_INVALID unless a source-partition hash change is explicitly documented before any factor result."
+  },
+  "frozen_target_and_execution": {
+    "underlyings": [
+      "QQQ",
+      "SOXX"
+    ],
+    "classes": [
+      "UP_FIRST",
+      "DOWN_FIRST",
+      "NO_EVENT"
+    ],
+    "ambiguous_policy": "EXCLUDE",
+    "decision_grid_minutes": 5,
+    "entry": "NEXT_VALID_MINUTE_OPEN",
+    "horizon_natural_hours": 24,
+    "underlying_barrier_percent": 0.01,
+    "execution_mapping": {
+      "QQQ_UP_FIRST": "TQQQ",
+      "QQQ_DOWN_FIRST": "SQQQ",
+      "SOXX_UP_FIRST": "SOXL",
+      "SOXX_DOWN_FIRST": "SOXS"
+    },
+    "opportunity_probability": "P(UP_FIRST)+P(DOWN_FIRST)",
+    "direction": "UP_FIRST when P(UP_FIRST)>=P(DOWN_FIRST), otherwise DOWN_FIRST",
+    "opportunity_probability_threshold": 0.6,
+    "top_fraction": 0.05,
+    "top_fraction_denominator": "all rows in the test block after AMBIGUOUS exclusion",
+    "tie_breakers": [
+      "combined_score descending",
+      "decision_timestamp_et ascending",
+      "candidate_id lexical"
+    ],
+    "single_account_single_position": true,
+    "etf_gross_target_return": 0.03,
+    "target_exit_timestamp": "first valid ETF minute whose high crosses entry_open*1.03",
+    "timeout_exit_timestamp": "last valid ETF minute at or before the 24-natural-hour horizon",
+    "timeout_exit_price": "timeout minute open, matching the frozen legacy economic convention",
+    "transaction_cost_bps_round_trip": [
+      10,
+      20
+    ],
+    "actual_target_hit_timestamp_must_release_capital": true,
+    "future_etf_path_as_feature_forbidden": true,
+    "actual_label_in_selection_or_priority_forbidden": true
+  },
+  "complete_cohort_training": {
+    "matched_control_required_for_training": false,
+    "all_non_ambiguous_rows_used": true,
+    "sample_weight_formula": "uniqueness_weight * train_fold_class_weight * train_fold_era_weight",
+    "uniqueness_weight": "1 divided by concurrent 24-hour label-window count",
+    "class_weight": "N_train/(3*N_train_class), computed inside each train fold and normalized to mean 1",
+    "era_weight": "inverse train-fold row count by frozen two-year era, normalized to mean 1",
+    "total_sample_weight_clip": [
+      0.05,
+      10.0
+    ],
+    "test_distribution_must_remain_natural": true,
+    "row_random_split_forbidden": true,
+    "purged_walk_forward_required": true
+  },
+  "frozen_factor_contract": {
+    "factor_dictionary_source": "R1 FAST3_FACTOR_DICTIONARY.json",
+    "factor_dictionary_must_match_r1_sha256": true,
+    "base_factor_count": 20,
+    "derived_factor_count": 80,
+    "nine_turn_factor_count": 9,
+    "pre_registered_interaction_count": 8,
+    "factor_addition_allowed": false,
+    "nine_turn_definition_change_allowed": false,
+    "stable_r1_subset_preapproved": false,
+    "law_discovery_recomputed_from_complete_cohort": true,
+    "maximum_frozen_stable_columns": 24,
+    "maximum_frozen_base_channels": 12,
+    "stable_column_ranking": [
+      "number of law blocks with same signed effect descending",
+      "minimum absolute standardized effect across law blocks descending",
+      "trimmed-direction preservation true before false",
+      "column name lexical"
+    ],
+    "economic_results_may_not_enter_factor_ranking": true,
+    "interaction_activation": "Only the eight R1-pre-registered interactions whose parent base channels are both frozen stable may be used.",
+    "factor_deletion_based_on_model_or_economic_results_allowed": false
+  },
+  "law_discovery_protocol": {
+    "law_block_count": 3,
+    "linear_tests": [
+      "weighted one-vs-rest logistic coefficient for UP_FIRST",
+      "weighted one-vs-rest logistic coefficient for DOWN_FIRST",
+      "weighted one-vs-rest logistic coefficient for NO_EVENT"
+    ],
+    "nonlinear_tests": [
+      "train-block quintile event-rate curve",
+      "restricted quadratic spline marginal curve"
+    ],
+    "bootstrap_unit": "broker_trade_week or non-overlapping 24-hour event cluster; never individual five-minute rows",
+    "stable_column_requirements": {
+      "signed_effect_consistency_min": 0.6666666667,
+      "minimum_absolute_standardized_effect_each_supporting_block": 0.01,
+      "trim_best_1pct_direction_must_not_reverse": true,
+      "minimum_distinct_sessions_supporting_direction": 2,
+      "single_year_only_effect_forbidden": true
+    },
+    "no_stable_law_decision": "STOP_NO_STABLE_FACTOR_LAWS",
+    "law_results_frozen_before_model_results": true
+  },
+  "random_block_protocol": {
+    "scheduler_seed": 314159,
+    "block_length_calendar_days": 60,
+    "total_blocks": 14,
+    "roles": {
+      "LAW_DISCOVERY": 3,
+      "MODEL_ROUND_1": 2,
+      "MODEL_ROUND_2": 2,
+      "MODEL_ROUND_3": 2,
+      "FINAL_AUDIT": 5
+    },
+    "role_assignment": "Select 14 eligible non-overlapping starts deterministically with the fixed seed, sort chronologically, then assign the first 3 to LAW_DISCOVERY, next 6 in pairs to MODEL_ROUND_1..3, and final 5 to FINAL_AUDIT.",
+    "r1_observed_block_quarantine_required": true,
+    "r1_quarantine_buffer_hours_each_side": 24,
+    "r1_observed_block_reuse_required": 0,
+    "r2_schedule_only_blocks_need_not_be_quarantined": true,
+    "minimum_gap_calendar_days_between_new_blocks": 5,
+    "purge_hours": 24,
+    "embargo_hours": 24,
+    "schedule_frozen_before_any_r3_law_or_model_result": true,
+    "final_audit_blocks_chronologically_after_law_blocks": true,
+    "insufficient_schedule_decision": "STOP_INSUFFICIENT_FRESH_BLOCKS",
+    "historical_blocks_label": "DEVELOPMENT_ROBUSTNESS_NOT_CLEAN_FROZEN_VALIDATION"
+  },
+  "model_budget": {
+    "families": [
+      "linear_logistic",
+      "quadratic_spline_logistic",
+      "hist_gradient_boosting"
+    ],
+    "configs": [
+      "linear_0.1",
+      "linear_1.0",
+      "spline_0.1",
+      "spline_1.0",
+      "hgb_leaf7",
+      "hgb_leaf15"
+    ],
+    "random_seeds": [
+      104729,
+      130363,
+      155921,
+      196613,
+      262147
+    ],
+    "all_six_configs_run_on_all_six_model_blocks": true,
+    "fit_sample_cap_per_class_per_seed": 12000,
+    "fit_sample_selection": "deterministic seed-stratified sampling inside train data only",
+    "round_count": 3,
+    "configs_may_not_change_between_rounds": true,
+    "features_may_not_change_between_rounds": true,
+    "final_config_selection": [
+      "median model-block Top5 lift descending",
+      "median model-block net return at 10bps descending",
+      "lower model complexity rank",
+      "config id lexical"
+    ],
+    "complexity_rank": {
+      "linear_0.1": 1,
+      "linear_1.0": 2,
+      "spline_0.1": 3,
+      "spline_1.0": 4,
+      "hgb_leaf7": 5,
+      "hgb_leaf15": 6
+    },
+    "final_config_frozen_before_final_audit": true,
+    "post_final_audit_retraining_allowed": false
+  },
+  "null_economic_audit": {
+    "final_audit_only": true,
+    "same_execution_contract_as_learned_model": true,
+    "nulls": [
+      "SHUFFLED_DIRECTION_SAME_SELECTED_TIMESTAMPS",
+      "SHUFFLED_SCORE_FULL_CANDIDATES",
+      "RANDOM_SCORE_RANDOM_DIRECTION",
+      "ALWAYS_UP_SAME_SELECTED_TIMESTAMPS",
+      "ALWAYS_DOWN_SAME_SELECTED_TIMESTAMPS"
+    ],
+    "same_seeds_for_stochastic_nulls": true,
+    "paired_bootstrap_resamples": 10000,
+    "paired_unit": "final-audit block by seed",
+    "required_outputs": [
+      "accepted_direction_accuracy",
+      "underlying_1pct_event_hit_rate",
+      "etf_3pct_target_hit_rate",
+      "timeout_rate",
+      "mean_target_hit_net_return",
+      "mean_timeout_net_return",
+      "direction_correct_etf_loss_rate",
+      "direction_wrong_etf_profit_rate",
+      "selected_signal_count",
+      "accepted_trade_count",
+      "rejected_overlap_count",
+      "learned_minus_each_null_lift",
+      "learned_minus_each_null_net10"
+    ],
+    "failure_decision": "STOP_NULL_ECONOMIC_BASELINE_NOT_BEATEN"
+  },
+  "auxiliary_matching": {
+    "source": "R2 fast3_event_control_pairs.parquet and FAST3_CONTROL_MATCH_AUDIT.json",
+    "role": "Post-selection explanatory common-support diagnostic only",
+    "may_select_factors": false,
+    "may_select_models": false,
+    "may_change_thresholds": false,
+    "may_change_final_decision": false,
+    "required_report": "Sign concordance of frozen factor laws within the R2 matched common-support subset, with R2 coverage and balance failures prominently retained."
+  },
+  "final_pass_gates": {
+    "pooled_top5_lift_min": 1.5,
+    "legacy_top5_lift": 1.36122855,
+    "lift_delta_ci_lower_vs_legacy_min_exclusive": 0.0,
+    "learned_minus_strongest_null_lift_ci_low_min_exclusive": 0.0,
+    "learned_minus_strongest_null_net10_ci_low_min_exclusive": 0.0,
+    "median_final_block_net_10bps_min_exclusive": 0.0,
+    "median_final_block_net_20bps_min": 0.0,
+    "positive_final_block_ratio_10bps_min": 0.6,
+    "positive_seed_count_10bps_min": 4,
+    "trimmed_best_1pct_net_10bps_min_exclusive": 0.0,
+    "minimum_accepted_trades_total_across_block_seed_evaluations": 300,
+    "minimum_accepted_trades_per_final_block_across_seeds": 100,
+    "max_single_final_block_positive_pnl_contribution": 0.35,
+    "max_single_execution_etf_positive_pnl_contribution": 0.5,
+    "unknown_session_rows_max": 0,
+    "confirmation_rows_read_max": 0,
+    "r1_observed_block_reuse_max": 0
+  },
+  "allowed_final_decisions": [
+    "PASS_READY_FOR_PROSPECTIVE_FORWARD_SHADOW",
+    "STOP_INSUFFICIENT_FRESH_BLOCKS",
+    "STOP_NO_STABLE_FACTOR_LAWS",
+    "STOP_NO_SIGNIFICANT_GAIN_OVER_LEGACY",
+    "STOP_NULL_ECONOMIC_BASELINE_NOT_BEATEN",
+    "STOP_NOT_ECONOMIC_AFTER_COST",
+    "STOP_RANDOM_TIME_BLOCK_INSTABILITY",
+    "STOP_DATA_OR_IMPLEMENTATION_INVALID"
+  ],
+  "anti_expansion": {
+    "new_core_code_files_allowed": 0,
+    "modified_core_code_files_max": 1,
+    "new_test_files_max": 1,
+    "new_v22_chain_allowed": false,
+    "new_atlas_guard_registry_allowed": false,
+    "nested_runner_allowed": false,
+    "detached_or_background_python_allowed": false,
+    "unrelated_refactor_allowed": false,
+    "factor_or_model_search_expansion_allowed": false,
+    "threshold_or_top_fraction_search_allowed": false,
+    "label_horizon_or_cost_change_allowed": false,
+    "git_stage_commit_push_allowed": false,
+    "broker_or_order_action_allowed": false
+  },
+  "required_artifacts_common": [
+    "FAST3_EVIDENCE_LEDGER.json",
+    "FAST3_PRIOR_RUN_IMPORT.json",
+    "FAST3_R3_COHORT_CONTRACT.json",
+    "FAST3_RANDOM_BLOCK_SCHEDULE.json",
+    "FAST3_COHORT_AUDIT.json",
+    "FAST3_ROUND_LEDGER.jsonl",
+    "fast3_event_factor_r3_summary.json",
+    "FAST3_EVENT_FACTOR_R3_REPORT.md"
+  ],
+  "required_artifacts_by_decision": {
+    "STOP_INSUFFICIENT_FRESH_BLOCKS": [],
+    "STOP_DATA_OR_IMPLEMENTATION_INVALID": [],
+    "STOP_NO_STABLE_FACTOR_LAWS": [
+      "fast3_factor_linear_results.csv",
+      "fast3_factor_nonlinear_results.csv",
+      "FAST3_FACTOR_LAW_FREEZE.json"
+    ],
+    "STOP_NO_SIGNIFICANT_GAIN_OVER_LEGACY": [
+      "fast3_factor_linear_results.csv",
+      "fast3_factor_nonlinear_results.csv",
+      "FAST3_FACTOR_LAW_FREEZE.json",
+      "fast3_model_selection_results.csv",
+      "FAST3_MODEL_FREEZE.json",
+      "fast3_training_predictions.parquet",
+      "fast3_final_audit_results.csv",
+      "fast3_null_model_results.csv",
+      "fast3_event_predictions.parquet",
+      "FAST3_EXECUTION_SANITY_AUDIT.json",
+      "FAST3_AUX_MATCHED_DIAGNOSTIC.json"
+    ],
+    "STOP_NULL_ECONOMIC_BASELINE_NOT_BEATEN": [
+      "fast3_factor_linear_results.csv",
+      "fast3_factor_nonlinear_results.csv",
+      "FAST3_FACTOR_LAW_FREEZE.json",
+      "fast3_model_selection_results.csv",
+      "FAST3_MODEL_FREEZE.json",
+      "fast3_training_predictions.parquet",
+      "fast3_final_audit_results.csv",
+      "fast3_null_model_results.csv",
+      "fast3_event_predictions.parquet",
+      "FAST3_EXECUTION_SANITY_AUDIT.json",
+      "FAST3_AUX_MATCHED_DIAGNOSTIC.json"
+    ],
+    "STOP_NOT_ECONOMIC_AFTER_COST": [
+      "fast3_factor_linear_results.csv",
+      "fast3_factor_nonlinear_results.csv",
+      "FAST3_FACTOR_LAW_FREEZE.json",
+      "fast3_model_selection_results.csv",
+      "FAST3_MODEL_FREEZE.json",
+      "fast3_training_predictions.parquet",
+      "fast3_final_audit_results.csv",
+      "fast3_null_model_results.csv",
+      "fast3_event_predictions.parquet",
+      "FAST3_EXECUTION_SANITY_AUDIT.json",
+      "FAST3_AUX_MATCHED_DIAGNOSTIC.json"
+    ],
+    "STOP_RANDOM_TIME_BLOCK_INSTABILITY": [
+      "fast3_factor_linear_results.csv",
+      "fast3_factor_nonlinear_results.csv",
+      "FAST3_FACTOR_LAW_FREEZE.json",
+      "fast3_model_selection_results.csv",
+      "FAST3_MODEL_FREEZE.json",
+      "fast3_training_predictions.parquet",
+      "fast3_final_audit_results.csv",
+      "fast3_null_model_results.csv",
+      "fast3_event_predictions.parquet",
+      "FAST3_EXECUTION_SANITY_AUDIT.json",
+      "FAST3_AUX_MATCHED_DIAGNOSTIC.json"
+    ],
+    "PASS_READY_FOR_PROSPECTIVE_FORWARD_SHADOW": [
+      "fast3_factor_linear_results.csv",
+      "fast3_factor_nonlinear_results.csv",
+      "FAST3_FACTOR_LAW_FREEZE.json",
+      "fast3_model_selection_results.csv",
+      "FAST3_MODEL_FREEZE.json",
+      "fast3_training_predictions.parquet",
+      "fast3_final_audit_results.csv",
+      "fast3_null_model_results.csv",
+      "fast3_event_predictions.parquet",
+      "FAST3_EXECUTION_SANITY_AUDIT.json",
+      "FAST3_AUX_MATCHED_DIAGNOSTIC.json"
+    ]
+  },
+  "required_summary_keys": [
+    "FINAL_STATUS",
+    "FINAL_DECISION",
+    "RUN_ID",
+    "COHORT_ROW_COUNT",
+    "UP_FIRST_COUNT",
+    "DOWN_FIRST_COUNT",
+    "NO_EVENT_COUNT",
+    "AMBIGUOUS_COUNT",
+    "R1_OBSERVED_BLOCK_IMPORT_COUNT",
+    "R1_OBSERVED_BLOCK_REUSE_COUNT",
+    "R2_TRAINING_ROUND_COUNT",
+    "LAW_DISCOVERY_BLOCK_COUNT",
+    "MODEL_BLOCK_COUNT",
+    "FINAL_AUDIT_BLOCK_COUNT",
+    "STABLE_FACTOR_COLUMN_COUNT",
+    "TOTAL_CONFIG_COUNT",
+    "RANDOM_SEED_COUNT",
+    "BEST_MODEL_NAME",
+    "BEST_TOP5_LIFT",
+    "LEGACY_TOP5_LIFT",
+    "MEDIAN_FINAL_BLOCK_NET_10BPS",
+    "MEDIAN_FINAL_BLOCK_NET_20BPS",
+    "STRONGEST_NULL_NAME",
+    "LEARNED_MINUS_STRONGEST_NULL_LIFT_CI_LOW",
+    "LEARNED_MINUS_STRONGEST_NULL_NET10_CI_LOW",
+    "ACCEPTED_TRADE_COUNT",
+    "CONFIRMATION_ROWS_READ",
+    "FACTOR_OR_MODEL_EXPANSION_PERFORMED",
+    "POST_FINAL_AUDIT_RETRAINING_PERFORMED",
+    "REPORT_PATH"
+  ],
+  "mandatory_pre_run_tests": {
+    "python_compile_required": true,
+    "focused_tests_required": [
+      "complete cohort count and Confirmation isolation",
+      "R1 observed-block quarantine and deterministic R3 schedule",
+      "sample weights fit only on train rows",
+      "selection and priority cannot read actual labels or future ETF paths",
+      "actual ETF target-hit timestamp releases capital",
+      "null models use identical selection and execution contracts",
+      "decision-aware artifact validation supports legal early stops"
+    ],
+    "test_failure_decision": "STOP_DATA_OR_IMPLEMENTATION_INVALID",
+    "synthetic_only_or_tests_only_is_not_completion": true
+  }
+}

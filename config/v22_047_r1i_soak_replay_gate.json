@@ -1,0 +1,18 @@
+{
+  "revision": "V22.047_R1I",
+  "strategy_name": "V8_REFERENCE_TREND_ROTATION",
+  "strategy_enabled": true,
+  "strategy_configured": true,
+  "default_execution_mode": "SHADOW",
+  "paper_available": true,
+  "live_available": false,
+  "fault_injection_enabled": false,
+  "replay_seed": "V22.047_R1I_DETERMINISTIC_SEED",
+  "soak_order_window_et": "09:45:00-15:50:00",
+  "eod_reconciliation_time_et": "16:00:00",
+  "required_successful_soak_days": 10,
+  "required_consecutive_healthy_days": 5,
+  "execution_whitelist": ["US.QQQ", "US.TQQQ", "US.SQQQ", "US.IQQQ"],
+  "real_environment_allowed": false,
+  "live_ready_forced_false": true
+}

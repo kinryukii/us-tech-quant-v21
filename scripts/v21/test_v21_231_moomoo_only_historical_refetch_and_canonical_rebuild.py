@@ -189,6 +189,30 @@ def test_builds_canonical_raw_and_qfq_outputs(tmp_path):
     assert summary["canonical_qfq_row_count"] > 0
 
 
+def test_historical_target_date_truncates_canonical_and_blocks_future_sentinel(tmp_path, monkeypatch):
+    root = make_repo(tmp_path); cache = tmp_path / "cache"; out = tmp_path / "out"
+    original = v231.mock_fetch
+    def future_bars(item, snapshot):
+        rows = original(item, snapshot)
+        if item["frequency"] == "1d":
+            rows = [r for r in rows if r["date"] != "2026-08-12"]
+            rows.extend([{**rows[-1], "date": "2026-08-12", "close": 10.5}, {**rows[-1], "date": "2026-08-13", "open": 999999, "high": 999999, "low": 999999, "close": 999999, "volume": 999999999}])
+        return rows
+    monkeypatch.setattr(v231, "mock_fetch", future_bars)
+    summary = v231.run(root, out, cache_root=cache, snapshot_id="historical", no_network=True, sleep_seconds=0, end_date="2026-08-12")
+    pointer = json.loads((out / "canonical_snapshot_pointer.json").read_text())
+    raw, qfq = read_csv(Path(pointer["canonical_raw_path"])), read_csv(Path(pointer["canonical_qfq_path"]))
+    assert max(r["date"] for r in raw) == "2026-08-12"
+    assert max(r["date"] for r in qfq) == "2026-08-12"
+    assert all(float(r["close"]) != 999999 for r in raw + qfq)
+    assert summary["canonical_complete_universe_date"] == "2026-08-12"
+
+
+def test_latest_date_canonical_behavior_is_unchanged(tmp_path):
+    root = make_repo(tmp_path); summary = run_ok(root, tmp_path / "out", tmp_path / "cache")
+    assert summary["canonical_complete_universe_date"] == "2026-07-03"
+
+
 def test_writes_canonical_snapshot_pointer(tmp_path):
     root = make_repo(tmp_path); out = tmp_path / "out"
     run_ok(root, out, tmp_path / "cache")
