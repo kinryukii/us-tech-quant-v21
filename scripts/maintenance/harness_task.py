@@ -73,6 +73,7 @@ DISCOVERY_ROOTS = ("scripts", "fast3", "tests", "config", "docs")
 DISCOVERY_TEXT_SUFFIXES = {".json", ".md", ".ps1", ".py", ".toml", ".txt", ".yaml", ".yml"}
 TASK_TEMP_RUNTIME_PREFIX = "harness-runtime-"
 TASK_TEMP_OWNER_MARKER = ".harness-runtime-owner.json"
+WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION = "WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_WINERROR5"
 
 
 class HarnessError(RuntimeError):
@@ -400,6 +401,11 @@ def _new_state(
         "TASK_TEMP_RUNTIME_STATUS": "NOT_PROVISIONED",
         "TASK_TEMP_RUNTIME_OWNED": False,
         "WORKER_STATUS": "NOT_STARTED",
+        "WORKER_TEST_STATUS": "NOT_RUN",
+        "WORKER_TEST_LIMITATION": "",
+        "WORKER_TEST_EVIDENCE": "",
+        "CONTROLLER_VALIDATION_STATUS": "NOT_RUN",
+        "WORKTREE_INVENTORY_STATUS": "UNKNOWN",
         "OVERFIT_GUARD": "PENDING",
         "ANTI_BLOAT": "PENDING",
         "REUSE_GUARD": "PENDING",
@@ -990,7 +996,7 @@ Human steering currently in force:
 {correction_text}
 Work only in this isolated Git worktree. Use the inherited TEMP/TMP/TMPDIR and USTQ_CACHE_ROOT for disposable runtime files; do not create temp or cache residue in the worktree. Read AGENTS.md first and use repository maps and registries. The controller already ran R1 preflight. Search before create; classify relevant matches; reuse or extend authoritative/active code, reference but never modify frozen code. Do not use 2026+ outcomes for fitting, feature/parameter/threshold/portfolio-rule search, model selection, or winner selection. Preserve PIT ordering, canonical data, external evidence, unrelated work, and the repository-local .venv prohibition. Do not fetch Moomoo history, merge branches, promote to production, or start another task.
 
-Implement the smallest suitable change, run focused tests, inspect your diff, and stop after this goal. A research hypothesis failing economically is a valid result; do not tune against exposed holdout feedback. If the goal cannot be completed safely, preserve useful work and report the blocker.
+Implement the smallest suitable change, run focused tests, inspect your diff, and stop after this goal. Never claim a test passed when it did not; if pytest is blocked by a temporary-path PermissionError, preserve the exact WinError and pytest stack evidence for Controller classification. A research hypothesis failing economically is a valid result; do not tune against exposed holdout feedback. If the goal cannot be completed safely, preserve useful work and report the blocker.
 
 End with these concise machine-readable lines:
 TASK_RESULT=COMPLETED|SOFTWARE_FAILURE|RESEARCH_FAILURE|WAITING_HUMAN|BLOCKED
@@ -1005,7 +1011,7 @@ HOLDOUT_CONTAMINATION_RISK=NONE|<concise risk>
 def _review_prompt(state: dict[str, Any]) -> str:
     return f"""Perform an independent READ-ONLY review of the uncommitted changes in this isolated worktree. Do not modify any file. Human goal: {state['GOAL']}
 
-Inspect the diff and relevant repository evidence. Source remains read-only; use the inherited external temporary runtime for harmless test or Python inspection. Assess code correctness, test adequacy, PIT/leakage, exposed-2026-holdout optimization, train/validation/test roles, duplicate implementation, repository/artifact/dependency bloat, frozen assets, and goal alignment. Validation recorded by the controller: {state.get('VALIDATION_RESULTS', [])}. Guard states: overfit={state['OVERFIT_GUARD']}; anti_bloat={state['ANTI_BLOAT']}; reuse={state['REUSE_GUARD']}.
+Inspect the diff and relevant repository evidence. Source remains read-only; use the inherited external temporary runtime for harmless test or Python inspection. Worker test status: {state.get('WORKER_TEST_STATUS')}; worker limitation: {state.get('WORKER_TEST_LIMITATION')}; Controller authoritative validation: {state.get('CONTROLLER_VALIDATION_STATUS')} with evidence {state.get('VALIDATION_RESULTS', [])}. If your own pytest execution encounters exactly {WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION}, rely on the Controller-owned test evidence for execution and continue the independent source, scope, safety, Anti-Bloat, and correctness review; do not treat that environment limitation alone as an implementation defect. Assess code correctness, test adequacy, PIT/leakage, exposed-2026-holdout optimization, train/validation/test roles, duplicate implementation, repository/artifact/dependency bloat, frozen assets, and goal alignment. Guard states: overfit={state['OVERFIT_GUARD']}; anti_bloat={state['ANTI_BLOAT']}; reuse={state['REUSE_GUARD']}.
 
 End with exactly one classification line and concise findings:
 REVIEW_STATUS=PASS|PASS_WITH_WARNINGS|FIX_REQUIRED|HUMAN_DECISION_REQUIRED
@@ -1048,6 +1054,55 @@ def _phase_from_command(command: str) -> str | None:
     return None
 
 
+def _known_windows_codex_pytest_temp_limitation(evidence: str) -> bool:
+    """Recognize only the reproduced nested-Windows pytest temp ACL signature."""
+    permission = re.search(r"PermissionError", evidence, re.I) and re.search(
+        r"(?:\[?WinError\s*5\]?|Access is denied)", evidence, re.I,
+    )
+    pytest_temp_frame = re.search(r"_pytest[\\/](?:tmpdir|pathlib)\.py", evidence, re.I)
+    temp_operation = re.search(
+        r"pytest-of-|tmp_path|--basetemp|\bbasetemp\b|cleanup_dead_symlinks|make_numbered_dir",
+        evidence,
+        re.I,
+    )
+    real_failure = re.search(
+        r"AssertionError|SyntaxError|ImportError|ModuleNotFoundError",
+        evidence,
+        re.I,
+    )
+    return bool(permission and pytest_temp_frame and temp_operation and not real_failure)
+
+
+def _command_event_output(item: dict[str, Any]) -> str:
+    chunks: list[str] = []
+    for key in ("aggregated_output", "output", "stdout", "stderr"):
+        value = item.get(key)
+        if value in (None, ""):
+            continue
+        chunks.append(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
+    return "\n".join(chunks)[-4_000:]
+
+
+def _classify_worker_test_execution(
+    test_results: Sequence[dict[str, Any]], final_message: str, worker_exit_code: int,
+) -> tuple[str, str, str]:
+    if not test_results:
+        return "NOT_RUN", "", ""
+    failures = [row for row in test_results if str(row.get("exit_code")) != "0"]
+    if not failures:
+        return "PASS", "", ""
+    evidence_rows = [
+        f"{row.get('command', '')}\n{row.get('output', '')}\n{final_message}"
+        for row in failures
+    ]
+    evidence = "\n\n".join(evidence_rows)[-MAX_TEXT:]
+    if worker_exit_code == 0 and all(
+        _known_windows_codex_pytest_temp_limitation(row) for row in evidence_rows
+    ):
+        return "ENVIRONMENT_LIMITED", WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION, evidence
+    return "REAL_TEST_FAILURE", "", evidence
+
+
 def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[str, Any]:
     state = load_state(task_id)
     worktree = Path(state["WORKTREE"])
@@ -1082,6 +1137,10 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
     }
     if not review:
         started_fields["TEST_HISTORY_START_INDEX"] = len(state.get("TESTS_RUN", []))
+        started_fields["WORKER_TEST_STATUS"] = "NOT_RUN"
+        started_fields["WORKER_TEST_LIMITATION"] = ""
+        started_fields["WORKER_TEST_EVIDENCE"] = ""
+        started_fields["CONTROLLER_VALIDATION_STATUS"] = "NOT_RUN"
 
     def mark_turn_active(value: dict[str, Any]) -> None:
         _plan_update(value, "INDEPENDENT_REVIEW" if review else "IMPLEMENT", "IN_PROGRESS")
@@ -1094,6 +1153,7 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
     tail: deque[str] = deque(maxlen=20)
     final_message = ""
     tests: list[str] = []
+    test_results: list[dict[str, Any]] = []
     seen_phase = ""
     for raw in process.stdout:
         line = raw.rstrip("\r\n")
@@ -1122,7 +1182,13 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
                 seen_phase = phase
                 _record_worker_checkpoint(task_id, phase)
             if phase == "TARGETED_TEST" and event.get("type") == "item.completed":
-                tests.append(f"{command_text[:500]} | exit={item.get('exit_code', 'UNKNOWN')}")
+                command_exit = item.get("exit_code", "UNKNOWN")
+                tests.append(f"{command_text[:500]} | exit={command_exit}")
+                test_results.append({
+                    "command": command_text[:1_000],
+                    "exit_code": command_exit,
+                    "output": _command_event_output(item),
+                })
         current = load_state(task_id)
         if current["PAUSE_REQUESTED"] or current["STOP_REQUESTED"]:
             # The control command queues a cooperative checkpoint message. Never kill a writer.
@@ -1130,6 +1196,9 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
     exit_code = process.wait()
     if not final_message and tail:
         final_message = "\n".join(tail)[-MAX_TEXT:]
+    worker_test_status, worker_test_limitation, worker_test_evidence = _classify_worker_test_execution(
+        test_results, final_message, exit_code,
+    )
     history = load_state(task_id).get("TESTS_RUN", [])
     combined_tests = (history + tests)[-MAX_LIST_ITEMS:]
     if not review:
@@ -1151,13 +1220,17 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
         completed_fields["REVIEW_FINDINGS"] = final_message
     else:
         completed_fields["TEST_HISTORY_START_INDEX"] = max(0, len(combined_tests) - min(len(tests), MAX_LIST_ITEMS))
+        completed_fields["WORKER_TEST_STATUS"] = worker_test_status
+        completed_fields["WORKER_TEST_LIMITATION"] = worker_test_limitation
+        completed_fields["WORKER_TEST_EVIDENCE"] = worker_test_evidence
 
     def mark_turn_completed(value: dict[str, Any]) -> None:
         if not review:
             _plan_update(value, "IMPLEMENT", "COMPLETED")
 
     update_task(
-        task_id, completed_fields, event=f"{kind}_COMPLETED", detail=f"exit={exit_code}",
+        task_id, completed_fields, event=f"{kind}_COMPLETED",
+        detail=f"exit={exit_code};worker_test_status={worker_test_status if not review else 'REVIEW_NOT_CLASSIFIED'}",
         mutate=mark_turn_completed,
     )
     if exit_code and re.search(r"failed to initialize (?:in-process )?app-server|not logged in|authentication required|usage limit|rate limit", final_message, re.I):
@@ -1179,6 +1252,7 @@ def _refresh_changes(task_id: str, *, worker_findings: str | None = None) -> dic
         "DEPENDENCIES_ADDED": changes["dependencies"],
         "NEW_COMPONENT_JUSTIFICATION": justification,
         "REUSE_GUARD": reuse,
+        "WORKTREE_INVENTORY_STATUS": "KNOWN",
     }
     if worker_findings is not None:
         fields["WORKER_FINDINGS"] = worker_findings
@@ -1206,8 +1280,7 @@ def _candidate_tests(worktree: Path, changed: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(candidates))[:10]
 
 
-def _validate_targeted(task_id: str) -> tuple[bool, str]:
-    state = load_state(task_id)
+def _latest_worker_reported_test_status(state: dict[str, Any]) -> str:
     tests = state.get("TESTS_RUN", [])
     start = max(0, min(int(state.get("TEST_HISTORY_START_INDEX", 0)), len(tests)))
     latest: dict[str, bool] = {}
@@ -1220,13 +1293,23 @@ def _validate_targeted(task_id: str) -> tuple[bool, str]:
         if normalized:
             latest[normalized] = outcome.group(1) == "0"
     if any(not passed for passed in latest.values()):
-        return False, "Worker-reported targeted test command failed."
+        return "REAL_TEST_FAILURE"
     if latest:
-        return True, "Worker-reported targeted tests passed."
+        return "PASS"
+    return "NOT_RUN"
+
+
+def _validate_targeted(task_id: str) -> tuple[bool, str]:
+    state = load_state(task_id)
+    tests = state.get("TESTS_RUN", [])
+    worker_report = state.get("WORKER_TEST_STATUS") or _latest_worker_reported_test_status(state)
     worktree = Path(state["WORKTREE"])
     candidates = _candidate_tests(worktree, state.get("FILES_CHANGED", []))
     if not candidates:
-        return True, "No paired automatic test mapping; independent review must assess worker validation."
+        return True, (
+            "Controller found no paired automatic test mapping; independent review must assess validation. "
+            f"Worker test status={worker_report} is recorded but is not authoritative."
+        )
     python = _storage_paths().python_exe
     base_temp = (task_dir(task_id) / "pytest-temp").resolve()
     if REPO == base_temp or REPO in base_temp.parents:
@@ -1242,7 +1325,8 @@ def _validate_targeted(task_id: str) -> tuple[bool, str]:
     summary = (result.stdout + "\n" + result.stderr).strip()[-4_000:]
     row = f"{' '.join(candidates)} | exit={result.returncode} | {summary}"
     update_task(task_id, {"TESTS_RUN": (tests + [row])[-MAX_LIST_ITEMS:]})
-    return result.returncode == 0, summary or f"exit={result.returncode}"
+    detail = summary or f"exit={result.returncode}"
+    return result.returncode == 0, f"Controller-owned focused pytest: {detail}"
 
 
 def _guard_summary(preflight: dict[str, Any]) -> tuple[str, str]:
@@ -1482,6 +1566,28 @@ def _worker_result(state: dict[str, Any], exit_code: int) -> str:
     return value if value in allowed else "COMPLETED"
 
 
+def _worker_test_environment_delegation_allowed(
+    state: dict[str, Any], worker_exit_code: int,
+) -> tuple[bool, str]:
+    if state.get("WORKER_TEST_STATUS") != "ENVIRONMENT_LIMITED":
+        return False, "WORKER_TEST_STATUS_NOT_ENVIRONMENT_LIMITED"
+    if state.get("WORKER_TEST_LIMITATION") != WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION:
+        return False, "WORKER_TEST_LIMITATION_NOT_RECOGNIZED"
+    if worker_exit_code != 0 or state.get("WORKER_STATUS") != "EXITED_0":
+        return False, "WORKER_DID_NOT_EXIT_NORMALLY"
+    worker_pid = state.get("WORKER_PID")
+    if worker_pid or state.get("ACTIVE_THREAD_ID") or state.get("ACTIVE_PROCESS_KIND"):
+        liveness = _pid_alive(worker_pid) if worker_pid else None
+        return False, f"ACTIVE_OR_ORPHAN_WORKER_IDENTITY_PRESENT:liveness={liveness}"
+    worktree = Path(state.get("WORKTREE", ""))
+    if state.get("WORKTREE_INVENTORY_STATUS") != "KNOWN" or not worktree.is_dir():
+        return False, "WORKTREE_INVENTORY_NOT_KNOWN"
+    for field in ("OVERFIT_GUARD", "ANTI_BLOAT", "REUSE_GUARD"):
+        if not str(state.get(field, "")).startswith("PASS"):
+            return False, f"SAFETY_GUARD_NOT_PASS:{field}={state.get(field)}"
+    return True, "CONTROLLER_AUTHORITATIVE_VALIDATION_REQUIRED"
+
+
 def _dispatch(task_id: str) -> None:
     while True:
         if _control_checkpoint(task_id):
@@ -1570,10 +1676,34 @@ def _dispatch(task_id: str) -> None:
                 return
             if _control_checkpoint(task_id):
                 return
-            outcome = _worker_result(load_state(task_id), result["exit_code"])
-            contamination = _parse_marker(load_state(task_id).get("WORKER_FINDINGS", ""), "HOLDOUT_CONTAMINATION_RISK")
+            state = load_state(task_id)
+            outcome = _worker_result(state, result["exit_code"])
+            contamination = _parse_marker(state.get("WORKER_FINDINGS", ""), "HOLDOUT_CONTAMINATION_RISK")
             if contamination and contamination.upper() != "NONE":
                 _wait_human(task_id, "HOLDOUT_CONTAMINATION_RISK", contamination)
+                return
+            if state.get("WORKER_TEST_STATUS") == "REAL_TEST_FAILURE":
+                outcome = "SOFTWARE_FAILURE"
+            environment_delegated = False
+            if state.get("WORKER_TEST_STATUS") == "ENVIRONMENT_LIMITED" and outcome in {"COMPLETED", "SOFTWARE_FAILURE"}:
+                allowed, reason = _worker_test_environment_delegation_allowed(state, result["exit_code"])
+                if not allowed:
+                    _wait_human(task_id, "WORKER_TEST_ENVIRONMENT_DELEGATION_UNSAFE", reason)
+                    return
+                environment_delegated = True
+                outcome = "COMPLETED"
+                update_task(task_id, {
+                    "CURRENT_ACTION": "Worker pytest was environment-limited; Controller validation is required",
+                    "WHY_CURRENT_ACTION": WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
+                    "NEXT_ACTION": "Run Controller-owned authoritative focused validation",
+                    "WHY_NEXT_ACTION": "The worker exited normally and the narrow nested pytest temp limitation is not implementation evidence.",
+                }, event="WORKER_TEST_ENVIRONMENT_LIMITATION_DELEGATED", detail=reason)
+            elif state.get("WORKER_TEST_STATUS") == "ENVIRONMENT_LIMITED" and outcome == "RESEARCH_FAILURE":
+                _wait_human(
+                    task_id,
+                    "WORKER_TEST_ENVIRONMENT_NOT_SOLE_LIMITATION",
+                    "Worker reported a research failure in addition to the pytest environment limitation.",
+                )
                 return
             if outcome in {"WAITING_HUMAN", "BLOCKED"}:
                 _wait_human(task_id, f"WORKER_{outcome}", load_state(task_id).get("WORKER_FINDINGS", ""))
@@ -1593,7 +1723,9 @@ def _dispatch(task_id: str) -> None:
                     "NEXT_ACTION": "Run targeted validation and post-change guards",
                     "WHY_NEXT_ACTION": "Worker output is not accepted without mechanical validation.",
                     "NEXT_ACTION_CODE": "VALIDATE",
-                }, event="WORKER_RESULT_ACCEPTED", detail=outcome)
+                }, event="WORKER_RESULT_ACCEPTED", detail=(
+                    "ENVIRONMENT_LIMITED_TO_CONTROLLER_VALIDATION" if environment_delegated else outcome
+                ))
         elif action == "VALIDATE":
             def mark_validation_active(value: dict[str, Any]) -> None:
                 _plan_update(value, "TARGETED_TEST", "IN_PROGRESS")
@@ -1603,9 +1735,11 @@ def _dispatch(task_id: str) -> None:
                 "WHY_CURRENT_ACTION": "Changed code, R1 guards, dependencies, and creation justification must be checked before review.",
                 "NEXT_ACTION": "Complete targeted tests and post-change guards",
                 "WHY_NEXT_ACTION": "Both mechanical tests and applicable R1 guards must complete before review.",
+                "CONTROLLER_VALIDATION_STATUS": "RUNNING",
             }, event="TARGETED_VALIDATION_STARTED", detail="No data fetch or retraining is launched by the controller", mutate=mark_validation_active)
             changes = _refresh_changes(task_id)
             if load_state(task_id)["REUSE_GUARD"].startswith("HARD_BLOCKER"):
+                update_task(task_id, {"CONTROLLER_VALIDATION_STATUS": "FAIL"})
                 _wait_human(task_id, "NEW_COMPONENT_JUSTIFICATION_REQUIRED", ",".join(changes["created"]))
                 return
             passed, validation = _validate_targeted(task_id)
@@ -1620,6 +1754,7 @@ def _dispatch(task_id: str) -> None:
                 "WHY_CURRENT_ACTION": "The controller recorded focused tests and the post-change R1 guard result.",
                 "OVERFIT_GUARD": post["overfit"], "ANTI_BLOAT": post["anti"],
                 "ANTI_BLOAT_TASK_DELTA": post["anti_delta"],
+                "CONTROLLER_VALIDATION_STATUS": "PASS" if validation_passed else "FAIL",
                 "REPO_BYTES_AFTER": post["bytes"],
                 "REPO_SIZE_DELTA_BYTES": (post["bytes"] - state.get("REPO_BYTES_BEFORE")) if post["bytes"] is not None and state.get("REPO_BYTES_BEFORE") is not None else None,
                 "VALIDATION_RESULTS": (load_state(task_id).get("VALIDATION_RESULTS", []) + [validation[:4_000], post["result"]["preflight_status"]])[-MAX_LIST_ITEMS:],
@@ -1893,6 +2028,7 @@ def command_status(args: argparse.Namespace) -> int:
         "TASK_KIND", "TASK_KIND_SOURCE", "AUTO_SCOPE_SUGGESTION", "TASK_SCOPE", "SAFETY_FLAGS",
         "ANTI_BLOAT", "ANTI_BLOAT_TASK_DELTA", "REUSE_GUARD", "WORKER_STATUS",
         "TASK_TEMP_RUNTIME", "TASK_TEMP_RUNTIME_STATUS",
+        "WORKER_TEST_STATUS", "WORKER_TEST_LIMITATION", "CONTROLLER_VALIDATION_STATUS",
         "HUMAN_ATTENTION_REQUIRED", "LAST_UPDATED_AT",
     )
     for key in keys:

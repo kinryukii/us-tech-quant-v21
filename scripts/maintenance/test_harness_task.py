@@ -19,6 +19,13 @@ module = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(module)
 
+KNOWN_NESTED_PYTEST_TEMP_FAILURE = r"""
+PermissionError: [WinError 5] Access is denied: 'D:\sandbox\pytest-of-user\pytest-0'
+  File "site-packages\_pytest\tmpdir.py", line 156, in pytest_configure
+  File "site-packages\_pytest\pathlib.py", line 240, in make_numbered_dir
+cleanup_dead_symlinks(basetemp)
+"""
+
 
 REQUIRED_STATE_FIELDS = {
     "TASK_ID", "HARNESS_STATE", "GOAL", "GOAL_VERSION", "CURRENT_TASK",
@@ -30,6 +37,8 @@ REQUIRED_STATE_FIELDS = {
     "TEST_HISTORY_START_INDEX", "ANTI_BLOAT_BASELINE_RESIDUE", "ANTI_BLOAT_TASK_DELTA",
     "TASK_KIND", "TASK_KIND_SOURCE", "AUTO_SCOPE_SUGGESTION", "SAFETY_FLAGS", "TASK_SCOPE",
     "TASK_TEMP_RUNTIME", "TASK_TEMP_RUNTIME_STATUS", "TASK_TEMP_RUNTIME_OWNED",
+    "WORKER_TEST_STATUS", "WORKER_TEST_LIMITATION", "WORKER_TEST_EVIDENCE",
+    "CONTROLLER_VALIDATION_STATUS", "WORKTREE_INVENTORY_STATUS",
 }
 
 
@@ -467,6 +476,45 @@ def test_event_stream_real_validation_command_heads_are_classified(command: str,
     assert module._phase_from_command(command) == phase
 
 
+def test_known_nested_windows_pytest_temp_failure_is_environment_limited() -> None:
+    results = [{
+        "command": "python -m pytest -q --basetemp D:\\sandbox\\pytest-base focused_test.py",
+        "exit_code": 1,
+        "output": KNOWN_NESTED_PYTEST_TEMP_FAILURE,
+    }]
+
+    status, limitation, evidence = module._classify_worker_test_execution(results, "", 0)
+
+    assert module._known_windows_codex_pytest_temp_limitation(evidence) is True
+    assert status == "ENVIRONMENT_LIMITED"
+    assert limitation == module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION
+    assert module._classify_worker_test_execution(results, "", 1)[0] == "REAL_TEST_FAILURE"
+
+
+def test_worker_pytest_assertion_failure_is_real_test_failure() -> None:
+    results = [{
+        "command": "python -m pytest -q focused_test.py",
+        "exit_code": 1,
+        "output": "FAILED focused_test.py::test_value - AssertionError: assert 1 == 2",
+    }]
+
+    status, limitation, _ = module._classify_worker_test_execution(results, "", 0)
+
+    assert status == "REAL_TEST_FAILURE"
+    assert limitation == ""
+
+
+def test_generic_winerror5_is_not_treated_as_pytest_temp_limitation() -> None:
+    evidence = "PermissionError: [WinError 5] Access is denied: D:\\protected\\application.log"
+    results = [{"command": "python tool.py", "exit_code": 1, "output": evidence}]
+
+    status, limitation, _ = module._classify_worker_test_execution(results, "", 0)
+
+    assert module._known_windows_codex_pytest_temp_limitation(evidence) is False
+    assert status == "REAL_TEST_FAILURE"
+    assert limitation == ""
+
+
 def test_latest_same_test_command_wins_within_current_attempt(
     isolated_roots: tuple[Path, Path],
 ) -> None:
@@ -478,10 +526,7 @@ def test_latest_same_test_command_wins_within_current_attempt(
     state["TEST_HISTORY_START_INDEX"] = 0
     module._write_state_unlocked("test-task", state)
 
-    assert module._validate_targeted("test-task") == (
-        True,
-        "Worker-reported targeted tests passed.",
-    )
+    assert module._latest_worker_reported_test_status(module.load_state("test-task")) == "PASS"
 
 
 def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
@@ -582,7 +627,10 @@ def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
     assert completed["FILES_CHANGED"] == ["final_edit.py"]
     assert completed["TESTS_RUN"][0].endswith("exit=1")
     assert completed["TESTS_RUN"][1].endswith("exit=0")
-    assert module._validate_targeted("test-task") == (True, "Worker-reported targeted tests passed.")
+    assert completed["WORKER_TEST_STATUS"] == "PASS"
+    validation_passed, validation_detail = module._validate_targeted("test-task")
+    assert validation_passed is True
+    assert "not authoritative" in validation_detail
 
 
 def test_validation_and_completion_checkpoints_are_coherent(
@@ -638,6 +686,7 @@ def test_validation_and_completion_checkpoints_are_coherent(
     assert validated["LAST_COMPLETED"] == "TARGETED_VALIDATION_COMPLETED"
     assert validated["NEXT_ACTION"] == "Run independent read-only review"
     assert validated["PROGRESS_SUMMARY"] == "5/7 plan steps completed"
+    assert validated["CONTROLLER_VALIDATION_STATUS"] == "PASS"
 
     completed = snapshots["TASK_COMPLETED"]
     assert completed["HARNESS_STATE"] == "COMPLETED"
@@ -744,7 +793,13 @@ def test_controller_targeted_pytest_disables_cache_provider(
     state = create_state()
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
-    state.update({"WORKTREE": str(worktree), "FILES_CHANGED": ["scripts/maintenance/harness_task.py"]})
+    state.update({
+        "WORKTREE": str(worktree),
+        "FILES_CHANGED": ["scripts/maintenance/harness_task.py"],
+        "WORKER_TEST_STATUS": "PASS",
+        "TESTS_RUN": ["python -m pytest -q focused_test.py | exit=0"],
+        "TEST_HISTORY_START_INDEX": 0,
+    })
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_candidate_tests", lambda worktree, changed: ["focused_test.py"])
     monkeypatch.setattr(module, "_storage_paths", lambda: argparse.Namespace(python_exe=Path("python.exe")))
@@ -755,7 +810,9 @@ def test_controller_targeted_pytest_disables_cache_provider(
         return subprocess.CompletedProcess(args, 0, "passed", "")
 
     monkeypatch.setattr(module, "_run", successful_run)
-    assert module._validate_targeted("test-task")[0] is True
+    passed, detail = module._validate_targeted("test-task")
+    assert passed is True
+    assert detail.startswith("Controller-owned focused pytest:")
     assert observed[observed.index("-p"):observed.index("-p") + 2] == ["-p", "no:cacheprovider"]
     base_temp = Path(observed[observed.index("--basetemp") + 1]).resolve()
     assert base_temp == (module.task_dir("test-task") / "pytest-temp").resolve()
@@ -981,6 +1038,186 @@ def test_codex_exec_uses_stable_global_flag_order(
         assert command[command.index("--cd") + 1] == str(worktree)
         assert command[command.index("--add-dir") + 1] == str(runtime)
         assert command[-1] == "-"
+
+
+@pytest.mark.parametrize("controller_passes", [True, False])
+def test_environment_limited_worker_delegates_to_authoritative_controller_validation(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    controller_passes: bool,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER", "WORKTREE": str(worktree),
+        "OVERFIT_GUARD": "PASS", "ANTI_BLOAT": "PASS", "REUSE_GUARD": "PASS_SEARCH_RECORDED",
+        "REPO_BYTES_BEFORE": 0,
+    })
+    module._write_state_unlocked("test-task", state)
+    empty_changes = {
+        "changed": ["scripts/maintenance/harness_task.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    }
+    review_seen: list[dict] = []
+
+    def environment_limited_worker(task_id: str, prompt: str, review: bool = False) -> dict:
+        module.update_task(task_id, {
+            "WORKER_FINDINGS": "TASK_RESULT=SOFTWARE_FAILURE\nHOLDOUT_CONTAMINATION_RISK=NONE",
+            "WORKER_TEST_STATUS": "ENVIRONMENT_LIMITED",
+            "WORKER_TEST_LIMITATION": module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
+            "WORKER_TEST_EVIDENCE": KNOWN_NESTED_PYTEST_TEMP_FAILURE,
+            "WORKER_STATUS": "EXITED_0", "WORKER_PID": None,
+            "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "",
+            "WORKTREE_INVENTORY_STATUS": "KNOWN",
+        })
+        return {"exit_code": 0, "message": "environment limited", "tests": ["pytest | exit=1"]}
+
+    def controller_validation(task_id: str) -> tuple[bool, str]:
+        if not controller_passes:
+            module.update_task(task_id, {"STOP_REQUESTED": True})
+        return controller_passes, "controller tests passed" if controller_passes else "controller assertion failed"
+
+    def review(task_id: str) -> str:
+        review_seen.append(module.load_state(task_id))
+        return "HUMAN_DECISION_REQUIRED"
+
+    monkeypatch.setattr(module, "_run_codex_turn", environment_limited_worker)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: empty_changes)
+    monkeypatch.setattr(module, "_validate_targeted", controller_validation)
+    monkeypatch.setattr(module, "_perform_review", review)
+    monkeypatch.setattr(module, "_run_preflight_for", lambda task_id, repo: {
+        "result": {"applicable_hard_blocker_count": 0, "preflight_status": "PASS"},
+        "overfit": "PASS", "anti": "PASS", "anti_delta": "PASS",
+        "bytes": 0, "task_blocker_count": 0,
+    })
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["WORKER_TEST_STATUS"] == "ENVIRONMENT_LIMITED"
+    assert final["WORKER_TEST_LIMITATION"] == module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION
+    if controller_passes:
+        assert review_seen and review_seen[0]["CONTROLLER_VALIDATION_STATUS"] == "PASS"
+        assert final["CORRECTION_ATTEMPTS"] == 0
+        events = [json.loads(row)["event"] for row in module.timeline_path("test-task").read_text(encoding="utf-8").splitlines()]
+        assert "WORKER_TEST_ENVIRONMENT_LIMITATION_DELEGATED" in events
+    else:
+        assert not review_seen
+        assert final["CONTROLLER_VALIDATION_STATUS"] == "FAIL"
+        assert final["CORRECTION_ATTEMPTS"] == 1
+
+
+def test_environment_limited_delegation_requires_known_inventory_and_passed_guards(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "WORKER_TEST_STATUS": "ENVIRONMENT_LIMITED",
+        "WORKER_TEST_LIMITATION": module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
+        "WORKER_STATUS": "EXITED_0", "WORKER_PID": None,
+        "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "",
+        "WORKTREE_INVENTORY_STATUS": "KNOWN",
+        "OVERFIT_GUARD": "PASS", "ANTI_BLOAT": "PASS", "REUSE_GUARD": "PASS_SEARCH_RECORDED",
+    })
+
+    assert module._worker_test_environment_delegation_allowed(state, 0)[0] is True
+    state["OVERFIT_GUARD"] = "HARD_BLOCKER"
+    assert module._worker_test_environment_delegation_allowed(state, 0)[0] is False
+    state["OVERFIT_GUARD"] = "PASS"
+    state["WORKTREE_INVENTORY_STATUS"] = "UNKNOWN"
+    assert module._worker_test_environment_delegation_allowed(state, 0)[0] is False
+
+
+def test_real_worker_test_failure_uses_correction_path(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({"HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER", "WORKTREE": str(worktree)})
+    module._write_state_unlocked("test-task", state)
+
+    def failed_worker(task_id: str, prompt: str, review: bool = False) -> dict:
+        module.update_task(task_id, {
+            "WORKER_FINDINGS": "TASK_RESULT=COMPLETED\nHOLDOUT_CONTAMINATION_RISK=NONE",
+            "WORKER_TEST_STATUS": "REAL_TEST_FAILURE",
+            "WORKER_TEST_EVIDENCE": "AssertionError: assert 1 == 2",
+            "WORKER_STATUS": "EXITED_0", "WORKER_PID": None,
+            "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "",
+            "WORKTREE_INVENTORY_STATUS": "KNOWN",
+        })
+        return {"exit_code": 0, "message": "assertion failed", "tests": ["pytest | exit=1"]}
+
+    controller_called = {"value": False}
+    real_request_correction = module._request_correction
+
+    def request_then_stop(task_id: str, source: str, detail: str) -> None:
+        real_request_correction(task_id, source, detail)
+        module.update_task(task_id, {"STOP_REQUESTED": True})
+
+    monkeypatch.setattr(module, "_run_codex_turn", failed_worker)
+    monkeypatch.setattr(module, "_request_correction", request_then_stop)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(
+        module, "_validate_targeted",
+        lambda task_id: (controller_called.update(value=True) or True, "unexpected"),
+    )
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert controller_called["value"] is False
+    assert final["CORRECTION_ATTEMPTS"] == 1
+    assert final["CONTROLLER_VALIDATION_STATUS"] == "NOT_RUN"
+
+
+def test_live_or_orphan_worker_prevents_environment_limited_delegation(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER", "WORKTREE": str(worktree),
+        "OVERFIT_GUARD": "PASS", "ANTI_BLOAT": "PASS", "REUSE_GUARD": "PASS_SEARCH_RECORDED",
+    })
+    module._write_state_unlocked("test-task", state)
+
+    def orphaned_result(task_id: str, prompt: str, review: bool = False) -> dict:
+        module.update_task(task_id, {
+            "WORKER_FINDINGS": "TASK_RESULT=SOFTWARE_FAILURE\nHOLDOUT_CONTAMINATION_RISK=NONE",
+            "WORKER_TEST_STATUS": "ENVIRONMENT_LIMITED",
+            "WORKER_TEST_LIMITATION": module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
+            "WORKER_STATUS": "EXITED_0", "WORKER_PID": 4242,
+            "ACTIVE_THREAD_ID": "thread-live", "ACTIVE_PROCESS_KIND": "WORKER",
+            "WORKTREE_INVENTORY_STATUS": "KNOWN",
+        })
+        return {"exit_code": 0, "message": "environment limited", "tests": ["pytest | exit=1"]}
+
+    controller_called = {"value": False}
+    monkeypatch.setattr(module, "_run_codex_turn", orphaned_result)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(
+        module, "_validate_targeted",
+        lambda task_id: (controller_called.update(value=True) or True, "unexpected"),
+    )
+
+    module._dispatch("test-task")
+
+    waiting = module.load_state("test-task")
+    assert controller_called["value"] is False
+    assert waiting["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert waiting["WORKER_PID"] == 4242
+    assert waiting["BLOCKERS"][-1]["code"] == "WORKER_TEST_ENVIRONMENT_DELEGATION_UNSAFE"
+    assert waiting["CORRECTION_ATTEMPTS"] == 0
 
 
 def test_software_correction_loop_is_bounded(
