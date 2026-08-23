@@ -5,6 +5,7 @@ import importlib.util
 import json
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -28,6 +29,7 @@ REQUIRED_STATE_FIELDS = {
     "HUMAN_ATTENTION_REQUIRED", "LAST_REVIEW_STATUS", "LAST_UPDATED_AT",
     "TEST_HISTORY_START_INDEX", "ANTI_BLOAT_BASELINE_RESIDUE", "ANTI_BLOAT_TASK_DELTA",
     "TASK_KIND", "TASK_KIND_SOURCE", "AUTO_SCOPE_SUGGESTION", "SAFETY_FLAGS", "TASK_SCOPE",
+    "TASK_TEMP_RUNTIME", "TASK_TEMP_RUNTIME_STATUS", "TASK_TEMP_RUNTIME_OWNED",
 }
 
 
@@ -150,6 +152,147 @@ def test_harness_temp_roots_are_external_to_repository(isolated_roots: tuple[Pat
         for repository in (REPOSITORY_ROOT, module.REPO.resolve()):
             assert resolved != repository
             assert repository not in resolved.parents
+
+
+def test_task_temp_runtime_is_external_task_specific_and_probe_passes(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    create_state()
+    runtime = module.task_temp_runtime("test-task")
+    other = module.task_temp_runtime("other-task")
+
+    assert runtime.parent == isolated_roots[1].resolve()
+    assert runtime != other
+    assert runtime.name == "harness-runtime-test-task"
+    assert runtime != module.REPO.resolve() and module.REPO.resolve() not in runtime.parents
+
+    prepared = module._ensure_task_temp_runtime("test-task")
+    assert prepared == runtime
+    assert (runtime / module.TASK_TEMP_OWNER_MARKER).is_file()
+    assert not list(runtime.glob(".write-probe-*.tmp"))
+    assert module.load_state("test-task")["TASK_TEMP_RUNTIME_STATUS"] == "READY"
+
+    module._cleanup_task_temp_runtime("test-task")
+    assert not runtime.exists()
+    cleaned = module.load_state("test-task")
+    assert cleaned["TASK_TEMP_RUNTIME"] == str(runtime)
+    assert cleaned["TASK_TEMP_RUNTIME_STATUS"] == "CLEANED"
+
+
+def test_worker_temp_environment_supports_real_tempfile_and_pytest_tmp_path(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    create_state()
+    runtime = module._ensure_task_temp_runtime("test-task")
+    environment = module._task_temp_environment(runtime)
+
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        assert Path(environment[name]).resolve() == runtime
+    assert Path(environment["USTQ_CACHE_ROOT"]).resolve() == runtime / "cache"
+    assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert environment["PYTEST_ADDOPTS"] == "-p no:cacheprovider"
+
+    python_probe = subprocess.run(
+        [
+            sys.executable, "-B", "-c",
+            "import tempfile; from pathlib import Path; "
+            "root=Path(tempfile.gettempdir()).resolve(); "
+            "handle=tempfile.NamedTemporaryFile(delete=False); name=Path(handle.name); "
+            "handle.write(b'ok'); handle.close(); print(root); name.unlink()",
+        ],
+        cwd=runtime, env=environment, text=True, capture_output=True, check=False, timeout=30,
+    )
+    assert python_probe.returncode == 0, python_probe.stderr
+    assert Path(python_probe.stdout.strip()).resolve() == runtime
+
+    probe_dir = runtime / "pytest-probe"
+    probe_dir.mkdir()
+    probe_test = probe_dir / "test_temp_runtime.py"
+    probe_test.write_text(
+        "import tempfile\nfrom pathlib import Path\n\n"
+        "def test_external_tmp_path(tmp_path):\n"
+        "    assert Path(tempfile.gettempdir()).resolve() == Path(__file__).parents[1].resolve()\n"
+        "    (tmp_path / 'writable.txt').write_text('ok', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    pytest_probe = subprocess.run(
+        [
+            sys.executable, "-B", "-m", "pytest", "-q",
+            "--basetemp", str(runtime / "pytest-basetemp"), str(probe_test),
+        ],
+        cwd=runtime, env=environment, text=True, capture_output=True, check=False, timeout=60,
+    )
+    assert pytest_probe.returncode == 0, pytest_probe.stdout + pytest_probe.stderr
+    assert not (runtime / ".pytest_cache").exists()
+    assert not (module.REPO / ".pytest_cache").exists()
+    assert not list(module.REPO.glob("pytest-cache-files-*"))
+
+    module._cleanup_task_temp_runtime("test-task")
+    assert not runtime.exists()
+
+
+def test_normal_finalization_cleans_controller_owned_task_temp_runtime(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    runtime = module._ensure_task_temp_runtime("test-task")
+    state = module.load_state("test-task")
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [],
+        "changed_count": 0, "created_count": 0,
+    })
+
+    module._dispatch("test-task")
+
+    completed = module.load_state("test-task")
+    assert completed["HARNESS_STATE"] == "COMPLETED"
+    assert completed["TASK_TEMP_RUNTIME_STATUS"] == "CLEANED"
+    assert completed["TASK_TEMP_RUNTIME_OWNED"] is False
+    assert not runtime.exists()
+
+
+def test_unwritable_task_temp_runtime_is_scoped_blocker_before_worker_launch(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({"HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree), "NEXT_ACTION_CODE": "WORKER"})
+    module._write_state_unlocked("test-task", state)
+    launched = {"value": False}
+    real_probe = module._probe_temp_runtime
+
+    def deny_probe(path: Path) -> None:
+        raise PermissionError(f"write denied: {path}")
+
+    monkeypatch.setattr(module, "assert_registered_isolated_worktree", lambda path: None)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": [], "created": [], "dependencies": [],
+        "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_probe_temp_runtime", deny_probe)
+    monkeypatch.setattr(
+        module.subprocess, "Popen",
+        lambda *args, **kwargs: launched.update(value=True),
+    )
+    module._dispatch("test-task")
+
+    blocked = module.load_state("test-task")
+    assert launched["value"] is False
+    assert blocked["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert blocked["BLOCKERS"][-1]["code"] == "WORKER_TEMP_RUNTIME_UNAVAILABLE"
+    assert blocked["TASK_TEMP_RUNTIME_STATUS"] == "UNAVAILABLE"
+    assert "HOST_ACL_FAILURE" not in blocked["BLOCKERS"][-1]["detail"]
+
+    monkeypatch.setattr(module, "_probe_temp_runtime", real_probe)
+    module._cleanup_task_temp_runtime("test-task")
 
 
 @pytest.mark.parametrize(
@@ -394,8 +537,17 @@ def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
             return 0
 
     monkeypatch.setattr(module, "assert_registered_isolated_worktree", lambda path: None)
-    monkeypatch.setattr(module, "_codex_exec_command", lambda worktree, sandbox, review: ["codex"])
-    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    observed_popen: dict = {}
+
+    def fake_popen(*args, **kwargs):
+        observed_popen.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(
+        module, "_codex_exec_command",
+        lambda worktree, sandbox, review, writable_runtime=None: ["codex"],
+    )
+    monkeypatch.setattr(module.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(module, "_git_changes", lambda path: {
         "changed": ["final_edit.py"] if final_edit["made"] else [],
         "created": [],
@@ -407,6 +559,10 @@ def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
     result = module._run_codex_turn("test-task", "bounded prompt")
 
     assert result["exit_code"] == 0
+    runtime = module.task_temp_runtime("test-task")
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        assert Path(observed_popen["env"][name]).resolve() == runtime
+    assert Path(observed_popen["env"]["USTQ_CACHE_ROOT"]).resolve() == runtime / "cache"
     started = observed_started[0]
     assert started["CURRENT_PHASE"] == "IMPLEMENT"
     assert "active" in started["CURRENT_ACTION"]
@@ -812,11 +968,19 @@ def test_codex_exec_uses_stable_global_flag_order(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     worktree = isolated_roots[1] / "harness-task-test-task"
+    runtime = module.task_temp_runtime("test-task")
     monkeypatch.setattr(module, "_codex_command", lambda: "codex.cmd")
-    command = module._codex_exec_command(worktree, "read-only", True)
-    assert command[:4] == ["codex.cmd", "--ask-for-approval", "never", "exec"]
-    assert command[4:6] == ["--ephemeral", "--json"]
-    assert command[-1] == "-"
+    reviewer = module._codex_exec_command(worktree, "read-only", True, runtime)
+    worker = module._codex_exec_command(worktree, "workspace-write", False, runtime)
+    assert reviewer[:4] == ["codex.cmd", "--ask-for-approval", "never", "exec"]
+    assert reviewer[4:6] == ["--ephemeral", "--json"]
+    assert reviewer[reviewer.index("--sandbox") + 1] == "read-only"
+    assert worker[worker.index("--sandbox") + 1] == "workspace-write"
+    assert "--ephemeral" not in worker
+    for command in (reviewer, worker):
+        assert command[command.index("--cd") + 1] == str(worktree)
+        assert command[command.index("--add-dir") + 1] == str(runtime)
+        assert command[-1] == "-"
 
 
 def test_software_correction_loop_is_bounded(
@@ -883,6 +1047,38 @@ def test_crash_recovery_preserves_changed_file_inventory(
     assert recovered["FILES_CHANGED"] == ["useful.py"]
     assert recovered["WORKER_STATUS"] == "INTERRUPTED_PROCESS_NOT_RUNNING"
     assert recovered["HUMAN_ATTENTION_REQUIRED"] is True
+
+
+def test_interruption_preserves_task_temp_runtime_identity(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    runtime = module._ensure_task_temp_runtime("test-task")
+    state = module.load_state("test-task")
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "CONTROLLER_PID": 999_999, "WORKER_PID": 999_998,
+        "CURRENT_PHASE": "IMPLEMENT", "CURRENT_ACTION": "Worker is active",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": [], "created": [], "dependencies": [],
+        "changed_count": 0, "created_count": 0,
+    })
+
+    recovered = module.recover_if_interrupted("test-task")
+    assert recovered["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert recovered["TASK_ID"] == "test-task"
+    assert Path(recovered["TASK_TEMP_RUNTIME"]).resolve() == runtime
+    assert recovered["TASK_TEMP_RUNTIME_STATUS"] == "READY"
+    assert recovered["TASK_TEMP_RUNTIME_OWNED"] is True
+    assert runtime.is_dir()
+
+    module._cleanup_task_temp_runtime("test-task")
+    assert not runtime.exists()
 
 
 def test_controller_failure_with_dead_worker_is_terminal_and_coherent(

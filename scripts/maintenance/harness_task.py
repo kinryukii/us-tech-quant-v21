@@ -71,6 +71,8 @@ DEPENDENCY_FILES = {
 }
 DISCOVERY_ROOTS = ("scripts", "fast3", "tests", "config", "docs")
 DISCOVERY_TEXT_SUFFIXES = {".json", ".md", ".ps1", ".py", ".toml", ".txt", ".yaml", ".yml"}
+TASK_TEMP_RUNTIME_PREFIX = "harness-runtime-"
+TASK_TEMP_OWNER_MARKER = ".harness-runtime-owner.json"
 
 
 class HarnessError(RuntimeError):
@@ -122,6 +124,25 @@ def task_dir(task_id: str) -> Path:
     return state_root() / "tasks" / task_id
 
 
+def task_temp_runtime(task_id: str) -> Path:
+    """Return the task-owned disposable runtime beside, never inside, worktrees."""
+    validate_task_id(task_id)
+    root = worktree_root().resolve()
+    runtime = (root / f"{TASK_TEMP_RUNTIME_PREFIX}{task_id}").resolve(strict=False)
+    if runtime.parent != root:
+        raise HarnessError(f"WORKER_TEMP_RUNTIME_NOT_TASK_SCOPED:{runtime}")
+    paths = _storage_paths()
+    protected = {
+        REPO.resolve(), paths.data_root.resolve(), paths.cache_root.resolve(),
+        paths.daily_root.resolve(), paths.backtest_root.resolve(),
+        paths.results_root.resolve(), paths.envs_root.resolve(),
+    }
+    for protected_root in protected:
+        if runtime == protected_root or protected_root in runtime.parents:
+            raise HarnessError(f"WORKER_TEMP_RUNTIME_PROTECTED_ROOT:{runtime}:{protected_root}")
+    return runtime
+
+
 def state_path(task_id: str) -> Path:
     return task_dir(task_id) / "state.json"
 
@@ -147,6 +168,113 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+def _runtime_owner(task_id: str, runtime: Path) -> dict[str, str]:
+    marker = runtime / TASK_TEMP_OWNER_MARKER
+    if not marker.is_file():
+        raise HarnessError(f"WORKER_TEMP_RUNTIME_OWNER_MISSING:{marker}")
+    try:
+        owner = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise HarnessError(f"WORKER_TEMP_RUNTIME_OWNER_INVALID:{type(exc).__name__}:{exc}") from exc
+    expected = {"task_id": task_id, "runtime": str(runtime)}
+    if owner != expected:
+        raise HarnessError(f"WORKER_TEMP_RUNTIME_OWNER_MISMATCH:{marker}")
+    return owner
+
+
+def _probe_temp_runtime(runtime: Path) -> None:
+    probe = runtime / f".write-probe-{os.getpid()}-{secrets.token_hex(3)}.tmp"
+    payload = secrets.token_bytes(16)
+    try:
+        with probe.open("xb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if probe.read_bytes() != payload:
+            raise OSError("temporary runtime probe readback mismatch")
+    finally:
+        if probe.exists():
+            probe.unlink()
+
+
+def _prepare_task_temp_runtime(task_id: str) -> Path:
+    runtime = task_temp_runtime(task_id)
+    runtime.parent.mkdir(parents=True, exist_ok=True)
+    marker = runtime / TASK_TEMP_OWNER_MARKER
+    if runtime.exists():
+        if not runtime.is_dir():
+            raise HarnessError(f"WORKER_TEMP_RUNTIME_NOT_DIRECTORY:{runtime}")
+        _runtime_owner(task_id, runtime)
+    else:
+        runtime.mkdir()
+        _atomic_write(marker, _json_bytes({"task_id": task_id, "runtime": str(runtime)}))
+    (runtime / "cache").mkdir(exist_ok=True)
+    _probe_temp_runtime(runtime)
+    return runtime
+
+
+def _ensure_task_temp_runtime(task_id: str) -> Path:
+    state = load_state(task_id)
+    recorded = state.get("TASK_TEMP_RUNTIME")
+    expected: Path | None = None
+    try:
+        expected = task_temp_runtime(task_id)
+        if recorded and Path(recorded).resolve(strict=False) != expected:
+            raise HarnessError(f"WORKER_TEMP_RUNTIME_STATE_MISMATCH:{recorded}:{expected}")
+        runtime = _prepare_task_temp_runtime(task_id)
+    except (HarnessError, OSError, ValueError) as exc:
+        update_task(task_id, {
+            "TASK_TEMP_RUNTIME": str(expected or recorded or ""),
+            "TASK_TEMP_RUNTIME_STATUS": "UNAVAILABLE",
+            "TASK_TEMP_RUNTIME_OWNED": False,
+        }, event="TASK_TEMP_RUNTIME_UNAVAILABLE", detail=f"{type(exc).__name__}:{exc}")
+        raise HarnessError(f"WORKER_TEMP_RUNTIME_UNAVAILABLE:{type(exc).__name__}:{exc}") from exc
+    update_task(task_id, {
+        "TASK_TEMP_RUNTIME": str(runtime),
+        "TASK_TEMP_RUNTIME_STATUS": "READY",
+        "TASK_TEMP_RUNTIME_OWNED": True,
+    }, event="TASK_TEMP_RUNTIME_READY", detail=f"root={runtime};write_probe=PASS")
+    return runtime
+
+
+def _task_temp_environment(runtime: Path) -> dict[str, str]:
+    resolved = runtime.resolve()
+    environment = os.environ.copy()
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        environment[name] = str(resolved)
+    environment["USTQ_CACHE_ROOT"] = str(resolved / "cache")
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTEST_ADDOPTS"] = "-p no:cacheprovider"
+    return environment
+
+
+def _cleanup_task_temp_runtime(task_id: str) -> None:
+    state = load_state(task_id)
+    recorded = state.get("TASK_TEMP_RUNTIME")
+    expected: Path | None = None
+    try:
+        expected = task_temp_runtime(task_id)
+        if recorded and Path(recorded).resolve(strict=False) != expected:
+            raise HarnessError(f"WORKER_TEMP_RUNTIME_STATE_MISMATCH:{recorded}:{expected}")
+        if expected.exists():
+            if not expected.is_dir():
+                raise HarnessError(f"WORKER_TEMP_RUNTIME_NOT_DIRECTORY:{expected}")
+            _runtime_owner(task_id, expected)
+            shutil.rmtree(expected)
+        update_task(task_id, {
+            "TASK_TEMP_RUNTIME": str(expected),
+            "TASK_TEMP_RUNTIME_STATUS": "CLEANED",
+            "TASK_TEMP_RUNTIME_OWNED": False,
+        }, event="TASK_TEMP_RUNTIME_CLEANED", detail=str(expected))
+    except (HarnessError, OSError, ValueError) as exc:
+        update_task(task_id, {
+            "TASK_TEMP_RUNTIME": str(expected or recorded or ""),
+            "TASK_TEMP_RUNTIME_STATUS": "CLEANUP_FAILED",
+            "HUMAN_ATTENTION_REQUIRED": True,
+        }, event="TASK_TEMP_RUNTIME_CLEANUP_FAILED", detail=f"{type(exc).__name__}:{exc}")
+        raise HarnessError(f"WORKER_TEMP_RUNTIME_CLEANUP_FAILED:{type(exc).__name__}:{exc}") from exc
 
 
 @contextmanager
@@ -268,6 +396,9 @@ def _new_state(
         "NEXT_ACTION": "Run task-scoped R1 preflight",
         "WHY_NEXT_ACTION": "R1 guards are authoritative for overfit, frozen-asset, and Anti-Bloat safety.",
         "WORKTREE": "",
+        "TASK_TEMP_RUNTIME": "",
+        "TASK_TEMP_RUNTIME_STATUS": "NOT_PROVISIONED",
+        "TASK_TEMP_RUNTIME_OWNED": False,
         "WORKER_STATUS": "NOT_STARTED",
         "OVERFIT_GUARD": "PENDING",
         "ANTI_BLOAT": "PENDING",
@@ -830,11 +961,16 @@ def _queue_control(state: dict[str, Any], message: str) -> tuple[bool, str]:
     return result.returncode == 0, detail or f"exit={result.returncode}"
 
 
-def _codex_exec_command(worktree: Path, sandbox: str, review: bool) -> list[str]:
+def _codex_exec_command(
+    worktree: Path, sandbox: str, review: bool, writable_runtime: Path | None = None,
+) -> list[str]:
     command = [_codex_command(), "--ask-for-approval", "never", "exec"]
     if review:
         command.append("--ephemeral")
-    command += ["--json", "--sandbox", sandbox, "--cd", str(worktree), "-"]
+    command += ["--json", "--sandbox", sandbox, "--cd", str(worktree)]
+    if writable_runtime is not None:
+        command += ["--add-dir", str(writable_runtime)]
+    command.append("-")
     return command
 
 
@@ -852,7 +988,7 @@ Safety flags: {state['SAFETY_FLAGS']}
 Human steering currently in force:
 {steer}
 {correction_text}
-Work only in this isolated Git worktree. Read AGENTS.md first and use repository maps and registries. The controller already ran R1 preflight. Search before create; classify relevant matches; reuse or extend authoritative/active code, reference but never modify frozen code. Do not use 2026+ outcomes for fitting, feature/parameter/threshold/portfolio-rule search, model selection, or winner selection. Preserve PIT ordering, canonical data, external evidence, unrelated work, and the repository-local .venv prohibition. Do not fetch Moomoo history, merge branches, promote to production, or start another task.
+Work only in this isolated Git worktree. Use the inherited TEMP/TMP/TMPDIR and USTQ_CACHE_ROOT for disposable runtime files; do not create temp or cache residue in the worktree. Read AGENTS.md first and use repository maps and registries. The controller already ran R1 preflight. Search before create; classify relevant matches; reuse or extend authoritative/active code, reference but never modify frozen code. Do not use 2026+ outcomes for fitting, feature/parameter/threshold/portfolio-rule search, model selection, or winner selection. Preserve PIT ordering, canonical data, external evidence, unrelated work, and the repository-local .venv prohibition. Do not fetch Moomoo history, merge branches, promote to production, or start another task.
 
 Implement the smallest suitable change, run focused tests, inspect your diff, and stop after this goal. A research hypothesis failing economically is a valid result; do not tune against exposed holdout feedback. If the goal cannot be completed safely, preserve useful work and report the blocker.
 
@@ -869,7 +1005,7 @@ HOLDOUT_CONTAMINATION_RISK=NONE|<concise risk>
 def _review_prompt(state: dict[str, Any]) -> str:
     return f"""Perform an independent READ-ONLY review of the uncommitted changes in this isolated worktree. Do not modify any file. Human goal: {state['GOAL']}
 
-Inspect the diff and relevant repository evidence. Assess code correctness, test adequacy, PIT/leakage, exposed-2026-holdout optimization, train/validation/test roles, duplicate implementation, repository/artifact/dependency bloat, frozen assets, and goal alignment. Validation recorded by the controller: {state.get('VALIDATION_RESULTS', [])}. Guard states: overfit={state['OVERFIT_GUARD']}; anti_bloat={state['ANTI_BLOAT']}; reuse={state['REUSE_GUARD']}.
+Inspect the diff and relevant repository evidence. Source remains read-only; use the inherited external temporary runtime for harmless test or Python inspection. Assess code correctness, test adequacy, PIT/leakage, exposed-2026-holdout optimization, train/validation/test roles, duplicate implementation, repository/artifact/dependency bloat, frozen assets, and goal alignment. Validation recorded by the controller: {state.get('VALIDATION_RESULTS', [])}. Guard states: overfit={state['OVERFIT_GUARD']}; anti_bloat={state['ANTI_BLOAT']}; reuse={state['REUSE_GUARD']}.
 
 End with exactly one classification line and concise findings:
 REVIEW_STATUS=PASS|PASS_WITH_WARNINGS|FIX_REQUIRED|HUMAN_DECISION_REQUIRED
@@ -916,14 +1052,16 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
     state = load_state(task_id)
     worktree = Path(state["WORKTREE"])
     assert_registered_isolated_worktree(worktree)
+    runtime = _ensure_task_temp_runtime(task_id)
     sandbox = "read-only" if review else "workspace-write"
-    command = _codex_exec_command(worktree, sandbox, review)
+    command = _codex_exec_command(worktree, sandbox, review, runtime)
+    environment = _task_temp_environment(runtime)
     flags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
     try:
         process = subprocess.Popen(
             command, cwd=str(worktree), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
-            creationflags=flags,
+            creationflags=flags, env=environment,
         )
     except OSError as exc:
         raise HarnessError(f"CODEX_LAUNCH_FAILED:{type(exc).__name__}:{exc}") from exc
@@ -950,7 +1088,7 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
 
     update_task(
         task_id, started_fields, event=f"{kind}_STARTED",
-        detail=f"pid={process.pid};sandbox={sandbox}", mutate=mark_turn_active,
+        detail=f"pid={process.pid};sandbox={sandbox};temp_runtime={runtime}", mutate=mark_turn_active,
     )
 
     tail: deque[str] = deque(maxlen=20)
@@ -1427,7 +1565,8 @@ def _dispatch(task_id: str) -> None:
             try:
                 result = _run_codex_turn(task_id, _worker_prompt(load_state(task_id), correction))
             except HarnessError as exc:
-                _wait_human(task_id, "CODEX_WORKER_INTERFACE_FAILURE", str(exc))
+                code = "WORKER_TEMP_RUNTIME_UNAVAILABLE" if str(exc).startswith("WORKER_TEMP_RUNTIME_UNAVAILABLE:") else "CODEX_WORKER_INTERFACE_FAILURE"
+                _wait_human(task_id, code, str(exc))
                 return
             if _control_checkpoint(task_id):
                 return
@@ -1516,7 +1655,8 @@ def _dispatch(task_id: str) -> None:
             try:
                 classification = _perform_review(task_id)
             except HarnessError as exc:
-                _wait_human(task_id, "INDEPENDENT_REVIEW_INTERFACE_FAILURE", str(exc))
+                code = "WORKER_TEMP_RUNTIME_UNAVAILABLE" if str(exc).startswith("WORKER_TEMP_RUNTIME_UNAVAILABLE:") else "INDEPENDENT_REVIEW_INTERFACE_FAILURE"
+                _wait_human(task_id, code, str(exc))
                 return
             if _control_checkpoint(task_id):
                 return
@@ -1531,6 +1671,11 @@ def _dispatch(task_id: str) -> None:
                 return
         elif action == "FINALIZE":
             changes = _refresh_changes(task_id)
+            try:
+                _cleanup_task_temp_runtime(task_id)
+            except HarnessError as exc:
+                _wait_human(task_id, "WORKER_TEMP_RUNTIME_CLEANUP_FAILED", str(exc))
+                return
             def complete_all(value: dict[str, Any]) -> None:
                 _plan_update(value, "FINALIZE", "COMPLETED")
             update_task(task_id, {
@@ -1747,6 +1892,7 @@ def command_status(args: argparse.Namespace) -> int:
         "WHY_CURRENT_ACTION", "PROGRESS_SUMMARY", "LAST_COMPLETED", "NEXT_ACTION", "WHY_NEXT_ACTION", "OVERFIT_GUARD",
         "TASK_KIND", "TASK_KIND_SOURCE", "AUTO_SCOPE_SUGGESTION", "TASK_SCOPE", "SAFETY_FLAGS",
         "ANTI_BLOAT", "ANTI_BLOAT_TASK_DELTA", "REUSE_GUARD", "WORKER_STATUS",
+        "TASK_TEMP_RUNTIME", "TASK_TEMP_RUNTIME_STATUS",
         "HUMAN_ATTENTION_REQUIRED", "LAST_UPDATED_AT",
     )
     for key in keys:
@@ -1884,6 +2030,16 @@ def command_review(args: argparse.Namespace) -> int:
                 "WHY_NEXT_ACTION": "A manual review command does not merge, delete, or redispatch the task.",
                 "HUMAN_ATTENTION_REQUIRED": False,
             }, new_state=previous, event="HUMAN_REVIEW_COMPLETED", detail=classification)
+            if previous == "COMPLETED":
+                try:
+                    _cleanup_task_temp_runtime(task_id)
+                except HarnessError as exc:
+                    classification = "HUMAN_DECISION_REQUIRED"
+                    update_task(task_id, {
+                        "NEXT_ACTION": "Human inspects the preserved reviewer runtime and cleanup failure",
+                        "WHY_NEXT_ACTION": str(exc),
+                        "HUMAN_ATTENTION_REQUIRED": True,
+                    })
     print(f"TASK_ID={task_id}\nREVIEW_STATUS={classification}\nHARNESS_STATE={load_state(task_id)['HARNESS_STATE']}")
     return 0 if classification in {"PASS", "PASS_WITH_WARNINGS"} else 2
 
