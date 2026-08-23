@@ -49,10 +49,6 @@ MAX_TIMELINE_BYTES = 262_144
 MAX_LIST_ITEMS = 100
 MAX_TEXT = 8_000
 DEFAULT_MAX_CORRECTIONS = 2
-CODEX_PHASE_COMMANDS = (
-    ("TARGETED_TEST", re.compile(r"(?:pytest|unittest|test_[\w.-]+\.py)", re.I)),
-    ("SELF_REVIEW", re.compile(r"git\s+(?:diff|status)", re.I)),
-)
 DEPENDENCY_FILES = {
     "requirements.txt", "requirements.lock.txt", "pyproject.toml", "poetry.lock",
     "pdm.lock", "uv.lock", "environment.yml", "environment.yaml",
@@ -299,8 +295,32 @@ def _plan_update(state: dict[str, Any], phase: str, status: str) -> None:
         if row["phase"] == phase:
             row["status"] = status
             break
+    _sync_plan_progress(state)
+
+
+def _sync_plan_progress(state: dict[str, Any]) -> None:
     completed = sum(row["status"] == "COMPLETED" for row in state["PLAN"])
     state["PROGRESS_SUMMARY"] = f"{completed}/{len(state['PLAN'])} plan steps completed"
+    active = next((row["phase"] for row in state["PLAN"] if row["status"] == "IN_PROGRESS"), "")
+    if active:
+        state["PROGRESS_SUMMARY"] += f"; {active} in progress"
+
+
+def _reset_correction_plan(state: dict[str, Any]) -> None:
+    for row in state["PLAN"]:
+        if row["phase"] in {"IMPLEMENT", "TARGETED_TEST", "INDEPENDENT_REVIEW"}:
+            row["status"] = "PENDING"
+    _sync_plan_progress(state)
+
+
+def _close_active_plan(state: dict[str, Any], status: str) -> None:
+    changed = False
+    for row in state["PLAN"]:
+        if row["status"] == "IN_PROGRESS":
+            row["status"] = status
+            changed = True
+    if changed:
+        _sync_plan_progress(state)
 
 
 def _current_task_id(explicit: str | None) -> str:
@@ -348,39 +368,75 @@ def hard_guard_conflicts(instruction: str) -> list[str]:
     return conflicts
 
 
-def _has_real_frozen_dependency(goal: str) -> bool:
-    """Treat prohibitions as constraints while keeping real frozen use conservative."""
-    for clause in re.split(r"[.;\n]+", goal.lower()):
-        if "frozen" not in clause:
-            continue
-        before_frozen = clause.split("frozen", 1)[0]
-        if re.search(
-            r"\b(?:do\s+not|don't|never|must\s+not|should\s+not|avoid|without|preserve|protect)\b",
-            before_frozen,
-        ):
-            continue
-        if re.search(
-            r"\bfrozen\b.{0,80}\b(?:do\s+not|must\s+not|should\s+not|cannot|can't)\b"
-            r".{0,40}\b(?:touch|modify|overwrite|delete)\b",
-            clause,
-        ):
-            continue
-        return True
-    return False
+def _positive_scope_text(goal: str) -> str:
+    """Drop clauses that only prohibit a scoped activity; retain positive work."""
+    negative = re.compile(
+        r"\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|will\s+not|"
+        r"is\s+not|are\s+not|not\s+(?:required|needed|applicable|relevant)|"
+        r"no\s+(?:frozen|research|models?|training|evaluation|holdout|2026)|"
+        r"out\s+of\s+scope|prohibited|forbidden|disallowed|reject|exclude|avoid)\b",
+        re.I,
+    )
+    clauses: list[str] = []
+    for sentence in re.split(r"[.;\n]+", goal):
+        # Preserve an explicitly contrasted positive request without parsing arbitrary prose.
+        parts = re.split(r"\b(?:but|however)\b|,\s+and\s+(?=(?:the\s+)?(?:requested|actual)\b)", sentence, flags=re.I)
+        for part in parts:
+            part = re.sub(
+                r"\b(?:without|no)\s+(?:model\s+)?(?:research|training|fitting|tuning|optimization|selection|backtesting)\b",
+                " ",
+                part,
+                flags=re.I,
+            ).strip()
+            if part and not negative.search(part):
+                clauses.append(part)
+    return "\n".join(clauses)
+
+
+def _scope_clause_matches(text: str, *patterns: re.Pattern[str]) -> bool:
+    return any(all(pattern.search(clause) for pattern in patterns) for clause in text.splitlines())
 
 
 def infer_scope(goal: str, requested: str) -> str:
     low = goal.lower()
-    governance_words = re.search(r"prevent|forbid|guard|detect|reject|ensure|test|audit|protect", low)
-    if hard_guard_conflicts(goal) or ("2026" in low and re.search(r"tun|optim|select|threshold|train|fit", low) and not governance_words):
+    maintenance = bool(re.search(r"\b(?:harness|maintenance)\b", low))
+    positive = _positive_scope_text(goal)
+    scope_text = re.sub(
+        r"\b(?:pre[- ]?2026(?:-research)?|2026-(?:evaluation|optimization)|frozen-dependent|"
+        r"independent-code|historical-fetch)\b",
+        " ",
+        positive,
+        flags=re.I,
+    )
+    actual_action = re.compile(
+        r"\b(?:use|run|evaluate|validate|assess|analy[sz]e|measure|monitor|test|compare|"
+        r"inspect|read|depend(?:s|ed|ing)?\s+on|rely(?:ies|ied|ing)?\s+on|requires?)\b",
+        re.I,
+    )
+    year = re.compile(r"\b2026\+?\b", re.I)
+    optimization = re.compile(r"\b(?:tun(?:e|ing)|optim(?:ize|ization|izing)|select(?:ion|ing)?|threshold|train(?:ing)?|fit(?:ting)?)\b", re.I)
+    optimization_patterns = (year, optimization, actual_action) if maintenance else (year, optimization)
+    if hard_guard_conflicts(goal) or _scope_clause_matches(scope_text, *optimization_patterns):
         return "2026-optimization"
-    if "2026" in low or "holdout" in low or "prospective" in low or "forward" in low:
+    evaluation = re.compile(r"\b(?:2026\+?|holdout|prospective|forward(?:-monitoring)?|evaluation)\b", re.I)
+    evaluation_patterns = (evaluation, actual_action) if maintenance else (evaluation,)
+    if _scope_clause_matches(scope_text, *evaluation_patterns):
         return "2026-evaluation"
-    if "historical" in low and re.search(r"fetch|download|moomoo|quota", low):
+    if _scope_clause_matches(scope_text, re.compile(r"\bhistorical\b", re.I), re.compile(r"\b(?:fetch|download)\w*\b", re.I)):
         return "historical-fetch"
-    if _has_real_frozen_dependency(goal):
+    frozen = re.compile(r"\bfrozen\b", re.I)
+    frozen_patterns = (frozen, actual_action) if maintenance else (frozen,)
+    if _scope_clause_matches(scope_text, *frozen_patterns):
         return "frozen-dependent"
-    if re.search(r"research|model|feature|backtest|training|pit|leakage", low):
+    research = re.compile(r"\b(?:research(?:ing|ed)?|models?|modeling|features?|backtests?|backtesting|train(?:ing|ed)?|pit|leakage)\b", re.I)
+    research_action = re.compile(
+        r"\b(?:conduct|perform|run|execute|start|continue|undertake|train|fit|refit|tune|"
+        r"optimize|backtest|depend(?:s|ed|ing)?\s+on|rely(?:ies|ied|ing)?\s+on|requires?|"
+        r"use|repair|implement|extend|build|validate|evaluate)\b",
+        re.I,
+    )
+    research_patterns = (research, research_action) if maintenance else (research,)
+    if _scope_clause_matches(scope_text, *research_patterns):
         return "pre2026-research"
     return requested
 
@@ -586,6 +642,44 @@ def _git_changes(worktree: Path) -> dict[str, Any]:
     }
 
 
+def _record_worker_checkpoint(task_id: str, phase: str) -> None:
+    descriptions = {
+        "TARGETED_TEST": (
+            "Worker completed a focused-test checkpoint and remains active",
+            "Focused tests provide worker-side evidence before controller validation.",
+            "WORKER_TARGETED_TEST_CHECKPOINT",
+        ),
+        "SELF_REVIEW": (
+            "Worker completed a diff-inspection checkpoint and remains active",
+            "Worker self-review checks scope, correctness, reuse, and bloat before handoff.",
+            "WORKER_SELF_REVIEW_CHECKPOINT",
+        ),
+    }
+    if phase not in descriptions:
+        raise HarnessError(f"UNKNOWN_WORKER_CHECKPOINT:{phase}")
+    state = load_state(task_id)
+    changes = _git_changes(Path(state["WORKTREE"]))
+    current_action, why_current, last_completed = descriptions[phase]
+
+    def mark_implementation_active(value: dict[str, Any]) -> None:
+        _plan_update(value, "IMPLEMENT", "IN_PROGRESS")
+
+    update_task(task_id, {
+        "CURRENT_PHASE": phase,
+        "CURRENT_ACTION": current_action,
+        "WHY_CURRENT_ACTION": why_current,
+        "LAST_COMPLETED": last_completed,
+        "NEXT_ACTION": "Finish the worker turn and report its validation",
+        "WHY_NEXT_ACTION": "The worker must report tests and safety markers before controller validation.",
+        "FILES_CHANGED": changes["changed"],
+        "FILES_CREATED": changes["created"],
+        "DEPENDENCIES_ADDED": changes["dependencies"],
+    }, event=f"WORKER_{phase}", detail=(
+        f"changed={changes['changed_count']};created={changes['created_count']};"
+        "high-signal phase inferred from Codex event stream"
+    ), mutate=mark_implementation_active)
+
+
 def _codex_command() -> str:
     override = os.environ.get("USTQ_CODEX_COMMAND")
     if override:
@@ -658,9 +752,33 @@ def _parse_marker(text: str, key: str) -> str:
 
 
 def _phase_from_command(command: str) -> str | None:
-    for phase, pattern in CODEX_PHASE_COMMANDS:
-        if pattern.search(command):
-            return phase
+    text = command.strip()
+    for _ in range(3):
+        if text.startswith("&"):
+            text = text[1:].lstrip()
+        match = re.match(r'''(?x)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))(.*)\Z''', text, re.S)
+        if not match:
+            return None
+        executable = next(value for value in match.groups()[:3] if value is not None)
+        arguments = match.group(4).strip()
+        head = re.split(r"[\\/]", executable)[-1].lower()
+        if head in {"powershell", "powershell.exe", "pwsh", "pwsh.exe", "cmd", "cmd.exe", "bash", "sh"}:
+            shell_command = re.search(r"(?:^|\s)(?:-command|-c|/c)\s+(.+)\Z", arguments, re.I | re.S)
+            if not shell_command:
+                return None
+            text = shell_command.group(1).strip()
+            if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+                text = text[1:-1].strip()
+            continue
+        if re.fullmatch(r"(?:python(?:\d+(?:\.\d+)?)?|py)(?:\.exe)?", head):
+            if re.search(r"(?:^|\s)-m\s+(?:pytest|unittest)(?:\s|\Z)", arguments, re.I):
+                return "TARGETED_TEST"
+            return None
+        if re.fullmatch(r"pytest(?:\.exe)?", head):
+            return "TARGETED_TEST"
+        if re.fullmatch(r"git(?:\.exe)?", head) and re.match(r"diff(?:\s|\Z)", arguments, re.I):
+            return "SELF_REVIEW"
+        return None
     return None
 
 
@@ -683,14 +801,25 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
     process.stdin.write(prompt)
     process.stdin.close()
     kind = "REVIEW" if review else "WORKER"
-    update_task(task_id, {
+    started_fields = {
         "WORKER_STATUS": "REVIEW_RUNNING" if review else "RUNNING",
         "WORKER_PID": process.pid,
         "ACTIVE_PROCESS_KIND": kind,
         "ACTIVE_THREAD_ID": "",
+        "CURRENT_PHASE": "INDEPENDENT_REVIEW" if review else "IMPLEMENT",
         "CURRENT_ACTION": f"Codex {kind.lower()} turn is active in the isolated worktree",
         "WHY_CURRENT_ACTION": "Read-only independence is required for review." if review else "The bounded worker may implement only the authorized goal after preflight and reuse discovery.",
-    }, event=f"{kind}_STARTED", detail=f"pid={process.pid};sandbox={sandbox}")
+        "NEXT_ACTION": f"Complete the bounded Codex {kind.lower()} turn",
+        "WHY_NEXT_ACTION": "The completed turn must be classified before another lifecycle action is dispatched.",
+    }
+
+    def mark_turn_active(value: dict[str, Any]) -> None:
+        _plan_update(value, "INDEPENDENT_REVIEW" if review else "IMPLEMENT", "IN_PROGRESS")
+
+    update_task(
+        task_id, started_fields, event=f"{kind}_STARTED",
+        detail=f"pid={process.pid};sandbox={sandbox}", mutate=mark_turn_active,
+    )
 
     tail: deque[str] = deque(maxlen=20)
     final_message = ""
@@ -719,14 +848,10 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
         if item.get("type") == "command_execution":
             command_text = str(item.get("command", ""))
             phase = _phase_from_command(command_text)
-            if phase and phase != seen_phase and not review:
+            if phase and phase != seen_phase and not review and event.get("type") == "item.completed":
                 seen_phase = phase
-                update_task(task_id, {
-                    "CURRENT_PHASE": phase,
-                    "CURRENT_ACTION": "Worker is running targeted tests" if phase == "TARGETED_TEST" else "Worker is inspecting its diff",
-                    "WHY_CURRENT_ACTION": "Focused validation is required before review." if phase == "TARGETED_TEST" else "Self-review catches defects, leakage, duplication, and bloat before independent review.",
-                }, event=f"WORKER_{phase}", detail="High-signal phase inferred from Codex event stream")
-            if re.search(r"(?:pytest|unittest|test_[\w.-]+\.py)", command_text, re.I) and event.get("type") == "item.completed":
+                _record_worker_checkpoint(task_id, phase)
+            if phase == "TARGETED_TEST" and event.get("type") == "item.completed":
                 tests.append(f"{command_text[:500]} | exit={item.get('exit_code', 'UNKNOWN')}")
         current = load_state(task_id)
         if current["PAUSE_REQUESTED"] or current["STOP_REQUESTED"]:
@@ -735,14 +860,29 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
     exit_code = process.wait()
     if not final_message and tail:
         final_message = "\n".join(tail)[-MAX_TEXT:]
-    update_task(task_id, {
-        "WORKER_STATUS": f"EXITED_{exit_code}",
+    completed_fields = {
+        "WORKER_STATUS": f"REVIEW_EXITED_{exit_code}" if review else f"EXITED_{exit_code}",
         "WORKER_PID": None,
         "ACTIVE_PROCESS_KIND": "",
         "ACTIVE_THREAD_ID": "",
         "WORKER_FINDINGS" if not review else "REVIEW_FINDINGS": final_message,
         "TESTS_RUN": (load_state(task_id).get("TESTS_RUN", []) + tests)[-MAX_LIST_ITEMS:],
-    }, event=f"{kind}_COMPLETED", detail=f"exit={exit_code}")
+        "CURRENT_PHASE": "INDEPENDENT_REVIEW" if review else "IMPLEMENT",
+        "CURRENT_ACTION": f"Codex {kind.lower()} turn completed; its result awaits classification",
+        "WHY_CURRENT_ACTION": "Process completion is recorded separately from acceptance of its findings.",
+        "LAST_COMPLETED": f"{kind}_TURN_COMPLETED",
+        "NEXT_ACTION": f"Classify the completed {kind.lower()} result",
+        "WHY_NEXT_ACTION": "The controller must choose validation, correction, finalization, or human review from explicit result markers.",
+    }
+
+    def mark_turn_completed(value: dict[str, Any]) -> None:
+        if not review:
+            _plan_update(value, "IMPLEMENT", "COMPLETED")
+
+    update_task(
+        task_id, completed_fields, event=f"{kind}_COMPLETED", detail=f"exit={exit_code}",
+        mutate=mark_turn_completed,
+    )
     if exit_code and re.search(r"failed to initialize (?:in-process )?app-server|not logged in|authentication required|usage limit|rate limit", final_message, re.I):
         raise HarnessError(f"CODEX_INTERFACE_UNAVAILABLE:{final_message[-2_000:]}")
     return {"exit_code": exit_code, "message": final_message, "tests": tests}
@@ -794,7 +934,11 @@ def _validate_targeted(task_id: str) -> tuple[bool, str]:
     if not candidates:
         return True, "No paired automatic test mapping; independent review must assess worker validation."
     python = _storage_paths().python_exe
-    result = _run([str(python), "-B", "-m", "pytest", "-q", *candidates], worktree, 300)
+    result = _run(
+        [str(python), "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", *candidates],
+        worktree,
+        300,
+    )
     summary = (result.stdout + "\n" + result.stderr).strip()[-4_000:]
     row = f"{' '.join(candidates)} | exit={result.returncode} | {summary}"
     update_task(task_id, {"TESTS_RUN": (tests + [row])[-MAX_LIST_ITEMS:]})
@@ -859,8 +1003,10 @@ def _control_checkpoint(task_id: str) -> bool:
 def _block(task_id: str, code: str, detail: str) -> None:
     def mutate(state: dict[str, Any]) -> None:
         state["BLOCKERS"] = (state.get("BLOCKERS", []) + [{"code": code, "detail": detail[:2_000]}])[-MAX_LIST_ITEMS:]
+        _close_active_plan(state, "FAILED")
 
     update_task(task_id, {
+        "CURRENT_PHASE": "BLOCKED",
         "CURRENT_ACTION": "Execution blocked; state and useful work are preserved",
         "WHY_CURRENT_ACTION": detail[:MAX_TEXT],
         "NEXT_ACTION": "Human inspects blocker and explicitly resumes or stops",
@@ -873,14 +1019,35 @@ def _block(task_id: str, code: str, detail: str) -> None:
 def _wait_human(task_id: str, code: str, detail: str) -> None:
     def mutate(state: dict[str, Any]) -> None:
         state["BLOCKERS"] = (state.get("BLOCKERS", []) + [{"code": code, "detail": detail[:2_000]}])[-MAX_LIST_ITEMS:]
+        _close_active_plan(state, "PENDING")
 
     update_task(task_id, {
+        "CURRENT_PHASE": "WAITING_HUMAN",
         "CURRENT_ACTION": "Waiting for human decision",
         "WHY_CURRENT_ACTION": detail[:MAX_TEXT],
         "NEXT_ACTION": "Human steers, reviews, resumes, or stops",
         "WHY_NEXT_ACTION": "The bounded autonomous loop cannot safely choose beyond this point.",
         "HUMAN_ATTENTION_REQUIRED": True,
+        "WORKER_STATUS": "WAITING_HUMAN",
     }, new_state="WAITING_HUMAN", event="WAITING_HUMAN", detail=f"{code}:{detail}", mutate=mutate)
+
+
+def _request_correction(task_id: str, source: str, detail: str) -> None:
+    state = load_state(task_id)
+    attempt = state["CORRECTION_ATTEMPTS"] + 1
+    update_task(task_id, {
+        "CURRENT_PHASE": "CORRECTION_REQUESTED",
+        "CURRENT_ACTION": "A bounded correction is requested; worker redispatch is pending",
+        "WHY_CURRENT_ACTION": f"{source} found a software defect within the authorized task.",
+        "LAST_COMPLETED": f"{source}_CORRECTION_REQUESTED",
+        "NEXT_ACTION": "Dispatch the bounded correction worker",
+        "WHY_NEXT_ACTION": "The preserved worktree must be corrected before validation and review can pass.",
+        "NEXT_ACTION_CODE": "WORKER",
+        "CORRECTION_ATTEMPTS": attempt,
+        "WORKER_STATUS": "CORRECTION_PENDING",
+    }, new_state="RUNNING", event=f"{source}_CORRECTION_REQUESTED", detail=(
+        f"attempt={attempt};{detail[:1_000]}"
+    ), mutate=_reset_correction_plan)
 
 
 def _review_classification(message: str, exit_code: int) -> str:
@@ -895,23 +1062,51 @@ def _perform_review(task_id: str) -> str:
     state = load_state(task_id)
     worktree = Path(state["WORKTREE"])
     before = _repo_status_fingerprint(worktree)
+    def mark_review_active(value: dict[str, Any]) -> None:
+        _plan_update(value, "INDEPENDENT_REVIEW", "IN_PROGRESS")
+
     update_task(task_id, {
+        "WORKER_STATUS": "REVIEW_STARTING",
         "CURRENT_PHASE": "INDEPENDENT_REVIEW",
         "CURRENT_ACTION": "Launching a separate read-only Codex review",
         "WHY_CURRENT_ACTION": "The reviewer must assess correctness and all three R1 pillars without modifying code.",
-    }, new_state="REVIEWING", event="REVIEW_STARTED", detail="sandbox=read-only;new ephemeral context")
+        "NEXT_ACTION": "Complete and classify the independent review",
+        "WHY_NEXT_ACTION": "Only a completed read-only review can authorize finalization or a bounded correction.",
+    }, new_state="REVIEWING", event="REVIEW_STARTED", detail="sandbox=read-only;new ephemeral context", mutate=mark_review_active)
     result = _run_codex_turn(task_id, _review_prompt(load_state(task_id)), review=True)
     after = _repo_status_fingerprint(worktree)
     if before != after:
         _block(task_id, "READ_ONLY_REVIEW_MUTATED_WORKTREE", f"before={before};after={after}")
         return "HUMAN_DECISION_REQUIRED"
     classification = _review_classification(result["message"], result["exit_code"])
+    if classification in {"PASS", "PASS_WITH_WARNINGS"}:
+        next_action = "Finalize and preserve the reviewed worktree"
+        why_next = "The independent review accepted the bounded change."
+        next_code = "FINALIZE"
+    elif classification == "FIX_REQUIRED":
+        next_action = "Request a bounded correction worker"
+        why_next = "The independent review found a correctable defect within scope."
+        next_code = "WORKER"
+    else:
+        next_action = "Wait for a human decision on the review findings"
+        why_next = "The review could not safely authorize correction or completion autonomously."
+        next_code = "WORKER"
+
+    def mark_review_completed(value: dict[str, Any]) -> None:
+        _plan_update(value, "INDEPENDENT_REVIEW", "COMPLETED")
+
     update_task(task_id, {
+        "WORKER_STATUS": f"REVIEW_EXITED_{result['exit_code']}",
+        "CURRENT_PHASE": "INDEPENDENT_REVIEW",
+        "CURRENT_ACTION": f"Independent review completed with {classification}",
+        "WHY_CURRENT_ACTION": "The read-only review turn ended and its explicit classification was recorded.",
         "LAST_REVIEW_STATUS": classification,
         "REVIEW_REQUESTED": False,
         "LAST_COMPLETED": "INDEPENDENT_REVIEW_COMPLETED",
-        "NEXT_ACTION_CODE": "FINALIZE" if classification in {"PASS", "PASS_WITH_WARNINGS"} else "WORKER",
-    }, event="REVIEW_CLASSIFIED", detail=classification)
+        "NEXT_ACTION": next_action,
+        "WHY_NEXT_ACTION": why_next,
+        "NEXT_ACTION_CODE": next_code,
+    }, event="REVIEW_CLASSIFIED", detail=classification, mutate=mark_review_completed)
     return classification
 
 
@@ -999,13 +1194,6 @@ def _dispatch(task_id: str) -> None:
             except HarnessError as exc:
                 _wait_human(task_id, "CODEX_WORKER_INTERFACE_FAILURE", str(exc))
                 return
-            def complete_worker(value: dict[str, Any]) -> None:
-                _plan_update(value, "IMPLEMENT", "COMPLETED")
-            update_task(task_id, {
-                "LAST_COMPLETED": "WORKER_TURN_COMPLETED", "NEXT_ACTION": "Run targeted validation and post-change guards",
-                "WHY_NEXT_ACTION": "Worker output is not accepted without mechanical validation.",
-                "NEXT_ACTION_CODE": "VALIDATE",
-            }, mutate=complete_worker)
             if _control_checkpoint(task_id):
                 return
             outcome = _worker_result(load_state(task_id), result["exit_code"])
@@ -1021,30 +1209,48 @@ def _dispatch(task_id: str) -> None:
                 if state["CORRECTION_ATTEMPTS"] >= state["MAX_CORRECTION_ATTEMPTS"]:
                     _wait_human(task_id, "BOUNDED_CORRECTION_LIMIT_REACHED", f"attempts={state['CORRECTION_ATTEMPTS']}")
                     return
-                update_task(task_id, {"CORRECTION_ATTEMPTS": state["CORRECTION_ATTEMPTS"] + 1, "NEXT_ACTION_CODE": "WORKER"}, event="SOFTWARE_CORRECTION_REQUESTED", detail="Worker reported software failure")
-            elif outcome == "RESEARCH_FAILURE":
-                update_task(task_id, {"NEXT_ACTION_CODE": "VALIDATE"}, event="RESEARCH_FAILURE_ACCEPTED", detail="No automatic parameter or model tuning will be dispatched")
+                _request_correction(task_id, "SOFTWARE", "Worker reported software failure")
+            else:
+                update_task(task_id, {
+                    "CURRENT_PHASE": "IMPLEMENT",
+                    "CURRENT_ACTION": f"Worker turn completed and {outcome.lower().replace('_', ' ')} was accepted",
+                    "WHY_CURRENT_ACTION": "The worker process exited and its explicit safety/result markers were classified.",
+                    "LAST_COMPLETED": "WORKER_TURN_COMPLETED",
+                    "NEXT_ACTION": "Run targeted validation and post-change guards",
+                    "WHY_NEXT_ACTION": "Worker output is not accepted without mechanical validation.",
+                    "NEXT_ACTION_CODE": "VALIDATE",
+                }, event="WORKER_RESULT_ACCEPTED", detail=outcome)
         elif action == "VALIDATE":
+            def mark_validation_active(value: dict[str, Any]) -> None:
+                _plan_update(value, "TARGETED_TEST", "IN_PROGRESS")
+
             update_task(task_id, {
                 "CURRENT_PHASE": "TARGETED_TEST", "CURRENT_ACTION": "Inventorying diff and running targeted validation",
                 "WHY_CURRENT_ACTION": "Changed code, R1 guards, dependencies, and creation justification must be checked before review.",
-            }, event="TARGETED_VALIDATION_STARTED", detail="No data fetch or retraining is launched by the controller")
+                "NEXT_ACTION": "Complete targeted tests and post-change guards",
+                "WHY_NEXT_ACTION": "Both mechanical tests and applicable R1 guards must complete before review.",
+            }, event="TARGETED_VALIDATION_STARTED", detail="No data fetch or retraining is launched by the controller", mutate=mark_validation_active)
             changes = _refresh_changes(task_id)
             if load_state(task_id)["REUSE_GUARD"].startswith("HARD_BLOCKER"):
                 _wait_human(task_id, "NEW_COMPONENT_JUSTIFICATION_REQUIRED", ",".join(changes["created"]))
                 return
             passed, validation = _validate_targeted(task_id)
             post = _run_preflight_for(task_id, Path(load_state(task_id)["WORKTREE"]))
+            validation_passed = passed and not post["result"]["applicable_hard_blocker_count"]
             def complete_validation(value: dict[str, Any]) -> None:
-                _plan_update(value, "TARGETED_TEST", "COMPLETED" if passed and not post["result"]["applicable_hard_blocker_count"] else "FAILED")
+                _plan_update(value, "TARGETED_TEST", "COMPLETED" if validation_passed else "FAILED")
             update_task(task_id, {
+                "CURRENT_PHASE": "TARGETED_TEST",
+                "CURRENT_ACTION": f"Targeted validation completed with {'PASS' if validation_passed else 'FAIL'}",
+                "WHY_CURRENT_ACTION": "The controller recorded focused tests and the post-change R1 guard result.",
                 "OVERFIT_GUARD": post["overfit"], "ANTI_BLOAT": post["anti"],
                 "REPO_BYTES_AFTER": post["bytes"],
                 "REPO_SIZE_DELTA_BYTES": (post["bytes"] - state.get("REPO_BYTES_BEFORE")) if post["bytes"] is not None and state.get("REPO_BYTES_BEFORE") is not None else None,
                 "VALIDATION_RESULTS": (load_state(task_id).get("VALIDATION_RESULTS", []) + [validation[:4_000], post["result"]["preflight_status"]])[-MAX_LIST_ITEMS:],
-                "LAST_COMPLETED": "TARGETED_VALIDATION_COMPLETED", "NEXT_ACTION": "Run independent read-only review",
-                "WHY_NEXT_ACTION": "Material changes require correctness, leakage, reuse, and bloat assessment.",
-                "NEXT_ACTION_CODE": "REVIEW",
+                "LAST_COMPLETED": "TARGETED_VALIDATION_COMPLETED",
+                "NEXT_ACTION": "Run independent read-only review" if validation_passed else "Request a bounded correction or report the hard blocker",
+                "WHY_NEXT_ACTION": "Material changes require correctness, leakage, reuse, and bloat assessment." if validation_passed else "Failed validation cannot advance to acceptance.",
+                "NEXT_ACTION_CODE": "REVIEW" if validation_passed else "WORKER",
             }, event="TARGETED_VALIDATION_COMPLETED", detail=f"tests={'PASS' if passed else 'FAIL'};preflight={post['result']['preflight_status']}", mutate=complete_validation)
             if post["result"]["applicable_hard_blocker_count"]:
                 _block(task_id, "POST_CHANGE_R1_HARD_BLOCKER", post["result"]["preflight_status"])
@@ -1054,16 +1260,19 @@ def _dispatch(task_id: str) -> None:
                 if state["CORRECTION_ATTEMPTS"] >= state["MAX_CORRECTION_ATTEMPTS"]:
                     _wait_human(task_id, "BOUNDED_CORRECTION_LIMIT_REACHED", validation)
                     return
-                update_task(task_id, {
-                    "CORRECTION_ATTEMPTS": state["CORRECTION_ATTEMPTS"] + 1, "NEXT_ACTION_CODE": "WORKER",
-                }, event="SOFTWARE_CORRECTION_REQUESTED", detail=validation[:1_000])
+                _request_correction(task_id, "TARGETED_VALIDATION", validation)
         elif action == "REVIEW":
             changes = _git_changes(Path(state["WORKTREE"]))
             if not changes["changed"] and state["TASK_SCOPE"] == "independent-code" and not state["REVIEW_REQUESTED"]:
                 def skip_review(value: dict[str, Any]) -> None:
                     _plan_update(value, "INDEPENDENT_REVIEW", "COMPLETED")
                 update_task(task_id, {
+                    "CURRENT_PHASE": "INDEPENDENT_REVIEW",
+                    "CURRENT_ACTION": "Independent review was not warranted because the worktree has no changes",
+                    "WHY_CURRENT_ACTION": "A no-change independent-code task has no material diff to review.",
                     "LAST_REVIEW_STATUS": "NOT_WARRANTED_NO_CHANGES", "LAST_COMPLETED": "REVIEW_SKIPPED_NO_CHANGES",
+                    "NEXT_ACTION": "Finalize and preserve the no-change worktree",
+                    "WHY_NEXT_ACTION": "All applicable lifecycle checks are complete.",
                     "NEXT_ACTION_CODE": "FINALIZE",
                 }, event="REVIEW_NOT_WARRANTED", detail="No worktree changes", mutate=skip_review)
                 continue
@@ -1072,9 +1281,6 @@ def _dispatch(task_id: str) -> None:
             except HarnessError as exc:
                 _wait_human(task_id, "INDEPENDENT_REVIEW_INTERFACE_FAILURE", str(exc))
                 return
-            def complete_review(value: dict[str, Any]) -> None:
-                _plan_update(value, "INDEPENDENT_REVIEW", "COMPLETED")
-            update_task(task_id, mutate=complete_review)
             if _control_checkpoint(task_id):
                 return
             if classification == "FIX_REQUIRED":
@@ -1082,9 +1288,7 @@ def _dispatch(task_id: str) -> None:
                 if state["CORRECTION_ATTEMPTS"] >= state["MAX_CORRECTION_ATTEMPTS"]:
                     _wait_human(task_id, "BOUNDED_CORRECTION_LIMIT_REACHED", state.get("REVIEW_FINDINGS", ""))
                     return
-                update_task(task_id, {
-                    "CORRECTION_ATTEMPTS": state["CORRECTION_ATTEMPTS"] + 1, "NEXT_ACTION_CODE": "WORKER",
-                }, new_state="RUNNING", event="REVIEW_CORRECTION_REQUESTED", detail=f"attempt={state['CORRECTION_ATTEMPTS'] + 1}")
+                _request_correction(task_id, "REVIEW", state.get("REVIEW_FINDINGS", ""))
             elif classification == "HUMAN_DECISION_REQUIRED":
                 _wait_human(task_id, "REVIEW_HUMAN_DECISION_REQUIRED", load_state(task_id).get("REVIEW_FINDINGS", ""))
                 return
@@ -1093,11 +1297,13 @@ def _dispatch(task_id: str) -> None:
             def complete_all(value: dict[str, Any]) -> None:
                 _plan_update(value, "FINALIZE", "COMPLETED")
             update_task(task_id, {
-                "CURRENT_PHASE": "FINALIZE", "CURRENT_ACTION": "Task complete; isolated worktree preserved for human integration",
+                "CURRENT_PHASE": "COMPLETED", "CURRENT_ACTION": "Task complete; isolated worktree preserved for human integration",
                 "WHY_CURRENT_ACTION": "R2 stops after one goal and never auto-merges or deletes useful changes.",
                 "LAST_COMPLETED": "AUTHORIZED_TASK_COMPLETED", "NEXT_ACTION": "Human reviews the diff and chooses whether to integrate",
                 "WHY_NEXT_ACTION": "Integration into the primary tree requires explicit human action.",
                 "NEXT_ACTION_CODE": "DONE", "HUMAN_ATTENTION_REQUIRED": False,
+                "WORKER_STATUS": "COMPLETED", "WORKER_PID": None,
+                "ACTIVE_PROCESS_KIND": "", "ACTIVE_THREAD_ID": "",
                 "FILES_CHANGED": changes["changed"], "FILES_CREATED": changes["created"], "DEPENDENCIES_ADDED": changes["dependencies"],
             }, new_state="COMPLETED", event="TASK_COMPLETED", detail=f"worktree_preserved={state['WORKTREE']}", mutate=complete_all)
             return
@@ -1221,7 +1427,7 @@ def command_status(args: argparse.Namespace) -> int:
     state = recover_if_interrupted(task_id)
     keys = (
         "TASK_ID", "HARNESS_STATE", "GOAL", "CURRENT_TASK", "CURRENT_PHASE", "CURRENT_ACTION",
-        "WHY_CURRENT_ACTION", "LAST_COMPLETED", "NEXT_ACTION", "WHY_NEXT_ACTION", "OVERFIT_GUARD",
+        "WHY_CURRENT_ACTION", "PROGRESS_SUMMARY", "LAST_COMPLETED", "NEXT_ACTION", "WHY_NEXT_ACTION", "OVERFIT_GUARD",
         "ANTI_BLOAT", "REUSE_GUARD", "WORKER_STATUS", "HUMAN_ATTENTION_REQUIRED", "LAST_UPDATED_AT",
     )
     for key in keys:
@@ -1348,8 +1554,17 @@ def command_review(args: argparse.Namespace) -> int:
         print(f"TASK_ID={task_id}\nREVIEW_STATUS={classification}\nHARNESS_STATE={load_state(task_id)['HARNESS_STATE']}")
         return 0 if classification in {"PASS", "PASS_WITH_WARNINGS"} else 2
     if current["HARNESS_STATE"] != "BLOCKED":
-        target = "WAITING_HUMAN" if classification in {"FIX_REQUIRED", "HUMAN_DECISION_REQUIRED"} else previous
-        update_task(task_id, {"HUMAN_ATTENTION_REQUIRED": target == "WAITING_HUMAN"}, new_state=target, event="HUMAN_REVIEW_COMPLETED", detail=classification)
+        if classification in {"FIX_REQUIRED", "HUMAN_DECISION_REQUIRED"}:
+            _wait_human(task_id, f"HUMAN_REVIEW_{classification}", current.get("REVIEW_FINDINGS", ""))
+        else:
+            update_task(task_id, {
+                "CURRENT_PHASE": "INDEPENDENT_REVIEW",
+                "CURRENT_ACTION": f"Human-requested independent review completed with {classification}",
+                "WHY_CURRENT_ACTION": "The additional read-only review was explicitly requested and is now complete.",
+                "NEXT_ACTION": "Human inspects the preserved worktree and review result",
+                "WHY_NEXT_ACTION": "A manual review command does not merge, delete, or redispatch the task.",
+                "HUMAN_ATTENTION_REQUIRED": False,
+            }, new_state=previous, event="HUMAN_REVIEW_COMPLETED", detail=classification)
     print(f"TASK_ID={task_id}\nREVIEW_STATUS={classification}\nHARNESS_STATE={load_state(task_id)['HARNESS_STATE']}")
     return 0 if classification in {"PASS", "PASS_WITH_WARNINGS"} else 2
 

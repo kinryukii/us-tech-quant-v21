@@ -3,15 +3,16 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import secrets
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
 
 
 MODULE_PATH = Path(__file__).with_name("harness_task.py")
+REPOSITORY_ROOT = MODULE_PATH.parents[2].resolve()
 SPEC = importlib.util.spec_from_file_location("harness_task", MODULE_PATH)
 module = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -30,19 +31,17 @@ REQUIRED_STATE_FIELDS = {
 
 @pytest.fixture
 def isolated_roots(monkeypatch: pytest.MonkeyPatch):
-    # The machine's global pytest temp parent is a known pre-existing ACL blocker.
-    parent = (module._storage_paths().cache_root / "harness_r2_tests").resolve()
-    root = (parent / f"case-{secrets.token_hex(6)}").resolve()
-    assert root.parent == parent
-    state = root / "daily" / "harness_r2"
-    worktrees = root / "worktrees"
-    root.mkdir(parents=True)
-    monkeypatch.setenv("USTQ_HARNESS_STATE_ROOT", str(state))
-    monkeypatch.setenv("USTQ_HARNESS_WORKTREE_ROOT", str(worktrees))
-    try:
+    with tempfile.TemporaryDirectory(prefix="us-tech-quant-harness-r2-") as directory:
+        root = Path(directory).resolve()
+        assert root != REPOSITORY_ROOT and REPOSITORY_ROOT not in root.parents
+        repository = root / "primary-repository"
+        repository.mkdir()
+        state = root / "daily" / "harness_r2"
+        worktrees = root / "worktrees"
+        monkeypatch.setattr(module, "REPO", repository)
+        monkeypatch.setenv("USTQ_HARNESS_STATE_ROOT", str(state))
+        monkeypatch.setenv("USTQ_HARNESS_WORKTREE_ROOT", str(worktrees))
         yield state, worktrees
-    finally:
-        shutil.rmtree(root)
 
 
 def create_state(task_id: str = "test-task", goal: str = "Improve one small code path") -> dict:
@@ -125,6 +124,359 @@ def test_real_frozen_dependency_remains_conservative() -> None:
     assert module.infer_scope(goal, "independent-code") == "frozen-dependent"
 
 
+def test_harness_temp_roots_are_external_to_repository(isolated_roots: tuple[Path, Path]) -> None:
+    for root in isolated_roots:
+        resolved = root.resolve()
+        assert resolved != REPOSITORY_ROOT
+        assert REPOSITORY_ROOT not in resolved.parents
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Repair Harness status output; do not perform research.",
+        "Maintenance only: do not train models or run backtests.",
+        "Reject research tasks; model training is prohibited for this code fix.",
+        "Research must not be performed; model training is out of scope.",
+        "This maintenance change is not research and will not train models.",
+        "Do not perform research, train models, or run backtests.",
+        "Maintenance tasks must not be classified as research solely because those words appear.",
+        "Models must not be trained and research must not be conducted.",
+        "Do not perform modeling or backtesting.",
+        "Harness maintenance only: do not use 2026 evaluation, perform research, or train models.",
+        "Harness scope correction: pre2026-research is not required and must not influence inference.",
+        "Harness maintenance documents labels such as pre2026-research and 2026-evaluation.",
+    ],
+)
+def test_negative_research_constraints_do_not_create_research_scope(goal: str) -> None:
+    assert module.infer_scope(goal, "independent-code") == "independent-code"
+
+
+def test_harness_review_vocabulary_does_not_cross_contaminate_scope() -> None:
+    goal = """Harness maintenance classifier correction.
+Run the focused pytest suite and inspect the diff.
+Add regression coverage for genuine 2026 evaluation and genuine frozen dependency.
+The label pre2026-research is explanatory only; do not perform research or training.
+"""
+    assert module.infer_scope(goal, "independent-code") == "independent-code"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Conduct research using data through 2025.",
+        "Conduct pre-2026 research to train a model using data through 2025.",
+        "Repair a loader that depends on model features and backtest outputs.",
+        "Perform modeling and backtesting using data through 2025.",
+    ],
+)
+def test_real_research_work_or_dependency_remains_conservative(goal: str) -> None:
+    assert module.infer_scope(goal, "independent-code") == "pre2026-research"
+
+
+def test_real_2026_evaluation_remains_conservative() -> None:
+    assert module.infer_scope("Evaluate the frozen 2026 holdout without fitting.", "independent-code") == "2026-evaluation"
+
+
+def test_unrelated_negation_does_not_hide_real_research_work() -> None:
+    goal = "This is not a documentation task, and the requested work is to train a model."
+    assert module.infer_scope(goal, "independent-code") == "pre2026-research"
+
+
+def test_worker_checkpoint_keeps_status_observability_consistent(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING",
+        "WORKTREE": str(worktree),
+        "LAST_COMPLETED": "CREATE_ISOLATED_WORKTREE",
+        "NEXT_ACTION": "Launch bounded Codex worker",
+        "WHY_NEXT_ACTION": "Preflight, reuse search, and isolation gates have passed.",
+    })
+    for phase in ("R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE"):
+        module._plan_update(state, phase, "COMPLETED")
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["scripts/maintenance/harness_task.py", "scripts/maintenance/test_harness_task.py"],
+        "created": [],
+        "dependencies": [],
+        "changed_count": 2,
+        "created_count": 0,
+    })
+
+    module._record_worker_checkpoint("test-task", "TARGETED_TEST")
+
+    checkpoint = module.load_state("test-task")
+    assert checkpoint["CURRENT_PHASE"] == "TARGETED_TEST"
+    assert checkpoint["LAST_COMPLETED"] == "WORKER_TARGETED_TEST_CHECKPOINT"
+    assert checkpoint["NEXT_ACTION"] == "Finish the worker turn and report its validation"
+    assert "controller validation" in checkpoint["WHY_NEXT_ACTION"]
+    assert checkpoint["PROGRESS_SUMMARY"] == "3/7 plan steps completed; IMPLEMENT in progress"
+    assert len(checkpoint["FILES_CHANGED"]) == 2
+
+    module._record_worker_checkpoint("test-task", "SELF_REVIEW")
+    checkpoint = module.load_state("test-task")
+    assert checkpoint["CURRENT_PHASE"] == "SELF_REVIEW"
+    assert checkpoint["LAST_COMPLETED"] == "WORKER_SELF_REVIEW_CHECKPOINT"
+    assert checkpoint["PROGRESS_SUMMARY"] == "3/7 plan steps completed; IMPLEMENT in progress"
+
+    monkeypatch.setattr(module, "recover_if_interrupted", lambda task_id: module.load_state(task_id))
+    assert module.command_status(argparse.Namespace(task_id="test-task")) == 0
+    output = capsys.readouterr().out
+    assert "PROGRESS_SUMMARY=3/7 plan steps completed; IMPLEMENT in progress" in output
+    assert "FILES_CHANGED_COUNT=2" in output
+    assert "FILES_CREATED_COUNT=0" in output
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'harness_task|pytest|python|codex' }",
+        "Get-Process -Name python,codex -ErrorAction SilentlyContinue | Select-Object Id,CommandLine",
+        'rg -n "pytest|git diff|codex" scripts/maintenance',
+        "Get-Content scripts/maintenance/test_harness_task.py | Select-String pytest",
+        "powershell.exe -Command \"Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'pytest|git diff' }\"",
+        "git status --short",
+    ],
+)
+def test_event_stream_inspection_and_search_commands_are_not_validation(command: str) -> None:
+    assert module._phase_from_command(command) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "phase"),
+    [
+        ("python -m pytest -q focused_test.py", "TARGETED_TEST"),
+        (r"& 'D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe' -B -m pytest -q -p no:cacheprovider scripts\maintenance\test_harness_task.py", "TARGETED_TEST"),
+        (r'''powershell.exe -Command "& 'D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe' -B -m pytest -q focused_test.py"''', "TARGETED_TEST"),
+        ("pytest -q focused_test.py", "TARGETED_TEST"),
+        ("python -m unittest tests.test_small", "TARGETED_TEST"),
+        ("git diff --check", "SELF_REVIEW"),
+    ],
+)
+def test_event_stream_real_validation_command_heads_are_classified(command: str, phase: str) -> None:
+    assert module._phase_from_command(command) == phase
+
+
+def test_worker_started_and_completed_checkpoints_are_coherent(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({"HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree)})
+    for phase in ("R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE"):
+        module._plan_update(state, phase, "COMPLETED")
+    module._write_state_unlocked("test-task", state)
+    observed_started: list[dict] = []
+
+    class FakeInput:
+        def write(self, value: str) -> None:
+            assert value
+
+        def close(self) -> None:
+            return None
+
+    class FakeOutput:
+        def __iter__(self):
+            observed_started.append(module.load_state("test-task"))
+            yield json.dumps({
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": "TASK_RESULT=COMPLETED\nHOLDOUT_CONTAMINATION_RISK=NONE",
+                },
+            }) + "\n"
+
+    class FakeProcess:
+        pid = 4242
+        stdin = FakeInput()
+        stdout = FakeOutput()
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(module, "assert_registered_isolated_worktree", lambda path: None)
+    monkeypatch.setattr(module, "_codex_exec_command", lambda worktree, sandbox, review: ["codex"])
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    result = module._run_codex_turn("test-task", "bounded prompt")
+
+    assert result["exit_code"] == 0
+    started = observed_started[0]
+    assert started["CURRENT_PHASE"] == "IMPLEMENT"
+    assert "active" in started["CURRENT_ACTION"]
+    assert started["NEXT_ACTION"] == "Complete the bounded Codex worker turn"
+    assert started["PROGRESS_SUMMARY"] == "3/7 plan steps completed; IMPLEMENT in progress"
+    assert started["WORKER_STATUS"] == "RUNNING"
+
+    completed = module.load_state("test-task")
+    assert completed["CURRENT_PHASE"] == "IMPLEMENT"
+    assert "completed" in completed["CURRENT_ACTION"] and "active" not in completed["CURRENT_ACTION"]
+    assert completed["LAST_COMPLETED"] == "WORKER_TURN_COMPLETED"
+    assert completed["NEXT_ACTION"] == "Classify the completed worker result"
+    assert completed["PROGRESS_SUMMARY"] == "4/7 plan steps completed"
+    assert completed["WORKER_STATUS"] == "EXITED_0"
+    assert completed["ACTIVE_PROCESS_KIND"] == ""
+
+
+def test_validation_and_completion_checkpoints_are_coherent(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING",
+        "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "VALIDATE",
+        "REUSE_GUARD": "PASS_SEARCH_RECORDED",
+        "WORKER_STATUS": "EXITED_0",
+        "REPO_BYTES_BEFORE": 0,
+    })
+    for phase in ("R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE", "IMPLEMENT"):
+        module._plan_update(state, phase, "COMPLETED")
+    module._write_state_unlocked("test-task", state)
+    snapshots: dict[str, dict] = {}
+    real_update = module.update_task
+
+    def capture_update(*args, **kwargs):
+        updated = real_update(*args, **kwargs)
+        event = kwargs.get("event")
+        if event in {"TARGETED_VALIDATION_STARTED", "TARGETED_VALIDATION_COMPLETED", "TASK_COMPLETED"}:
+            snapshots[event] = json.loads(json.dumps(updated))
+        return updated
+
+    empty_changes = {"changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0}
+    monkeypatch.setattr(module, "update_task", capture_update)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: empty_changes)
+    monkeypatch.setattr(module, "_validate_targeted", lambda task_id: (True, "38 passed"))
+    monkeypatch.setattr(module, "_run_preflight_for", lambda task_id, repo: {
+        "result": {"applicable_hard_blocker_count": 0, "preflight_status": "PASS"},
+        "overfit": "PASS",
+        "anti": "PASS",
+        "bytes": 0,
+    })
+    monkeypatch.setattr(module, "_git_changes", lambda path: empty_changes)
+
+    module._dispatch("test-task")
+
+    started = snapshots["TARGETED_VALIDATION_STARTED"]
+    assert started["CURRENT_PHASE"] == "TARGETED_TEST"
+    assert started["PROGRESS_SUMMARY"] == "4/7 plan steps completed; TARGETED_TEST in progress"
+    assert started["NEXT_ACTION"] == "Complete targeted tests and post-change guards"
+
+    validated = snapshots["TARGETED_VALIDATION_COMPLETED"]
+    assert validated["CURRENT_ACTION"] == "Targeted validation completed with PASS"
+    assert validated["LAST_COMPLETED"] == "TARGETED_VALIDATION_COMPLETED"
+    assert validated["NEXT_ACTION"] == "Run independent read-only review"
+    assert validated["PROGRESS_SUMMARY"] == "5/7 plan steps completed"
+
+    completed = snapshots["TASK_COMPLETED"]
+    assert completed["HARNESS_STATE"] == "COMPLETED"
+    assert completed["CURRENT_PHASE"] == "COMPLETED"
+    assert completed["LAST_COMPLETED"] == "AUTHORIZED_TASK_COMPLETED"
+    assert completed["NEXT_ACTION"] == "Human reviews the diff and chooses whether to integrate"
+    assert completed["PROGRESS_SUMMARY"] == "7/7 plan steps completed"
+    assert completed["WORKER_STATUS"] == "COMPLETED"
+
+
+def test_correction_and_waiting_human_checkpoints_are_coherent(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state["HARNESS_STATE"] = "REVIEWING"
+    for phase in (
+        "R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE", "IMPLEMENT",
+        "TARGETED_TEST", "INDEPENDENT_REVIEW",
+    ):
+        module._plan_update(state, phase, "COMPLETED")
+    module._write_state_unlocked("test-task", state)
+
+    module._request_correction("test-task", "REVIEW", "fix the classifier")
+    correction = module.load_state("test-task")
+    assert correction["HARNESS_STATE"] == "RUNNING"
+    assert correction["CURRENT_PHASE"] == "CORRECTION_REQUESTED"
+    assert correction["LAST_COMPLETED"] == "REVIEW_CORRECTION_REQUESTED"
+    assert correction["NEXT_ACTION"] == "Dispatch the bounded correction worker"
+    assert correction["PROGRESS_SUMMARY"] == "3/7 plan steps completed"
+    assert correction["WORKER_STATUS"] == "CORRECTION_PENDING"
+
+    module.update_task(
+        "test-task",
+        mutate=lambda value: module._plan_update(value, "INDEPENDENT_REVIEW", "IN_PROGRESS"),
+    )
+    module._wait_human("test-task", "BOUNDED_CORRECTION_LIMIT_REACHED", "limit reached")
+    waiting = module.load_state("test-task")
+    assert waiting["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert waiting["CURRENT_PHASE"] == "WAITING_HUMAN"
+    assert waiting["CURRENT_ACTION"] == "Waiting for human decision"
+    assert waiting["LAST_COMPLETED"] == "REVIEW_CORRECTION_REQUESTED"
+    assert waiting["NEXT_ACTION"] == "Human steers, reviews, resumes, or stops"
+    assert waiting["PROGRESS_SUMMARY"] == "3/7 plan steps completed"
+    assert waiting["WORKER_STATUS"] == "WAITING_HUMAN"
+
+
+def test_independent_review_started_and_completed_checkpoints_are_coherent(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({"HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree), "WORKER_STATUS": "EXITED_0"})
+    for phase in ("R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE", "IMPLEMENT", "TARGETED_TEST"):
+        module._plan_update(state, phase, "COMPLETED")
+    module._write_state_unlocked("test-task", state)
+    observed_started: list[dict] = []
+    fingerprint = {"entry_count": 2, "sha256": "abc"}
+    monkeypatch.setattr(module, "_repo_status_fingerprint", lambda path: fingerprint)
+
+    def complete_review(task_id: str, prompt: str, review: bool = False) -> dict:
+        observed_started.append(module.load_state(task_id))
+        return {"exit_code": 0, "message": "REVIEW_STATUS=PASS", "tests": []}
+
+    monkeypatch.setattr(module, "_run_codex_turn", complete_review)
+    assert module._perform_review("test-task") == "PASS"
+
+    started = observed_started[0]
+    assert started["HARNESS_STATE"] == "REVIEWING"
+    assert started["CURRENT_PHASE"] == "INDEPENDENT_REVIEW"
+    assert started["WORKER_STATUS"] == "REVIEW_STARTING"
+    assert started["PROGRESS_SUMMARY"] == "5/7 plan steps completed; INDEPENDENT_REVIEW in progress"
+    assert started["NEXT_ACTION"] == "Complete and classify the independent review"
+
+    reviewed = module.load_state("test-task")
+    assert reviewed["CURRENT_ACTION"] == "Independent review completed with PASS"
+    assert reviewed["LAST_COMPLETED"] == "INDEPENDENT_REVIEW_COMPLETED"
+    assert reviewed["NEXT_ACTION"] == "Finalize and preserve the reviewed worktree"
+    assert reviewed["PROGRESS_SUMMARY"] == "6/7 plan steps completed"
+    assert reviewed["WORKER_STATUS"] == "REVIEW_EXITED_0"
+
+
+def test_controller_targeted_pytest_disables_cache_provider(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({"WORKTREE": str(worktree), "FILES_CHANGED": ["scripts/maintenance/harness_task.py"]})
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_candidate_tests", lambda worktree, changed: ["focused_test.py"])
+    monkeypatch.setattr(module, "_storage_paths", lambda: argparse.Namespace(python_exe=Path("python.exe")))
+    observed: list[str] = []
+
+    def successful_run(args, cwd=module.REPO, timeout=30):
+        observed.extend(args)
+        return subprocess.CompletedProcess(args, 0, "passed", "")
+
+    monkeypatch.setattr(module, "_run", successful_run)
+    assert module._validate_targeted("test-task")[0] is True
+    assert observed[observed.index("-p"):observed.index("-p") + 2] == ["-p", "no:cacheprovider"]
+
+
 def test_pause_resume_and_stop_preserve_resume_point(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -187,6 +539,12 @@ def test_registered_worktree_check_is_fail_closed(
     _, root = isolated_roots
     worktree = root / "harness-task-test-task"
     worktree.mkdir(parents=True)
+    isolation_check = module.assert_isolated_worktree_path
+    monkeypatch.setattr(
+        module,
+        "assert_isolated_worktree_path",
+        lambda path: isolation_check(path, root.parent / "primary-repository", root),
+    )
     monkeypatch.setattr(
         module, "_git",
         lambda args, cwd=module.REPO, timeout=30: subprocess.CompletedProcess(args, 0, str(worktree), ""),
