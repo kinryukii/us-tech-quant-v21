@@ -26,13 +26,18 @@ REQUIRED_STATE_FIELDS = {
     "OVERFIT_GUARD", "ANTI_BLOAT", "REUSE_GUARD", "FILES_CHANGED", "FILES_CREATED",
     "DEPENDENCIES_ADDED", "PAUSE_REQUESTED", "STOP_REQUESTED",
     "HUMAN_ATTENTION_REQUIRED", "LAST_REVIEW_STATUS", "LAST_UPDATED_AT",
+    "TEST_HISTORY_START_INDEX", "ANTI_BLOAT_BASELINE_RESIDUE", "ANTI_BLOAT_TASK_DELTA",
+    "TASK_KIND", "TASK_KIND_SOURCE", "AUTO_SCOPE_SUGGESTION", "SAFETY_FLAGS", "TASK_SCOPE",
 }
 
 
 @pytest.fixture
 def isolated_roots(monkeypatch: pytest.MonkeyPatch):
+    external_parent = Path(tempfile.gettempdir()).resolve()
+    assert external_parent != REPOSITORY_ROOT and REPOSITORY_ROOT not in external_parent.parents
     with tempfile.TemporaryDirectory(prefix="us-tech-quant-harness-r2-") as directory:
         root = Path(directory).resolve()
+        assert root.parent == external_parent
         assert root != REPOSITORY_ROOT and REPOSITORY_ROOT not in root.parents
         repository = root / "primary-repository"
         repository.mkdir()
@@ -114,6 +119,18 @@ def test_required_executable_absence_fails_clearly(monkeypatch: pytest.MonkeyPat
         module._required_executable("git")
 
 
+def test_git_changes_returns_real_inventory() -> None:
+    inventory = module._git_changes(REPOSITORY_ROOT)
+
+    assert isinstance(inventory, dict)
+    assert {"changed", "created", "dependencies", "changed_count", "created_count"} <= set(inventory)
+    assert isinstance(inventory["changed"], list)
+    assert isinstance(inventory["created"], list)
+    assert isinstance(inventory["dependencies"], list)
+    assert inventory["changed_count"] >= len(inventory["changed"])
+    assert inventory["created_count"] >= len(inventory["created"])
+
+
 def test_negative_frozen_constraints_do_not_create_dependency_scope() -> None:
     goal = "Harness-only discovery fix; do not touch frozen outputs; do not modify frozen baselines; avoid canonical data."
     assert module.infer_scope(goal, "independent-code") == "independent-code"
@@ -125,61 +142,107 @@ def test_real_frozen_dependency_remains_conservative() -> None:
 
 
 def test_harness_temp_roots_are_external_to_repository(isolated_roots: tuple[Path, Path]) -> None:
-    for root in isolated_roots:
-        resolved = root.resolve()
-        assert resolved != REPOSITORY_ROOT
-        assert REPOSITORY_ROOT not in resolved.parents
+    state, worktrees = isolated_roots
+    test_root = state.parents[1]
+    controller_pytest_temp = (module.task_dir("test-task") / "pytest-temp").resolve()
+    for owned_root in (test_root, state, worktrees, controller_pytest_temp):
+        resolved = owned_root.resolve()
+        for repository in (REPOSITORY_ROOT, module.REPO.resolve()):
+            assert resolved != repository
+            assert repository not in resolved.parents
 
 
 @pytest.mark.parametrize(
-    "goal",
+    ("goal", "expected"),
     [
-        "Repair Harness status output; do not perform research.",
-        "Maintenance only: do not train models or run backtests.",
-        "Reject research tasks; model training is prohibited for this code fix.",
-        "Research must not be performed; model training is out of scope.",
-        "This maintenance change is not research and will not train models.",
-        "Do not perform research, train models, or run backtests.",
-        "Maintenance tasks must not be classified as research solely because those words appear.",
-        "Models must not be trained and research must not be conducted.",
-        "Do not perform modeling or backtesting.",
-        "Harness maintenance only: do not use 2026 evaluation, perform research, or train models.",
-        "Harness scope correction: pre2026-research is not required and must not influence inference.",
-        "Harness maintenance documents labels such as pre2026-research and 2026-evaluation.",
+        ("No model training.", "independent-code"),
+        ("Do not perform quantitative research.", "independent-code"),
+        ("Harness maintenance: inspect research outputs.", "independent-code"),
+        ("Summarize existing research outputs without running research.", "independent-code"),
+        ("Without using 2026 outcomes, train a model.", "pre2026-research"),
+        ("Train a model and do not use 2026 outcomes.", "pre2026-research"),
+        ("Run a pre-2026 backtest.", "pre2026-research"),
+        ("Evaluate the frozen model on 2026 holdout.", "2026-evaluation"),
+        ("pre2026-research is a label used by the Harness.", "independent-code"),
+        ("Do not train a model; modify Harness status only.", "independent-code"),
+        ("Harness maintenance: run a backtest on pre-2026 data.", "pre2026-research"),
     ],
 )
-def test_negative_research_constraints_do_not_create_research_scope(goal: str) -> None:
-    assert module.infer_scope(goal, "independent-code") == "independent-code"
-
-
-def test_harness_review_vocabulary_does_not_cross_contaminate_scope() -> None:
-    goal = """Harness maintenance classifier correction.
-Run the focused pytest suite and inspect the diff.
-Add regression coverage for genuine 2026 evaluation and genuine frozen dependency.
-The label pre2026-research is explanatory only; do not perform research or training.
-"""
-    assert module.infer_scope(goal, "independent-code") == "independent-code"
+def test_scope_inference_distinguishes_requested_actions_from_constraints(goal: str, expected: str) -> None:
+    assert module.infer_scope(goal, "independent-code") == expected
 
 
 @pytest.mark.parametrize(
-    "goal",
+    ("task_kind", "goal", "expected_kind", "expected_scope"),
     [
-        "Conduct research using data through 2025.",
-        "Conduct pre-2026 research to train a model using data through 2025.",
-        "Repair a loader that depends on model features and backtest outputs.",
-        "Perform modeling and backtesting using data through 2025.",
+        ("pre2026-research", "Train a model on pre-2026 data.", "pre2026-research", "pre2026-research"),
+        ("maintenance", "Set the 2026 evaluation status field.", "maintenance", "independent-code"),
+        ("maintenance", "Inspect existing research outputs.", "maintenance", "independent-code"),
+        ("maintenance", "Use 2026 holdout outcomes to tune the threshold.", "maintenance", "2026-optimization"),
+        ("maintenance", "Audit PIT leakage in the model pipeline.", "maintenance", "pre2026-research"),
+        ("auto", "Fix a research model.", "pre2026-research", "pre2026-research"),
+        ("auto", "Audit PIT leakage.", "pre2026-research", "pre2026-research"),
+        ("auto", "Harness maintenance: inspect research outputs.", "maintenance", "independent-code"),
+        ("auto", "Set the 2026 evaluation status field.", "independent-code", "independent-code"),
     ],
 )
-def test_real_research_work_or_dependency_remains_conservative(goal: str) -> None:
-    assert module.infer_scope(goal, "independent-code") == "pre2026-research"
+def test_structured_task_contract_applies_a_promoting_safety_floor(
+    task_kind: str, goal: str, expected_kind: str, expected_scope: str,
+) -> None:
+    contract = module._task_contract(goal, task_kind, "independent-code")
+    assert contract["TASK_KIND"] == expected_kind
+    assert contract["TASK_SCOPE"] == expected_scope
 
 
-def test_real_2026_evaluation_remains_conservative() -> None:
-    assert module.infer_scope("Evaluate the frozen 2026 holdout without fitting.", "independent-code") == "2026-evaluation"
+def test_explicit_task_kind_cannot_lower_requested_safety_scope() -> None:
+    contract = module._task_contract(
+        "Inspect a frozen evaluation contract.", "maintenance", "frozen-dependent",
+    )
+    assert contract["TASK_KIND"] == "maintenance"
+    assert contract["TASK_SCOPE"] == "frozen-dependent"
 
 
-def test_unrelated_negation_does_not_hide_real_research_work() -> None:
-    goal = "This is not a documentation task, and the requested work is to train a model."
+def test_structured_task_contract_is_persisted(isolated_roots: tuple[Path, Path]) -> None:
+    goal = "Train a model on pre-2026 data."
+    contract = module._task_contract(goal, "pre2026-research", "independent-code")
+    state = module._new_state("test-task", goal, contract["TASK_SCOPE"], 2, contract)
+    module.task_dir("test-task").mkdir(parents=True)
+    module._write_state_unlocked("test-task", state)
+    stored = module.load_state("test-task")
+    assert stored["TASK_KIND"] == "pre2026-research"
+    assert stored["TASK_KIND_SOURCE"] == "EXPLICIT"
+    assert stored["SAFETY_FLAGS"]["MODEL_TRAINING_OR_SELECTION"] is True
+    assert stored["TASK_SCOPE"] == "pre2026-research"
+    parsed = module.build_parser().parse_args([
+        "start", "--goal", "Inspect existing research outputs.", "--task-kind", "maintenance",
+    ])
+    assert parsed.task_kind == "maintenance"
+
+
+def test_exact_dogfood_goal_uses_structured_maintenance_kind() -> None:
+    goal = (
+        "R2 real-execution closeout dogfood. Correct two existing Harness R2 observability/classification "
+        "defects using the existing harness_task.py implementation and focused tests. First, a Harness "
+        "maintenance task whose constraints say 'do not perform research', 'do not train models', or similar "
+        "negative/prohibitive language must not be classified as pre2026-research solely because those words "
+        "appear; preserve conservative classification for tasks that genuinely perform or depend on research. "
+        "Second, keep status observability internally consistent so CURRENT_PHASE, LAST_COMPLETED, NEXT_ACTION, "
+        "WHY_NEXT_ACTION, progress, and file-change counts reflect meaningful lifecycle checkpoints instead of "
+        "remaining stale after the worker has advanced. Keep the patch minimal: modify at most "
+        "scripts/maintenance/harness_task.py and scripts/maintenance/test_harness_task.py, add no dependency, "
+        "create no new persistent component, do not touch A2/FAST/13F/canonical data/frozen outputs, do not "
+        "perform model training or quantitative research, preserve all overfit/anti-bloat/reuse guards, run "
+        "focused tests, complete the real isolated worker lifecycle and independent read-only review, do not "
+        "auto-merge into the primary working tree, and stop after this single task."
+    )
+    contract = module._task_contract(goal, "maintenance", "independent-code")
+    assert contract["TASK_KIND"] == "maintenance"
+    assert contract["TASK_KIND_SOURCE"] == "EXPLICIT"
+    assert contract["TASK_SCOPE"] == "independent-code"
+
+
+def test_real_research_dependency_remains_conservative() -> None:
+    goal = "Repair a loader that depends on model features and backtest outputs."
     assert module.infer_scope(goal, "independent-code") == "pre2026-research"
 
 
@@ -261,17 +324,39 @@ def test_event_stream_real_validation_command_heads_are_classified(command: str,
     assert module._phase_from_command(command) == phase
 
 
-def test_worker_started_and_completed_checkpoints_are_coherent(
+def test_latest_same_test_command_wins_within_current_attempt(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state["TESTS_RUN"] = [
+        "python -m pytest -q focused_test.py | exit=1",
+        "PYTHON   -m pytest -q focused_test.py | exit=0",
+    ]
+    state["TEST_HISTORY_START_INDEX"] = 0
+    module._write_state_unlocked("test-task", state)
+
+    assert module._validate_targeted("test-task") == (
+        True,
+        "Worker-reported targeted tests passed.",
+    )
+
+
+def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = create_state()
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
-    state.update({"HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree)})
+    state.update({
+        "HARNESS_STATE": "RUNNING",
+        "WORKTREE": str(worktree),
+        "TESTS_RUN": ["python -m pytest -q focused_test.py | exit=1"],
+    })
     for phase in ("R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE"):
         module._plan_update(state, phase, "COMPLETED")
     module._write_state_unlocked("test-task", state)
     observed_started: list[dict] = []
+    final_edit = {"made": False}
 
     class FakeInput:
         def write(self, value: str) -> None:
@@ -283,6 +368,15 @@ def test_worker_started_and_completed_checkpoints_are_coherent(
     class FakeOutput:
         def __iter__(self):
             observed_started.append(module.load_state("test-task"))
+            yield json.dumps({
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "python -m pytest -q focused_test.py",
+                    "exit_code": 0,
+                },
+            }) + "\n"
+            final_edit["made"] = True
             yield json.dumps({
                 "type": "item.completed",
                 "item": {
@@ -302,6 +396,13 @@ def test_worker_started_and_completed_checkpoints_are_coherent(
     monkeypatch.setattr(module, "assert_registered_isolated_worktree", lambda path: None)
     monkeypatch.setattr(module, "_codex_exec_command", lambda worktree, sandbox, review: ["codex"])
     monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["final_edit.py"] if final_edit["made"] else [],
+        "created": [],
+        "dependencies": [],
+        "changed_count": int(final_edit["made"]),
+        "created_count": 0,
+    })
 
     result = module._run_codex_turn("test-task", "bounded prompt")
 
@@ -312,6 +413,7 @@ def test_worker_started_and_completed_checkpoints_are_coherent(
     assert started["NEXT_ACTION"] == "Complete the bounded Codex worker turn"
     assert started["PROGRESS_SUMMARY"] == "3/7 plan steps completed; IMPLEMENT in progress"
     assert started["WORKER_STATUS"] == "RUNNING"
+    assert started["TEST_HISTORY_START_INDEX"] == 1
 
     completed = module.load_state("test-task")
     assert completed["CURRENT_PHASE"] == "IMPLEMENT"
@@ -321,6 +423,10 @@ def test_worker_started_and_completed_checkpoints_are_coherent(
     assert completed["PROGRESS_SUMMARY"] == "4/7 plan steps completed"
     assert completed["WORKER_STATUS"] == "EXITED_0"
     assert completed["ACTIVE_PROCESS_KIND"] == ""
+    assert completed["FILES_CHANGED"] == ["final_edit.py"]
+    assert completed["TESTS_RUN"][0].endswith("exit=1")
+    assert completed["TESTS_RUN"][1].endswith("exit=0")
+    assert module._validate_targeted("test-task") == (True, "Worker-reported targeted tests passed.")
 
 
 def test_validation_and_completion_checkpoints_are_coherent(
@@ -358,7 +464,9 @@ def test_validation_and_completion_checkpoints_are_coherent(
         "result": {"applicable_hard_blocker_count": 0, "preflight_status": "PASS"},
         "overfit": "PASS",
         "anti": "PASS",
+        "anti_delta": "PASS",
         "bytes": 0,
+        "task_blocker_count": 0,
     })
     monkeypatch.setattr(module, "_git_changes", lambda path: empty_changes)
 
@@ -385,16 +493,22 @@ def test_validation_and_completion_checkpoints_are_coherent(
 
 
 def test_correction_and_waiting_human_checkpoints_are_coherent(
-    isolated_roots: tuple[Path, Path],
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = create_state()
-    state["HARNESS_STATE"] = "REVIEWING"
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({"HARNESS_STATE": "REVIEWING", "WORKTREE": str(worktree)})
     for phase in (
         "R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE", "IMPLEMENT",
         "TARGETED_TEST", "INDEPENDENT_REVIEW",
     ):
         module._plan_update(state, phase, "COMPLETED")
     module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["waiting.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
 
     module._request_correction("test-task", "REVIEW", "fix the classifier")
     correction = module.load_state("test-task")
@@ -414,10 +528,14 @@ def test_correction_and_waiting_human_checkpoints_are_coherent(
     assert waiting["HARNESS_STATE"] == "WAITING_HUMAN"
     assert waiting["CURRENT_PHASE"] == "WAITING_HUMAN"
     assert waiting["CURRENT_ACTION"] == "Waiting for human decision"
+    assert waiting["WHY_CURRENT_ACTION"] == "limit reached"
     assert waiting["LAST_COMPLETED"] == "REVIEW_CORRECTION_REQUESTED"
     assert waiting["NEXT_ACTION"] == "Human steers, reviews, resumes, or stops"
+    assert "cannot safely choose" in waiting["WHY_NEXT_ACTION"]
     assert waiting["PROGRESS_SUMMARY"] == "3/7 plan steps completed"
     assert waiting["WORKER_STATUS"] == "WAITING_HUMAN"
+    assert waiting["HUMAN_ATTENTION_REQUIRED"] is True
+    assert waiting["FILES_CHANGED"] == ["waiting.py"]
 
 
 def test_independent_review_started_and_completed_checkpoints_are_coherent(
@@ -432,7 +550,12 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
     module._write_state_unlocked("test-task", state)
     observed_started: list[dict] = []
     fingerprint = {"entry_count": 2, "sha256": "abc"}
+    inventory = {
+        "changed": ["reviewed.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    }
     monkeypatch.setattr(module, "_repo_status_fingerprint", lambda path: fingerprint)
+    monkeypatch.setattr(module, "_git_changes", lambda path: inventory)
 
     def complete_review(task_id: str, prompt: str, review: bool = False) -> dict:
         observed_started.append(module.load_state(task_id))
@@ -447,6 +570,7 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
     assert started["WORKER_STATUS"] == "REVIEW_STARTING"
     assert started["PROGRESS_SUMMARY"] == "5/7 plan steps completed; INDEPENDENT_REVIEW in progress"
     assert started["NEXT_ACTION"] == "Complete and classify the independent review"
+    assert started["FILES_CHANGED"] == ["reviewed.py"]
 
     reviewed = module.load_state("test-task")
     assert reviewed["CURRENT_ACTION"] == "Independent review completed with PASS"
@@ -454,6 +578,8 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
     assert reviewed["NEXT_ACTION"] == "Finalize and preserve the reviewed worktree"
     assert reviewed["PROGRESS_SUMMARY"] == "6/7 plan steps completed"
     assert reviewed["WORKER_STATUS"] == "REVIEW_EXITED_0"
+    assert "active" not in reviewed["CURRENT_ACTION"].lower()
+    assert reviewed["FILES_CHANGED"] == ["reviewed.py"]
 
 
 def test_controller_targeted_pytest_disables_cache_provider(
@@ -475,6 +601,59 @@ def test_controller_targeted_pytest_disables_cache_provider(
     monkeypatch.setattr(module, "_run", successful_run)
     assert module._validate_targeted("test-task")[0] is True
     assert observed[observed.index("-p"):observed.index("-p") + 2] == ["-p", "no:cacheprovider"]
+    base_temp = Path(observed[observed.index("--basetemp") + 1]).resolve()
+    assert base_temp == (module.task_dir("test-task") / "pytest-temp").resolve()
+    assert module.REPO != base_temp and module.REPO not in base_temp.parents
+
+
+def test_anti_bloat_status_distinguishes_pre_existing_residue_from_task_delta(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    module._write_state_unlocked("test-task", state)
+    residue_detail = {"value": "pytest-cache-files-known"}
+
+    class FakeR1:
+        @staticmethod
+        def run_preflight(repo: Path, task_scope: str) -> dict:
+            return {
+                "task_scope": task_scope,
+                "applicable_hard_blocker_count": 1,
+                "preflight_status": "HARD_BLOCKER",
+                "findings": [
+                    {
+                        "level": "HARD_BLOCKER",
+                        "code": "ANTI_BLOAT_ACCOUNTING_INCOMPLETE",
+                        "detail": residue_detail["value"],
+                        "blocks": ("all",),
+                    },
+                    {
+                        "level": "PASS",
+                        "code": "ANTI_BLOAT_BUDGET",
+                        "detail": "worktree_bytes=100;preferred=PASS;local_venv=False",
+                        "blocks": (),
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(module, "_load_r1", lambda: FakeR1)
+    scoped = module._run_preflight_for("test-task", isolated_roots[1], baseline_checkpoint=True)
+    assert scoped["result"]["applicable_hard_blocker_count"] == 1
+    assert scoped["result"]["preflight_status"] == "HARD_BLOCKER"
+    assert scoped["result"]["findings"][0]["code"] == "ANTI_BLOAT_ACCOUNTING_INCOMPLETE"
+    assert scoped["task_blocker_count"] == 0
+    assert scoped["anti"] == "PRE_EXISTING_ACCOUNTING_RESIDUE"
+    assert scoped["anti_delta"] == "PASS"
+    assert scoped["accounting_residue"] == ["pytest-cache-files-known"]
+
+    state = module.load_state("test-task")
+    state["ANTI_BLOAT_BASELINE_RESIDUE"] = scoped["accounting_residue"]
+    module._write_state_unlocked("test-task", state)
+    residue_detail["value"] += ",pytest-cache-files-new"
+    caused = module._run_preflight_for("test-task", isolated_roots[1])
+    assert caused["task_blocker_count"] == 1
+    assert caused["anti"] == "HARD_BLOCKER_NEW_TASK_CAUSED_BLOAT"
+    assert caused["anti_delta"] == "FAIL_NEW_TASK_CAUSED_BLOAT"
 
 
 def test_pause_resume_and_stop_preserve_resume_point(
@@ -521,6 +700,57 @@ def test_steer_cannot_weaken_exposed_holdout_guard(
     assert state["STEERING_HISTORY"][-1]["accepted"] is False
     assert "EXPOSED_2026_OPTIMIZATION" in state["STEERING_HISTORY"][-1]["reason"]
     assert module.hard_guard_conflicts("Do not use 2026 to tune the threshold.") == []
+    assert module.hard_guard_conflicts('The instruction is "use 2026 outcomes to tune the threshold".') == [
+        "EXPOSED_2026_OPTIMIZATION"
+    ]
+
+
+def test_task_kind_does_not_gate_raw_goal_safety_detection() -> None:
+    goal = "Harness maintenance. Use 2026 outcomes to tune the threshold."
+    assert module.infer_scope(goal, "independent-code") == "2026-evaluation"
+    assert module.hard_guard_conflicts(goal) == ["EXPOSED_2026_OPTIMIZATION"]
+    contract = module._task_contract(goal, "maintenance", "independent-code")
+    assert contract["TASK_KIND"] == "maintenance"
+    assert contract["TASK_SCOPE"] == "2026-optimization"
+    assert contract["SAFETY_FLAGS"]["EXPOSED_2026_OR_HOLDOUT_OPTIMIZATION"] is True
+
+
+def test_hard_guard_targets_unsafe_feedback_not_benign_2026_text() -> None:
+    assert module.hard_guard_conflicts("Train a model on pre-2026 data.") == []
+    assert module.hard_guard_conflicts("Use outcomes dated before 2026 to train a model.") == []
+    assert module.hard_guard_conflicts("Set the 2026 evaluation status field.") == []
+    assert module.hard_guard_conflicts("Evaluate the frozen model on the 2026 holdout.") == []
+    assert module.hard_guard_conflicts(
+        "Evaluate on 2026 data and train the model on pre-2026 data."
+    ) == []
+    evaluation = module._task_contract(
+        "Evaluate the frozen model on the 2026 holdout.", "maintenance", "independent-code",
+    )
+    assert evaluation["TASK_SCOPE"] == "2026-evaluation"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Train a model on 2026 data.",
+        "Use 2026 data to fit a model.",
+        "Use 2026 outcomes to train a model.",
+        "Fit the model based on 2026 holdout performance.",
+        "Refit using 2026 evaluation results.",
+        "Use 2026 outcomes to tune the threshold.",
+        'The instruction is "use 2026 outcomes to train a model".',
+    ],
+)
+def test_hard_guard_detects_unsafe_2026_feedback_actions(goal: str) -> None:
+    assert module.hard_guard_conflicts(goal) == ["EXPOSED_2026_OPTIMIZATION"]
+
+
+def test_hard_guard_allows_explicitly_negated_2026_training_and_tuning() -> None:
+    assert module.hard_guard_conflicts("Do not use 2026 outcomes to train or tune the model.") == []
+
+
+def test_ambiguous_real_training_request_fails_closed() -> None:
+    assert module.hard_guard_conflicts("Train a model.") == ["AMBIGUOUS_TRAINING_TEMPORAL_SCOPE"]
 
 
 def test_worktree_isolation_rejects_primary_and_nested_paths(isolated_roots: tuple[Path, Path]) -> None:
@@ -631,11 +861,112 @@ def test_crash_recovery_preserves_changed_file_inventory(
     state = create_state()
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
-    state.update({"HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree), "CONTROLLER_PID": 999_999, "WORKER_PID": 999_998})
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "CONTROLLER_PID": 999_999, "WORKER_PID": 999_998,
+        "CURRENT_PHASE": "TARGETED_TEST", "CURRENT_ACTION": "Running targeted tests",
+        "LAST_COMPLETED": "IMPLEMENTATION_WORKER_EXITED", "NEXT_ACTION": "Review the test result",
+    })
+    module._plan_update(state, "TARGETED_TEST", "IN_PROGRESS")
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(module, "_git_changes", lambda path: {"changed": ["useful.py"], "created": ["useful.py"], "dependencies": []})
     recovered = module.recover_if_interrupted("test-task")
     assert recovered["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert recovered["CURRENT_PHASE"] == "WAITING_HUMAN"
+    assert "Recovered interrupted" in recovered["CURRENT_ACTION"]
+    assert "Neither recorded controller nor worker PID is active" in recovered["WHY_CURRENT_ACTION"]
+    assert recovered["LAST_COMPLETED"] == "IMPLEMENTATION_WORKER_EXITED"
+    assert recovered["NEXT_ACTION"].startswith("Human inspects")
+    assert "cannot safely continue" in recovered["WHY_NEXT_ACTION"]
+    assert "TARGETED_TEST in progress" not in recovered["PROGRESS_SUMMARY"]
     assert recovered["FILES_CHANGED"] == ["useful.py"]
     assert recovered["WORKER_STATUS"] == "INTERRUPTED_PROCESS_NOT_RUNNING"
+    assert recovered["HUMAN_ATTENTION_REQUIRED"] is True
+
+
+def test_controller_failure_with_dead_worker_is_terminal_and_coherent(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "CURRENT_PHASE": "TARGETED_TEST", "CURRENT_ACTION": "Running targeted tests",
+        "LAST_COMPLETED": "IMPLEMENTATION_WORKER_EXITED", "NEXT_ACTION": "Review the test result",
+    })
+    module._plan_update(state, "TARGETED_TEST", "IN_PROGRESS")
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_dispatch", lambda task_id: (_ for _ in ()).throw(RuntimeError("controller lost")))
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["preserved.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+
+    assert module.run_task("test-task") == 1
+    failed = module.load_state("test-task")
+    assert failed["HARNESS_STATE"] == "FAILED"
+    assert failed["CURRENT_PHASE"] == "FAILED"
+    assert failed["CURRENT_ACTION"] == "Controller failed; state and worktree preserved"
+    assert failed["WHY_CURRENT_ACTION"] == "RuntimeError:controller lost"
+    assert failed["LAST_COMPLETED"] == "IMPLEMENTATION_WORKER_EXITED"
+    assert failed["NEXT_ACTION"].startswith("Human inspects")
+    assert "confirmed inactive" in failed["WHY_NEXT_ACTION"]
+    assert "TARGETED_TEST in progress" not in failed["PROGRESS_SUMMARY"]
+    assert failed["WORKER_STATUS"] == "CONTROLLER_FAILED"
+    assert failed["FILES_CHANGED"] == ["preserved.py"]
+    assert failed["HUMAN_ATTENTION_REQUIRED"] is True
+
+
+def test_controller_failure_preserves_live_worker_and_stop_remains_effective(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "WORKER_PID": 4242, "WORKER_STATUS": "RUNNING",
+        "ACTIVE_THREAD_ID": "thread-live", "ACTIVE_PROCESS_KIND": "WORKER",
+        "CURRENT_PHASE": "IMPLEMENT", "CURRENT_ACTION": "Worker is active",
+    })
+    module._plan_update(state, "IMPLEMENT", "IN_PROGRESS")
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_dispatch", lambda task_id: (_ for _ in ()).throw(RuntimeError("controller lost")))
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["preserved.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+
+    assert module.run_task("test-task") == 1
+    orphaned = module.load_state("test-task")
+    assert orphaned["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert orphaned["CURRENT_PHASE"] == "WAITING_HUMAN"
+    assert orphaned["WORKER_STATUS"] == "INTERRUPTED_CONTROLLER_WORKER_ALIVE"
+    assert orphaned["WORKER_PID"] == 4242
+    assert orphaned["ACTIVE_THREAD_ID"] == "thread-live"
+    assert orphaned["ACTIVE_PROCESS_KIND"] == "WORKER"
+    assert orphaned["HUMAN_ATTENTION_REQUIRED"] is True
+    assert "stops or recovers the orphaned worker" in orphaned["NEXT_ACTION"]
+    assert "IMPLEMENT in progress" not in orphaned["PROGRESS_SUMMARY"]
+
+    queued: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        module, "_queue_control",
+        lambda current, message: (queued.append((current["ACTIVE_THREAD_ID"], message)) or True, "queued"),
+    )
+    assert module.command_stop(argparse.Namespace(task_id="test-task")) == 0
+    stopping = module.load_state("test-task")
+    assert stopping["HARNESS_STATE"] == "STOPPING"
+    assert stopping["STOP_REQUESTED"] is True
+    assert stopping["WORKER_PID"] == 4242
+    assert queued and queued[0][0] == "thread-live"
+
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+    stopped = module.recover_if_interrupted("test-task")
+    assert stopped["HARNESS_STATE"] == "STOPPED"
+    assert stopped["WORKER_PID"] is None
+    assert stopped["WORKER_STATUS"] == "STOPPED_PROCESS_NOT_RUNNING"

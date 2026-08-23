@@ -34,21 +34,37 @@ ALLOWED_TRANSITIONS = {
     "IDLE": {"PLANNING", "BLOCKED"},
     "PLANNING": {"RUNNING", "PAUSING", "PAUSED", "WAITING_HUMAN", "BLOCKED", "STOPPING", "STOPPED", "FAILED"},
     "RUNNING": {"PLANNING", "PAUSING", "PAUSED", "REVIEWING", "WAITING_HUMAN", "BLOCKED", "STOPPING", "STOPPED", "COMPLETED", "FAILED"},
-    "PAUSING": {"PAUSED", "STOPPING", "FAILED"},
+    "PAUSING": {"PAUSED", "WAITING_HUMAN", "STOPPING", "FAILED"},
     "PAUSED": {"PLANNING", "RUNNING", "REVIEWING", "WAITING_HUMAN", "STOPPING", "STOPPED", "FAILED"},
     "REVIEWING": {"RUNNING", "PAUSING", "PAUSED", "WAITING_HUMAN", "BLOCKED", "STOPPING", "STOPPED", "COMPLETED", "FAILED"},
     "WAITING_HUMAN": {"PLANNING", "RUNNING", "REVIEWING", "BLOCKED", "STOPPING", "STOPPED", "FAILED"},
     "BLOCKED": {"PLANNING", "REVIEWING", "WAITING_HUMAN", "STOPPING", "STOPPED", "FAILED"},
-    "STOPPING": {"STOPPED", "FAILED"},
+    "STOPPING": {"WAITING_HUMAN", "STOPPED", "FAILED"},
     "STOPPED": {"REVIEWING"},
     "COMPLETED": {"REVIEWING"},
-    "FAILED": {"REVIEWING"},
+    "FAILED": {"REVIEWING", "STOPPING"},
 }
 MAX_STATE_BYTES = 131_072
 MAX_TIMELINE_BYTES = 262_144
 MAX_LIST_ITEMS = 100
 MAX_TEXT = 8_000
 DEFAULT_MAX_CORRECTIONS = 2
+TASK_KIND_SCOPES = {
+    "maintenance": "independent-code",
+    "independent-code": "independent-code",
+    "pre2026-research": "pre2026-research",
+    "2026-evaluation": "2026-evaluation",
+}
+TASK_KINDS = ("auto", *TASK_KIND_SCOPES)
+SCOPE_SAFETY_RANK = {
+    "independent-code": 0,
+    "historical-fetch": 1,
+    "pre2026-research": 2,
+    "frozen-dependent": 3,
+    "2026-evaluation": 4,
+    "2026-optimization": 5,
+    "all": 6,
+}
 DEPENDENCY_FILES = {
     "requirements.txt", "requirements.lock.txt", "pyproject.toml", "poetry.lock",
     "pdm.lock", "uv.lock", "environment.yml", "environment.yaml",
@@ -225,7 +241,10 @@ def update_task(
         return state
 
 
-def _new_state(task_id: str, goal: str, scope: str, max_corrections: int) -> dict[str, Any]:
+def _new_state(
+    task_id: str, goal: str, scope: str, max_corrections: int,
+    task_contract: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     plan = [
         {"phase": "R1_PREFLIGHT", "status": "PENDING", "action": "Run task-scoped R1 preflight", "why": "Research and Anti-Bloat gates precede autonomous mutation."},
         {"phase": "DISCOVER_EXISTING", "status": "PENDING", "action": "Search relevant repository surfaces", "why": "Reuse evidence is required before creating a component."},
@@ -235,7 +254,7 @@ def _new_state(task_id: str, goal: str, scope: str, max_corrections: int) -> dic
         {"phase": "INDEPENDENT_REVIEW", "status": "PENDING", "action": "Review material changes read-only", "why": "Independent findings gate bounded correction or completion."},
         {"phase": "FINALIZE", "status": "PENDING", "action": "Preserve worktree and report", "why": "R2 never merges, deletes useful work, or starts another task."},
     ]
-    return {
+    state = {
         "TASK_ID": task_id,
         "HARNESS_STATE": "PLANNING",
         "GOAL": goal,
@@ -261,10 +280,15 @@ def _new_state(task_id: str, goal: str, scope: str, max_corrections: int) -> dic
         "HUMAN_ATTENTION_REQUIRED": False,
         "LAST_REVIEW_STATUS": "NOT_RUN",
         "LAST_UPDATED_AT": utc_now(),
+        "TASK_KIND": scope if scope in TASK_KINDS else "independent-code",
+        "TASK_KIND_SOURCE": "LEGACY_TASK_SCOPE",
+        "AUTO_SCOPE_SUGGESTION": scope,
+        "SAFETY_FLAGS": {},
         "TASK_SCOPE": scope,
         "PLAN": plan,
         "NEXT_ACTION_CODE": "R1_PREFLIGHT",
         "TESTS_RUN": [],
+        "TEST_HISTORY_START_INDEX": 0,
         "VALIDATION_RESULTS": [],
         "WORKER_FINDINGS": "",
         "REVIEW_FINDINGS": "",
@@ -287,7 +311,12 @@ def _new_state(task_id: str, goal: str, scope: str, max_corrections: int) -> dic
         "REPO_BYTES_AFTER": None,
         "REPO_SIZE_DELTA_BYTES": None,
         "PRIMARY_REPO_BYTES_AT_START": None,
+        "ANTI_BLOAT_BASELINE_RESIDUE": [],
+        "ANTI_BLOAT_TASK_DELTA": "PENDING",
     }
+    if task_contract:
+        state.update(task_contract)
+    return state
 
 
 def _plan_update(state: dict[str, Any], phase: str, status: str) -> None:
@@ -339,22 +368,83 @@ def _set_current_task(task_id: str) -> None:
     _atomic_write(state_root() / "current_task.txt", (task_id + "\n").encode("utf-8"))
 
 
-def _negated(text: str, start: int) -> bool:
-    prefix = text[max(0, start - 35):start].lower()
-    return bool(re.search(r"(?:do\s+not|don't|never|forbid|prevent|reject|must\s+not|no)\s*$", prefix))
+def _negated(text: str, start: int, end: int | None = None) -> bool:
+    prefix = text[max(0, start - 48):start].lower()
+    suffix = text[end if end is not None else start:min(len(text), (end or start) + 40)].lower()
+    return bool(
+        re.search(
+            r"(?:(?:do(?:es|ne)?|did|must|should|will|can(?:not)?|is|are|was|were)\s+not(?:\s+be)?|"
+            r"don't|can't|cannot|never|without|avoid|exclude|reject|forbid|prevent)"
+            r"\s+(?:[a-z][\w-]*\s+){0,3}$|"
+            r"\bno(?:\s+[a-z][\w-]*){0,2}\s*$",
+            prefix,
+        )
+        or re.match(r"\s+(?:is|are|was|were)\s+(?:not\s+required|prohibited|forbidden|disallowed|out\s+of\s+scope)\b", suffix)
+    )
 
 
 def hard_guard_conflicts(instruction: str) -> list[str]:
     text = " ".join(instruction.split())
     conflicts: list[str] = []
-    unsafe_2026 = re.compile(
-        r"(?:use|using|against|on)\s+(?:the\s+)?(?:exposed\s+)?2026(?:\+)?[^.]{0,90}(?:train|fit|refit|tun|optim|select|threshold|winner)|"
-        r"(?:train|fit|refit|tun|optim|select|threshold|winner)[^.]{0,90}(?:using|against|on)\s+(?:the\s+)?(?:exposed\s+)?2026(?:\+)?",
+    action_pattern = (
+        r"\b(?:(?:re)?train\w*|fit\w*|refit\w*|tun\w*|optim\w*|select\w*|"
+        r"choos\w*|search\w*|adjust\w*)\b"
+    )
+    unsafe_action = re.compile(action_pattern, re.I)
+    safe_pre2026 = re.compile(
+        r"\bpre[- ]?2026\b|\bbefore\s+(?:the\s+start\s+of\s+)?2026(?:-01-01)?\b|"
+        r"\b(?:strictly\s+)?earlier\s+than\s+2026(?:-01-01)?\b|"
+        r"\bprior\s+to\s+2026(?:-01-01)?\b|<\s*2026-01-01\b",
         re.I,
     )
-    match = unsafe_2026.search(text)
-    if match and not _negated(text, match.start()):
-        conflicts.append("EXPOSED_2026_OPTIMIZATION")
+    unsafe_year = r"\b2026(?:\+)?\b"
+    data_role = r"\b(?:data|inputs?|samples?|labels?|outcomes?|performance|results?|holdout)\b"
+    ambiguous_request = re.compile(
+        rf"^\s*(?:please\s+)?{action_pattern}|"
+        rf"\b(?:need|plan|intend|want|must|should|will)\s+to\s+{action_pattern}|"
+        r"\b(?:perform|run|start|continue)\s+(?:a\s+)?(?:model\s+)?training\b",
+        re.I,
+    )
+    for clause in re.split(r"[.;\n]+|\b(?:and|but)\b", text, flags=re.I):
+        has_safe_pre2026 = bool(safe_pre2026.search(clause))
+        scoped = safe_pre2026.sub("PRE2026", clause)
+        actions = [
+            match for match in unsafe_action.finditer(scoped)
+            if not _negated(scoped, match.start(), match.end())
+        ]
+        if not actions:
+            continue
+        unsafe = False
+        for action in actions:
+            tail = scoped[action.end():action.end() + 120]
+            if re.search(
+                rf"[^.;]{{0,70}}\b(?:on|using|with|from|against|based\s+on)\b"
+                rf"[^.;]{{0,35}}{unsafe_year}",
+                tail,
+                re.I,
+            ):
+                unsafe = True
+                break
+            prefix_start = max(0, action.start() - 160)
+            prefix = scoped[prefix_start:action.start()]
+            for source in re.finditer(
+                rf"\b(?:use|using)\b[^.;]{{0,40}}{unsafe_year}(?:[^.;]{{0,35}}{data_role})?"
+                r"[^.;]{0,35}\b(?:to|for)\b\s*(?:the\s+)?(?:model|threshold|parameters?)?\s*$",
+                prefix,
+                re.I,
+            ):
+                source_start = prefix_start + source.start()
+                if not _negated(scoped, source_start, source_start + len(source.group(0).split()[0])):
+                    unsafe = True
+                    break
+            if unsafe:
+                break
+        if unsafe:
+            conflicts.append("EXPOSED_2026_OPTIMIZATION")
+            break
+        if not has_safe_pre2026 and ambiguous_request.search(scoped):
+            conflicts.append("AMBIGUOUS_TRAINING_TEMPORAL_SCOPE")
+            break
     patterns = (
         ("FROZEN_ASSET_MUTATION", r"(?:modify|overwrite|delete|unfreeze)\s+(?:a\s+)?frozen"),
         ("CANONICAL_DATA_MUTATION", r"(?:modify|overwrite|delete|write\s+to)\s+(?:the\s+)?canonical\s+(?:market\s+)?data"),
@@ -362,83 +452,120 @@ def hard_guard_conflicts(instruction: str) -> list[str]:
         ("AUTO_MERGE_OR_PRODUCTION_PROMOTION", r"(?:auto(?:matically)?[- ]merge|promote\s+(?:it\s+)?to\s+production|authorize\s+production)"),
     )
     for code, pattern in patterns:
-        found = re.search(pattern, text, re.I)
-        if found and not _negated(text, found.start()):
+        if any(
+            not _negated(text, found.start(), found.end())
+            for found in re.finditer(pattern, text, re.I)
+        ):
             conflicts.append(code)
     return conflicts
 
 
-def _positive_scope_text(goal: str) -> str:
-    """Drop clauses that only prohibit a scoped activity; retain positive work."""
-    negative = re.compile(
-        r"\b(?:do\s+not|don't|never|must\s+not|should\s+not|cannot|can't|will\s+not|"
-        r"is\s+not|are\s+not|not\s+(?:required|needed|applicable|relevant)|"
-        r"no\s+(?:frozen|research|models?|training|evaluation|holdout|2026)|"
-        r"out\s+of\s+scope|prohibited|forbidden|disallowed|reject|exclude|avoid)\b",
-        re.I,
-    )
-    clauses: list[str] = []
-    for sentence in re.split(r"[.;\n]+", goal):
-        # Preserve an explicitly contrasted positive request without parsing arbitrary prose.
-        parts = re.split(r"\b(?:but|however)\b|,\s+and\s+(?=(?:the\s+)?(?:requested|actual)\b)", sentence, flags=re.I)
-        for part in parts:
-            part = re.sub(
-                r"\b(?:without|no)\s+(?:model\s+)?(?:research|training|fitting|tuning|optimization|selection|backtesting)\b",
-                " ",
-                part,
-                flags=re.I,
-            ).strip()
-            if part and not negative.search(part):
-                clauses.append(part)
-    return "\n".join(clauses)
+def _has_positive_scope_action(text: str, target: str, action: str) -> bool:
+    """Match a target to its nearest requested action without deleting negated text."""
+    for segment in text.splitlines():
+        actions = list(re.finditer(action, segment, re.I))
+        for subject in re.finditer(target, segment, re.I):
+            if not actions:
+                continue
+            distance = lambda match: min(abs(match.end() - subject.start()), abs(subject.end() - match.start()))
+            nearest_distance = min(distance(match) for match in actions)
+            nearest = [match for match in actions if distance(match) == nearest_distance]
+            if any(not _negated(segment, match.start(), match.end()) for match in nearest):
+                return True
+    return False
 
 
-def _scope_clause_matches(text: str, *patterns: re.Pattern[str]) -> bool:
-    return any(all(pattern.search(clause) for pattern in patterns) for clause in text.splitlines())
-
-
-def infer_scope(goal: str, requested: str) -> str:
-    low = goal.lower()
-    maintenance = bool(re.search(r"\b(?:harness|maintenance)\b", low))
-    positive = _positive_scope_text(goal)
+def _task_scope_evidence(goal: str) -> dict[str, bool]:
     scope_text = re.sub(
         r"\b(?:pre[- ]?2026(?:-research)?|2026-(?:evaluation|optimization)|frozen-dependent|"
         r"independent-code|historical-fetch)\b",
         " ",
-        positive,
+        goal,
         flags=re.I,
     )
-    actual_action = re.compile(
-        r"\b(?:use|run|evaluate|validate|assess|analy[sz]e|measure|monitor|test|compare|"
-        r"inspect|read|depend(?:s|ed|ing)?\s+on|rely(?:ies|ied|ing)?\s+on|requires?)\b",
-        re.I,
+    segments = [segment.strip() for segment in re.split(
+        r"[.,;\n]+|\b(?:and|but)\b", scope_text, flags=re.I,
+    ) if segment.strip()]
+    segments = [
+        segment for segment in segments
+        if not re.search(
+            r"\b(?:classification|classified)\b[^.;]{0,80}\b(?:tasks?|words?|language)\b|"
+            r"\b(?:tasks?|words?|language)\b[^.;]{0,80}\b(?:classification|classified)\b",
+            segment,
+            re.I,
+        )
+    ]
+    task_text = "\n".join(segments)
+
+    research_action = (
+        r"\b(?:conduct|perform|run|execute|start|continue|undertake|train\w*|fit\w*|refit\w*|"
+        r"tun\w*|optim\w*|backtest\w*|depend(?:s|ed|ing)?\s+on|"
+        r"rely(?:ies|ied|ing)?\s+on|requires?|use|fix|repair|audit|implement|extend|build)\b"
     )
-    year = re.compile(r"\b2026\+?\b", re.I)
-    optimization = re.compile(r"\b(?:tun(?:e|ing)|optim(?:ize|ization|izing)|select(?:ion|ing)?|threshold|train(?:ing)?|fit(?:ting)?)\b", re.I)
-    optimization_patterns = (year, optimization, actual_action) if maintenance else (year, optimization)
-    if hard_guard_conflicts(goal) or _scope_clause_matches(scope_text, *optimization_patterns):
-        return "2026-optimization"
-    evaluation = re.compile(r"\b(?:2026\+?|holdout|prospective|forward(?:-monitoring)?|evaluation)\b", re.I)
-    evaluation_patterns = (evaluation, actual_action) if maintenance else (evaluation,)
-    if _scope_clause_matches(scope_text, *evaluation_patterns):
-        return "2026-evaluation"
-    if _scope_clause_matches(scope_text, re.compile(r"\bhistorical\b", re.I), re.compile(r"\b(?:fetch|download)\w*\b", re.I)):
-        return "historical-fetch"
-    frozen = re.compile(r"\bfrozen\b", re.I)
-    frozen_patterns = (frozen, actual_action) if maintenance else (frozen,)
-    if _scope_clause_matches(scope_text, *frozen_patterns):
-        return "frozen-dependent"
-    research = re.compile(r"\b(?:research(?:ing|ed)?|models?|modeling|features?|backtests?|backtesting|train(?:ing|ed)?|pit|leakage)\b", re.I)
-    research_action = re.compile(
-        r"\b(?:conduct|perform|run|execute|start|continue|undertake|train|fit|refit|tune|"
-        r"optimize|backtest|depend(?:s|ed|ing)?\s+on|rely(?:ies|ied|ing)?\s+on|requires?|"
-        r"use|repair|implement|extend|build|validate|evaluate)\b",
-        re.I,
+    patterns = (
+        ("MODEL_TRAINING_OR_SELECTION", r"\b(?:models?|features?|parameters?|thresholds?|train(?:ing|ed)?)\b", r"\b(?:train\w*|fit\w*|refit\w*|tun\w*|optim\w*|select\w*|choos\w*|search\w*)\b"),
+        ("PRE2026_RESEARCH_OR_BACKTEST", r"\b(?:research(?:ing|ed)?|models?|modeling|features?|backtests?|backtesting|train(?:ing|ed)?|pit|leakage)\b", research_action),
+        ("EVALUATES_2026_OR_HOLDOUT", r"(?<!pre-)(?<!pre )\b2026\+?\b|\b(?:holdout|prospective|forward(?:-monitoring)?|evaluation)\b", r"\b(?:use|run|evaluate|validate|assess|analy[sz]e|measure|monitor|test|compare)\w*\b"),
+        ("PIT_OR_LEAKAGE_SENSITIVE", r"\b(?:pit|leakage)\b", research_action),
+        ("FROZEN_ASSET_DEPENDENCY", r"\bfrozen\b", r"\b(?:use|run|evaluate|validate|assess|test|compare|read|touch|modify|overwrite|delete|unfreeze|depend(?:s|ed|ing)?\s+on|rely(?:ies|ied|ing)?\s+on|requires?)\b"),
+        ("HISTORICAL_FETCH", r"\bhistorical\b", r"\b(?:fetch|download)\w*\b"),
     )
-    research_patterns = (research, research_action) if maintenance else (research,)
-    if _scope_clause_matches(scope_text, *research_patterns):
-        return "pre2026-research"
-    return requested
+    return {name: _has_positive_scope_action(task_text, target, action) for name, target, action in patterns}
+
+
+def _strongest_scope(*scopes: str) -> str:
+    unknown = [scope for scope in scopes if scope not in SCOPE_SAFETY_RANK]
+    if unknown:
+        raise HarnessError(f"UNKNOWN_TASK_SCOPE:{unknown[0]}")
+    return max(scopes, key=SCOPE_SAFETY_RANK.__getitem__)
+
+
+def _scope_from_evidence(evidence: dict[str, bool], requested: str) -> str:
+    scopes = [requested]
+    for flag, scope in (
+        ("EVALUATES_2026_OR_HOLDOUT", "2026-evaluation"),
+        ("FROZEN_ASSET_DEPENDENCY", "frozen-dependent"),
+        ("PRE2026_RESEARCH_OR_BACKTEST", "pre2026-research"),
+        ("HISTORICAL_FETCH", "historical-fetch"),
+    ):
+        if evidence[flag]:
+            scopes.append(scope)
+    return _strongest_scope(*scopes)
+
+
+def infer_scope(goal: str, requested: str) -> str:
+    """Return the conservative AUTO scope suggestion, never the hard-guard decision."""
+    return _scope_from_evidence(_task_scope_evidence(goal), requested)
+
+
+def _task_contract(goal: str, task_kind: str, requested_scope: str) -> dict[str, Any]:
+    if task_kind not in TASK_KINDS:
+        raise HarnessError(f"INVALID_TASK_KIND:{task_kind}")
+    evidence = _task_scope_evidence(goal)
+    suggestion = _scope_from_evidence(evidence, requested_scope)
+    evidence["EXPOSED_2026_OR_HOLDOUT_OPTIMIZATION"] = (
+        "EXPOSED_2026_OPTIMIZATION" in hard_guard_conflicts(goal)
+    )
+    if task_kind == "auto":
+        resolved_kind = {
+            "2026-evaluation": "2026-evaluation", "2026-optimization": "2026-evaluation",
+            "pre2026-research": "pre2026-research", "frozen-dependent": "pre2026-research",
+            "historical-fetch": "pre2026-research",
+        }.get(suggestion, "maintenance" if re.search(r"\b(?:harness|maintenance)\b", goal, re.I) else "independent-code")
+        source = "AUTO"
+    else:
+        resolved_kind = task_kind
+        source = "EXPLICIT"
+    declared_scope = TASK_KIND_SCOPES.get(resolved_kind, "independent-code")
+    safety_scope = "2026-optimization" if evidence["EXPOSED_2026_OR_HOLDOUT_OPTIMIZATION"] else suggestion
+    effective_scope = _strongest_scope(declared_scope, requested_scope, safety_scope)
+    return {
+        "TASK_KIND": resolved_kind,
+        "TASK_KIND_SOURCE": source,
+        "AUTO_SCOPE_SUGGESTION": suggestion,
+        "SAFETY_FLAGS": evidence,
+        "TASK_SCOPE": effective_scope,
+    }
 
 
 def _run(args: Sequence[str], cwd: Path = REPO, timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -633,13 +760,14 @@ def _git_changes(worktree: Path) -> dict[str, Any]:
             diff = _git(["diff", "--unified=0", "HEAD", "--", name], worktree).stdout.splitlines()
             additions = [line[1:].strip() for line in diff if line.startswith("+") and not line.startswith("+++") and line[1:].strip()]
         dependency_lines += [f"{name}:{line}" for line in additions]
-    return {
+    state = {
         "changed": sorted(set(changed))[:MAX_LIST_ITEMS],
         "created": sorted(set(created))[:MAX_LIST_ITEMS],
         "dependencies": dependency_lines[:MAX_LIST_ITEMS],
         "changed_count": len(set(changed)),
         "created_count": len(set(created)),
     }
+    return state
 
 
 def _record_worker_checkpoint(task_id: str, phase: str) -> None:
@@ -719,6 +847,8 @@ GOAL (version {state['GOAL_VERSION']}):
 {state['GOAL']}
 
 Task scope: {state['TASK_SCOPE']}
+Structured task kind: {state['TASK_KIND']} ({state['TASK_KIND_SOURCE']})
+Safety flags: {state['SAFETY_FLAGS']}
 Human steering currently in force:
 {steer}
 {correction_text}
@@ -812,6 +942,8 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
         "NEXT_ACTION": f"Complete the bounded Codex {kind.lower()} turn",
         "WHY_NEXT_ACTION": "The completed turn must be classified before another lifecycle action is dispatched.",
     }
+    if not review:
+        started_fields["TEST_HISTORY_START_INDEX"] = len(state.get("TESTS_RUN", []))
 
     def mark_turn_active(value: dict[str, Any]) -> None:
         _plan_update(value, "INDEPENDENT_REVIEW" if review else "IMPLEMENT", "IN_PROGRESS")
@@ -860,13 +992,16 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
     exit_code = process.wait()
     if not final_message and tail:
         final_message = "\n".join(tail)[-MAX_TEXT:]
+    history = load_state(task_id).get("TESTS_RUN", [])
+    combined_tests = (history + tests)[-MAX_LIST_ITEMS:]
+    if not review:
+        _refresh_changes(task_id, worker_findings=final_message)
     completed_fields = {
         "WORKER_STATUS": f"REVIEW_EXITED_{exit_code}" if review else f"EXITED_{exit_code}",
         "WORKER_PID": None,
         "ACTIVE_PROCESS_KIND": "",
         "ACTIVE_THREAD_ID": "",
-        "WORKER_FINDINGS" if not review else "REVIEW_FINDINGS": final_message,
-        "TESTS_RUN": (load_state(task_id).get("TESTS_RUN", []) + tests)[-MAX_LIST_ITEMS:],
+        "TESTS_RUN": combined_tests,
         "CURRENT_PHASE": "INDEPENDENT_REVIEW" if review else "IMPLEMENT",
         "CURRENT_ACTION": f"Codex {kind.lower()} turn completed; its result awaits classification",
         "WHY_CURRENT_ACTION": "Process completion is recorded separately from acceptance of its findings.",
@@ -874,6 +1009,10 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
         "NEXT_ACTION": f"Classify the completed {kind.lower()} result",
         "WHY_NEXT_ACTION": "The controller must choose validation, correction, finalization, or human review from explicit result markers.",
     }
+    if review:
+        completed_fields["REVIEW_FINDINGS"] = final_message
+    else:
+        completed_fields["TEST_HISTORY_START_INDEX"] = max(0, len(combined_tests) - min(len(tests), MAX_LIST_ITEMS))
 
     def mark_turn_completed(value: dict[str, Any]) -> None:
         if not review:
@@ -888,20 +1027,29 @@ def _run_codex_turn(task_id: str, prompt: str, *, review: bool = False) -> dict[
     return {"exit_code": exit_code, "message": final_message, "tests": tests}
 
 
-def _refresh_changes(task_id: str) -> dict[str, Any]:
+def _refresh_changes(task_id: str, *, worker_findings: str | None = None) -> dict[str, Any]:
     state = load_state(task_id)
     changes = _git_changes(Path(state["WORKTREE"]))
-    justification = _parse_marker(state.get("WORKER_FINDINGS", ""), "NEW_COMPONENT_JUSTIFICATION")
+    findings = state.get("WORKER_FINDINGS", "") if worker_findings is None else worker_findings
+    justification = _parse_marker(findings, "NEW_COMPONENT_JUSTIFICATION")
     reuse = "PASS_SEARCH_RECORDED"
     if changes["created"] and (not justification or justification.upper() == "NONE"):
         reuse = "HARD_BLOCKER_NEW_COMPONENT_JUSTIFICATION_MISSING"
-    update_task(task_id, {
+    fields = {
         "FILES_CHANGED": changes["changed"],
         "FILES_CREATED": changes["created"],
         "DEPENDENCIES_ADDED": changes["dependencies"],
         "NEW_COMPONENT_JUSTIFICATION": justification,
         "REUSE_GUARD": reuse,
-    }, event="CHANGE_INVENTORY", detail=f"changed={changes['changed_count']};created={changes['created_count']};dependencies={len(changes['dependencies'])}")
+    }
+    if worker_findings is not None:
+        fields["WORKER_FINDINGS"] = worker_findings
+    update_task(
+        task_id,
+        fields,
+        event="CHANGE_INVENTORY",
+        detail=f"changed={changes['changed_count']};created={changes['created_count']};dependencies={len(changes['dependencies'])}",
+    )
     return changes
 
 
@@ -923,19 +1071,33 @@ def _candidate_tests(worktree: Path, changed: Sequence[str]) -> list[str]:
 def _validate_targeted(task_id: str) -> tuple[bool, str]:
     state = load_state(task_id)
     tests = state.get("TESTS_RUN", [])
-    observed_fail = any(re.search(r"exit=(?!0\b)\S+", row) for row in tests)
-    observed_pass = any(re.search(r"exit=0\b", row) for row in tests)
-    if observed_fail:
+    start = max(0, min(int(state.get("TEST_HISTORY_START_INDEX", 0)), len(tests)))
+    latest: dict[str, bool] = {}
+    for row in tests[start:]:
+        outcome = re.search(r"\|\s*exit=([^\s|]+)", row, re.I)
+        if not outcome:
+            continue
+        command = row[:outcome.start()].strip()
+        normalized = re.sub(r"\s+", " ", command).casefold()
+        if normalized:
+            latest[normalized] = outcome.group(1) == "0"
+    if any(not passed for passed in latest.values()):
         return False, "Worker-reported targeted test command failed."
-    if observed_pass:
+    if latest:
         return True, "Worker-reported targeted tests passed."
     worktree = Path(state["WORKTREE"])
     candidates = _candidate_tests(worktree, state.get("FILES_CHANGED", []))
     if not candidates:
         return True, "No paired automatic test mapping; independent review must assess worker validation."
     python = _storage_paths().python_exe
+    base_temp = (task_dir(task_id) / "pytest-temp").resolve()
+    if REPO == base_temp or REPO in base_temp.parents:
+        raise HarnessError(f"PYTEST_TEMP_ROOT_INSIDE_REPOSITORY:{base_temp}")
     result = _run(
-        [str(python), "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", *candidates],
+        [
+            str(python), "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
+            "--basetemp", str(base_temp), *candidates,
+        ],
         worktree,
         300,
     )
@@ -966,14 +1128,71 @@ def _guard_summary(preflight: dict[str, Any]) -> tuple[str, str]:
     return overfit, anti
 
 
-def _run_preflight_for(task_id: str, repo: Path) -> dict[str, Any]:
+def _accounting_residue(preflight: dict[str, Any]) -> list[str]:
+    return sorted({
+        path.strip()
+        for row in preflight["findings"]
+        if row["level"] == "HARD_BLOCKER" and row["code"] == "ANTI_BLOAT_ACCOUNTING_INCOMPLETE"
+        for path in row["detail"].split(",")
+        if path.strip()
+    })[:MAX_LIST_ITEMS]
+
+
+def _run_preflight_for(task_id: str, repo: Path, *, baseline_checkpoint: bool = False) -> dict[str, Any]:
     state = load_state(task_id)
     result = _load_r1().run_preflight(repo=repo, task_scope=state["TASK_SCOPE"])
     overfit, anti = _guard_summary(result)
+    residue = _accounting_residue(result)
+    applicable_hard = [
+        row for row in result["findings"]
+        if row["level"] == "HARD_BLOCKER"
+        and ("all" in row["blocks"] or result["task_scope"] in row["blocks"])
+    ]
+    anti_hard = [
+        row for row in applicable_hard
+        if row["code"].startswith("ANTI_BLOAT") or row["code"].startswith("FROZEN_LEGACY")
+    ]
     budget = next((row["detail"] for row in result["findings"] if row["code"] == "ANTI_BLOAT_BUDGET"), "")
     match = re.search(r"worktree_bytes=(\d+)", budget)
     bytes_value = int(match.group(1)) if match else None
-    return {"result": result, "overfit": overfit, "anti": anti, "bytes": bytes_value}
+    budget_passed = any(
+        row["level"] == "PASS" and row["code"] == "ANTI_BLOAT_BUDGET"
+        for row in result["findings"]
+    )
+    anti_delta = "PASS" if anti != "HARD_BLOCKER" else "FAIL_UNATTRIBUTED_HARD_BLOCKER"
+    accounting_only_repository_blocker = (
+        anti == "HARD_BLOCKER"
+        and residue
+        and anti_hard
+        and all(row["code"] == "ANTI_BLOAT_ACCOUNTING_INCOMPLETE" for row in anti_hard)
+        and budget_passed
+        and not state.get("DEPENDENCIES_ADDED")
+    )
+    pre_existing_accounting = False
+    if accounting_only_repository_blocker:
+        # Preserve the repository-level accounting evidence independently of
+        # whether this task's baseline proves that its own delta is clean.
+        anti = "PRE_EXISTING_ACCOUNTING_RESIDUE"
+        baseline = set(state.get("ANTI_BLOAT_BASELINE_RESIDUE", []))
+        if baseline_checkpoint or not (set(residue) - baseline):
+            anti_delta = "PASS"
+            pre_existing_accounting = True
+        else:
+            anti = "HARD_BLOCKER_NEW_TASK_CAUSED_BLOAT"
+            anti_delta = "FAIL_NEW_TASK_CAUSED_BLOAT"
+    task_blocker_count = sum(
+        not (pre_existing_accounting and row["code"] == "ANTI_BLOAT_ACCOUNTING_INCOMPLETE")
+        for row in applicable_hard
+    )
+    return {
+        "result": result,
+        "overfit": overfit,
+        "anti": anti,
+        "anti_delta": anti_delta,
+        "accounting_residue": residue,
+        "bytes": bytes_value,
+        "task_blocker_count": task_blocker_count,
+    }
 
 
 def _control_checkpoint(task_id: str) -> bool:
@@ -1017,6 +1236,11 @@ def _block(task_id: str, code: str, detail: str) -> None:
 
 
 def _wait_human(task_id: str, code: str, detail: str) -> None:
+    state = load_state(task_id)
+    worktree = Path(state["WORKTREE"]) if state.get("WORKTREE") else None
+    if worktree and worktree.is_dir():
+        _refresh_changes(task_id)
+
     def mutate(state: dict[str, Any]) -> None:
         state["BLOCKERS"] = (state.get("BLOCKERS", []) + [{"code": code, "detail": detail[:2_000]}])[-MAX_LIST_ITEMS:]
         _close_active_plan(state, "PENDING")
@@ -1061,6 +1285,7 @@ def _review_classification(message: str, exit_code: int) -> str:
 def _perform_review(task_id: str) -> str:
     state = load_state(task_id)
     worktree = Path(state["WORKTREE"])
+    _refresh_changes(task_id)
     before = _repo_status_fingerprint(worktree)
     def mark_review_active(value: dict[str, Any]) -> None:
         _plan_update(value, "INDEPENDENT_REVIEW", "IN_PROGRESS")
@@ -1075,6 +1300,7 @@ def _perform_review(task_id: str) -> str:
     }, new_state="REVIEWING", event="REVIEW_STARTED", detail="sandbox=read-only;new ephemeral context", mutate=mark_review_active)
     result = _run_codex_turn(task_id, _review_prompt(load_state(task_id)), review=True)
     after = _repo_status_fingerprint(worktree)
+    _refresh_changes(task_id)
     if before != after:
         _block(task_id, "READ_ONLY_REVIEW_MUTATED_WORKTREE", f"before={before};after={after}")
         return "HUMAN_DECISION_REQUIRED"
@@ -1129,16 +1355,18 @@ def _dispatch(task_id: str) -> None:
                 "CURRENT_PHASE": "R1_PREFLIGHT", "CURRENT_ACTION": "Running R1 task-scoped preflight",
                 "WHY_CURRENT_ACTION": "Autonomy is subordinate to leakage, frozen-asset, and Anti-Bloat gates.",
             }, event="R1_PREFLIGHT_STARTED", detail=f"scope={state['TASK_SCOPE']}")
-            result = _run_preflight_for(task_id, REPO)
+            result = _run_preflight_for(task_id, REPO, baseline_checkpoint=True)
             def complete_preflight(value: dict[str, Any]) -> None:
                 _plan_update(value, "R1_PREFLIGHT", "COMPLETED")
             update_task(task_id, {
                 "OVERFIT_GUARD": result["overfit"], "ANTI_BLOAT": result["anti"],
+                "ANTI_BLOAT_BASELINE_RESIDUE": result["accounting_residue"],
+                "ANTI_BLOAT_TASK_DELTA": result["anti_delta"],
                 "PRIMARY_REPO_BYTES_AT_START": result["bytes"], "LAST_COMPLETED": "R1_PREFLIGHT",
                 "NEXT_ACTION": "Search existing implementations", "WHY_NEXT_ACTION": "Reuse evidence is mandatory before material implementation.",
                 "NEXT_ACTION_CODE": "DISCOVER_EXISTING",
             }, event="R1_PREFLIGHT_COMPLETED", detail=result["result"]["preflight_status"], mutate=complete_preflight)
-            if result["result"]["applicable_hard_blocker_count"]:
+            if result["task_blocker_count"]:
                 _block(task_id, "R1_PREFLIGHT_APPLICABLE_HARD_BLOCKER", result["result"]["preflight_status"])
                 return
         elif action == "DISCOVER_EXISTING":
@@ -1165,9 +1393,14 @@ def _dispatch(task_id: str) -> None:
             except HarnessError as exc:
                 _block(task_id, "AUTONOMOUS_MUTATION_WORKTREE_UNAVAILABLE", str(exc))
                 return
-            isolated_preflight = _run_preflight_for(task_id, path)
-            if isolated_preflight["result"]["applicable_hard_blocker_count"]:
-                update_task(task_id, {"WORKTREE": str(path), "BASE_BRANCH": branch, "BASE_HEAD": head})
+            isolated_preflight = _run_preflight_for(task_id, path, baseline_checkpoint=True)
+            if isolated_preflight["task_blocker_count"]:
+                update_task(task_id, {
+                    "WORKTREE": str(path), "BASE_BRANCH": branch, "BASE_HEAD": head,
+                    "OVERFIT_GUARD": isolated_preflight["overfit"], "ANTI_BLOAT": isolated_preflight["anti"],
+                    "ANTI_BLOAT_BASELINE_RESIDUE": isolated_preflight["accounting_residue"],
+                    "ANTI_BLOAT_TASK_DELTA": isolated_preflight["anti_delta"],
+                })
                 _block(task_id, "ISOLATED_WORKTREE_R1_HARD_BLOCKER", isolated_preflight["result"]["preflight_status"])
                 return
             def complete_worktree(value: dict[str, Any]) -> None:
@@ -1175,6 +1408,8 @@ def _dispatch(task_id: str) -> None:
             update_task(task_id, {
                 "WORKTREE": str(path), "BASE_BRANCH": branch, "BASE_HEAD": head,
                 "OVERFIT_GUARD": isolated_preflight["overfit"], "ANTI_BLOAT": isolated_preflight["anti"],
+                "ANTI_BLOAT_BASELINE_RESIDUE": isolated_preflight["accounting_residue"],
+                "ANTI_BLOAT_TASK_DELTA": isolated_preflight["anti_delta"],
                 "REPO_BYTES_BEFORE": isolated_preflight["bytes"],
                 "LAST_COMPLETED": "CREATE_ISOLATED_WORKTREE", "NEXT_ACTION": "Launch bounded Codex worker",
                 "WHY_NEXT_ACTION": "Preflight, reuse search, and isolation gates have passed.",
@@ -1236,7 +1471,8 @@ def _dispatch(task_id: str) -> None:
                 return
             passed, validation = _validate_targeted(task_id)
             post = _run_preflight_for(task_id, Path(load_state(task_id)["WORKTREE"]))
-            validation_passed = passed and not post["result"]["applicable_hard_blocker_count"]
+            _refresh_changes(task_id)
+            validation_passed = passed and not post["task_blocker_count"]
             def complete_validation(value: dict[str, Any]) -> None:
                 _plan_update(value, "TARGETED_TEST", "COMPLETED" if validation_passed else "FAILED")
             update_task(task_id, {
@@ -1244,6 +1480,7 @@ def _dispatch(task_id: str) -> None:
                 "CURRENT_ACTION": f"Targeted validation completed with {'PASS' if validation_passed else 'FAIL'}",
                 "WHY_CURRENT_ACTION": "The controller recorded focused tests and the post-change R1 guard result.",
                 "OVERFIT_GUARD": post["overfit"], "ANTI_BLOAT": post["anti"],
+                "ANTI_BLOAT_TASK_DELTA": post["anti_delta"],
                 "REPO_BYTES_AFTER": post["bytes"],
                 "REPO_SIZE_DELTA_BYTES": (post["bytes"] - state.get("REPO_BYTES_BEFORE")) if post["bytes"] is not None and state.get("REPO_BYTES_BEFORE") is not None else None,
                 "VALIDATION_RESULTS": (load_state(task_id).get("VALIDATION_RESULTS", []) + [validation[:4_000], post["result"]["preflight_status"]])[-MAX_LIST_ITEMS:],
@@ -1252,7 +1489,7 @@ def _dispatch(task_id: str) -> None:
                 "WHY_NEXT_ACTION": "Material changes require correctness, leakage, reuse, and bloat assessment." if validation_passed else "Failed validation cannot advance to acceptance.",
                 "NEXT_ACTION_CODE": "REVIEW" if validation_passed else "WORKER",
             }, event="TARGETED_VALIDATION_COMPLETED", detail=f"tests={'PASS' if passed else 'FAIL'};preflight={post['result']['preflight_status']}", mutate=complete_validation)
-            if post["result"]["applicable_hard_blocker_count"]:
+            if post["task_blocker_count"]:
                 _block(task_id, "POST_CHANGE_R1_HARD_BLOCKER", post["result"]["preflight_status"])
                 return
             if not passed:
@@ -1262,7 +1499,7 @@ def _dispatch(task_id: str) -> None:
                     return
                 _request_correction(task_id, "TARGETED_VALIDATION", validation)
         elif action == "REVIEW":
-            changes = _git_changes(Path(state["WORKTREE"]))
+            changes = _refresh_changes(task_id)
             if not changes["changed"] and state["TASK_SCOPE"] == "independent-code" and not state["REVIEW_REQUESTED"]:
                 def skip_review(value: dict[str, Any]) -> None:
                     _plan_update(value, "INDEPENDENT_REVIEW", "COMPLETED")
@@ -1317,14 +1554,26 @@ def _dispatch(task_id: str) -> None:
 def _pid_alive(pid: Any) -> bool | None:
     if not isinstance(pid, int) or pid <= 0:
         return False
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                text=True, capture_output=True, check=False, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        return f'"{pid}"' in result.stdout
     try:
-        if os.name == "nt":
-            result = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], text=True, capture_output=True, check=False, timeout=10)
-            return result.returncode == 0 and f'"{pid}"' in result.stdout
         os.kill(pid, 0)
         return True
-    except (OSError, subprocess.SubprocessError):
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
 
 
 def recover_if_interrupted(task_id: str) -> dict[str, Any]:
@@ -1333,7 +1582,7 @@ def recover_if_interrupted(task_id: str) -> dict[str, Any]:
         return state
     controller_alive = _pid_alive(state.get("CONTROLLER_PID"))
     worker_alive = _pid_alive(state.get("WORKER_PID"))
-    if controller_alive or worker_alive:
+    if controller_alive is not False or worker_alive is not False:
         return state
     if not state.get("CONTROLLER_PID") and not state.get("WORKER_PID"):
         updated = datetime.fromisoformat(state["LAST_UPDATED_AT"])
@@ -1341,13 +1590,82 @@ def recover_if_interrupted(task_id: str) -> dict[str, Any]:
             return state
     worktree = Path(state["WORKTREE"]) if state.get("WORKTREE") else None
     changes = _git_changes(worktree) if worktree and worktree.is_dir() else {"changed": [], "created": [], "dependencies": []}
+    if state["HARNESS_STATE"] == "STOPPING" or state.get("STOP_REQUESTED"):
+        def stop_mutate(value: dict[str, Any]) -> None:
+            _close_active_plan(value, "PENDING")
+
+        return update_task(task_id, {
+            "WORKER_STATUS": "STOPPED_PROCESS_NOT_RUNNING", "WORKER_PID": None, "CONTROLLER_PID": None,
+            "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "", "CURRENT_PHASE": "STOPPED",
+            "CURRENT_ACTION": "Cooperative stop completed; no recorded process remains active",
+            "WHY_CURRENT_ACTION": "The stop request is preserved and both recorded process identities are confirmed inactive.",
+            "NEXT_ACTION": "Human inspects the preserved state and worktree",
+            "WHY_NEXT_ACTION": "R2 never deletes or merges useful work during stop recovery.",
+            "FILES_CHANGED": changes["changed"], "FILES_CREATED": changes["created"], "DEPENDENCIES_ADDED": changes["dependencies"],
+            "HUMAN_ATTENTION_REQUIRED": True,
+        }, new_state="STOPPED", event="STOP_RECOVERY_COMPLETED", detail=(
+            f"changed={len(changes['changed'])};recorded processes inactive"
+        ), mutate=stop_mutate)
+    def mutate(value: dict[str, Any]) -> None:
+        _close_active_plan(value, "PENDING")
+
     return update_task(task_id, {
         "WORKER_STATUS": "INTERRUPTED_PROCESS_NOT_RUNNING", "WORKER_PID": None, "CONTROLLER_PID": None,
+        "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "", "CURRENT_PHASE": "WAITING_HUMAN",
         "CURRENT_ACTION": "Recovered interrupted task state; no partial work was discarded",
         "WHY_CURRENT_ACTION": "Neither recorded controller nor worker PID is active; human review is required before redispatch.",
+        "NEXT_ACTION": "Human inspects the recovered state and explicitly resumes, reviews, or stops",
+        "WHY_NEXT_ACTION": "No controller or worker remains active; autonomous work cannot safely continue without a human decision.",
         "FILES_CHANGED": changes["changed"], "FILES_CREATED": changes["created"], "DEPENDENCIES_ADDED": changes["dependencies"],
         "HUMAN_ATTENTION_REQUIRED": True,
-    }, new_state="WAITING_HUMAN", event="CRASH_RECOVERY", detail=f"resume_point={state.get('NEXT_ACTION_CODE')};changed={len(changes['changed'])}")
+    }, new_state="WAITING_HUMAN", event="CRASH_RECOVERY", detail=f"resume_point={state.get('NEXT_ACTION_CODE')};changed={len(changes['changed'])}", mutate=mutate)
+
+
+def _record_controller_failure(task_id: str, exc: Exception) -> dict[str, Any]:
+    state = load_state(task_id)
+    worker_pid = state.get("WORKER_PID")
+    worker_liveness = _pid_alive(worker_pid)
+    worker_has_identity = isinstance(worker_pid, int) and worker_pid > 0
+    worker_may_be_alive = worker_has_identity and worker_liveness is not False
+    worktree = Path(state["WORKTREE"]) if state.get("WORKTREE") else None
+    inventory_error = ""
+    if worktree and worktree.is_dir():
+        try:
+            _refresh_changes(task_id)
+        except Exception as inventory_exc:
+            inventory_error = f";inventory={type(inventory_exc).__name__}:{inventory_exc}"[:2_000]
+    detail = f"{type(exc).__name__}:{exc}{inventory_error}"[:MAX_TEXT]
+
+    if worker_may_be_alive:
+        def preserve_active_worker(value: dict[str, Any]) -> None:
+            _close_active_plan(value, "PENDING")
+
+        liveness = "ALIVE" if worker_liveness is True else "UNKNOWN_FAIL_CLOSED"
+        return update_task(task_id, {
+            "WORKER_STATUS": "INTERRUPTED_CONTROLLER_WORKER_ALIVE" if worker_liveness is True else "INTERRUPTED_CONTROLLER_WORKER_STATUS_UNKNOWN",
+            "CONTROLLER_PID": None,
+            "CURRENT_PHASE": "WAITING_HUMAN",
+            "CURRENT_ACTION": "Controller failed while the recorded worker may still be active",
+            "WHY_CURRENT_ACTION": detail,
+            "NEXT_ACTION": "Human stops or recovers the orphaned worker, then reviews the preserved worktree",
+            "WHY_NEXT_ACTION": "Worker identity is preserved because controller failure cannot prove the mutating process is inactive.",
+            "HUMAN_ATTENTION_REQUIRED": True,
+        }, new_state="WAITING_HUMAN", event="CONTROLLER_FAILED_WORKER_PRESERVED", detail=(
+            f"worker_pid={worker_pid};liveness={liveness};{detail}"
+        ), mutate=preserve_active_worker)
+
+    def mark_controller_failed(value: dict[str, Any]) -> None:
+        _close_active_plan(value, "FAILED")
+
+    return update_task(task_id, {
+        "WORKER_STATUS": "CONTROLLER_FAILED", "WORKER_PID": None, "CONTROLLER_PID": None,
+        "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "", "CURRENT_PHASE": "FAILED",
+        "CURRENT_ACTION": "Controller failed; state and worktree preserved",
+        "WHY_CURRENT_ACTION": detail,
+        "NEXT_ACTION": "Human inspects the preserved state or runs a read-only review",
+        "WHY_NEXT_ACTION": "The worker is confirmed inactive, so terminal controller failure does not hide a mutating process.",
+        "HUMAN_ATTENTION_REQUIRED": True,
+    }, new_state="FAILED", event="CONTROLLER_FAILED", detail=detail, mutate=mark_controller_failed)
 
 
 def run_task(task_id: str) -> int:
@@ -1357,12 +1675,7 @@ def run_task(task_id: str) -> int:
         return 0
     except Exception as exc:
         try:
-            update_task(task_id, {
-                "WORKER_STATUS": "CONTROLLER_FAILED", "CONTROLLER_PID": None,
-                "CURRENT_ACTION": "Controller failed; state and worktree preserved",
-                "WHY_CURRENT_ACTION": f"{type(exc).__name__}:{exc}"[:MAX_TEXT],
-                "HUMAN_ATTENTION_REQUIRED": True,
-            }, new_state="FAILED", event="CONTROLLER_FAILED", detail=f"{type(exc).__name__}:{exc}")
+            _record_controller_failure(task_id, exc)
         except Exception:
             pass
         return 1
@@ -1402,11 +1715,15 @@ def command_start(args: argparse.Namespace) -> int:
             raise HarnessError(f"ACTIVE_TASK_EXISTS:{prior_id}")
     if task_dir(task_id).exists():
         raise HarnessError(f"TASK_ID_ALREADY_EXISTS_PRESERVE_STATE:{task_id}")
-    scope = infer_scope(goal, args.task_scope)
-    state = _new_state(task_id, goal, scope, args.max_corrections)
+    contract = _task_contract(goal, args.task_kind, args.task_scope)
+    scope = contract["TASK_SCOPE"]
+    state = _new_state(task_id, goal, scope, args.max_corrections, contract)
     task_dir(task_id).mkdir(parents=True, exist_ok=False)
     _write_state_unlocked(task_id, state)
-    _append_event_unlocked(task_id, "TASK_ACCEPTED", f"scope={scope};goal_version=1")
+    _append_event_unlocked(
+        task_id, "TASK_ACCEPTED",
+        f"task_kind={contract['TASK_KIND']};source={contract['TASK_KIND_SOURCE']};scope={scope};goal_version=1",
+    )
     _set_current_task(task_id)
     conflicts = hard_guard_conflicts(goal)
     if conflicts:
@@ -1428,7 +1745,9 @@ def command_status(args: argparse.Namespace) -> int:
     keys = (
         "TASK_ID", "HARNESS_STATE", "GOAL", "CURRENT_TASK", "CURRENT_PHASE", "CURRENT_ACTION",
         "WHY_CURRENT_ACTION", "PROGRESS_SUMMARY", "LAST_COMPLETED", "NEXT_ACTION", "WHY_NEXT_ACTION", "OVERFIT_GUARD",
-        "ANTI_BLOAT", "REUSE_GUARD", "WORKER_STATUS", "HUMAN_ATTENTION_REQUIRED", "LAST_UPDATED_AT",
+        "TASK_KIND", "TASK_KIND_SOURCE", "AUTO_SCOPE_SUGGESTION", "TASK_SCOPE", "SAFETY_FLAGS",
+        "ANTI_BLOAT", "ANTI_BLOAT_TASK_DELTA", "REUSE_GUARD", "WORKER_STATUS",
+        "HUMAN_ATTENTION_REQUIRED", "LAST_UPDATED_AT",
     )
     for key in keys:
         value = str(state.get(key)).replace("\r", "\\r").replace("\n", "\\n")
@@ -1572,10 +1891,13 @@ def command_review(args: argparse.Namespace) -> int:
 def command_stop(args: argparse.Namespace) -> int:
     task_id = _current_task_id(args.task_id)
     state = recover_if_interrupted(task_id)
-    if state["HARNESS_STATE"] in TERMINAL_STATES:
+    worker_pid = state.get("WORKER_PID")
+    worker_has_identity = isinstance(worker_pid, int) and worker_pid > 0
+    worker_may_be_alive = worker_has_identity and _pid_alive(worker_pid) is not False
+    if state["HARNESS_STATE"] in TERMINAL_STATES and not worker_may_be_alive:
         print(f"TASK_ID={task_id}\nHARNESS_STATE={state['HARNESS_STATE']}")
         return 0
-    target = "STOPPING" if state.get("WORKER_PID") or state.get("CONTROLLER_PID") else "STOPPED"
+    target = "STOPPING" if worker_may_be_alive or state.get("CONTROLLER_PID") else "STOPPED"
     updated = update_task(task_id, {
         "STOP_REQUESTED": True, "PAUSE_REQUESTED": False,
         "CURRENT_ACTION": "Safe stop requested; no new autonomous action will dispatch",
@@ -1594,6 +1916,7 @@ def build_parser() -> argparse.ArgumentParser:
     start = commands.add_parser("start", help="Accept and run one bounded task")
     start.add_argument("--goal", required=True)
     start.add_argument("--task-id")
+    start.add_argument("--task-kind", choices=TASK_KINDS, default="auto")
     start.add_argument("--task-scope", choices=_load_r1().TASK_SCOPES, default="independent-code")
     start.add_argument("--max-corrections", type=int, choices=range(0, 6), default=DEFAULT_MAX_CORRECTIONS)
     start.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
