@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import shutil
@@ -58,6 +59,8 @@ REQUIRED_STATE_FIELDS = {
     "LAST_REVIEW_PROGRESS_HASH", "LAST_REVIEW_FINDING_IDENTITY", "REVIEW_FINDING_LEDGER",
     "REVIEW_CORRECTION_DISPOSITION", "CONVERGENCE_MODE", "CONVERGENCE_STARTED_AT",
     "HARD_DEADLINE_REACHED_AT", "POST_DEADLINE_MACHINE_GRACE_SECONDS",
+    "STATE_STORAGE_STATUS", "STATE_STORAGE_FAILURE", "STATE_BYTES_LAST_WRITE",
+    "STATE_TEXT_ARCHIVES", "COMPACTED_HISTORY_IDENTITIES",
 }
 
 
@@ -128,6 +131,280 @@ def test_state_schema_atomic_persistence_and_compact_timeline(isolated_roots: tu
     assert module.state_path("test-task").stat().st_size < module.MAX_STATE_BYTES
     assert module.timeline_path("test-task").stat().st_size < module.MAX_TIMELINE_BYTES
     assert not list(module.task_dir("test-task").glob("*.tmp"))
+
+
+def test_state_compaction_deduplicates_hundreds_of_review_corrections(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state["HARNESS_STATE"] = "RUNNING"
+    state["WORK_UNITS"] = [
+        module._new_work_unit(
+            "WU-001", "Repair repository-root containment in the storage resolver",
+            relevant_paths=["scripts/common/storage_paths.ps1"],
+        )
+    ]
+    state["WORK_UNITS"][0]["status"] = "BLOCKED_LOCAL"
+    for index in range(300):
+        wording = (
+            "The storage resolver containment parity defect still permits repository root equality "
+            f"in scripts/common/storage_paths.ps1; reviewer wording variant {index}."
+        )
+        module._queue_correction_work_unit(
+            state, "FINAL_REVIEW", wording, "same-progress",
+            ["scripts/common/storage_paths.ps1"],
+        )
+    module._write_state_unlocked("test-task", state)
+    compact = module.load_state("test-task")
+    corrections = [
+        unit for unit in compact["WORK_UNITS"] if unit["id"].startswith("FIX-")
+    ]
+
+    assert len(corrections) == 1
+    assert len(compact["REVIEW_FINDING_LEDGER"]) == 1
+    assert corrections[0]["review_finding_id"] in compact["REVIEW_FINDING_LEDGER"]
+    assert "wording variant" not in corrections[0]["objective"]
+    assert compact["TELEMETRY"]["review_bodies_deduplicated"] == 300
+    assert compact["TELEMETRY"]["duplicate_planned_work_rejected"] == 299
+    assert module.state_path("test-task").stat().st_size < 80_000
+
+
+def test_large_findings_are_bounded_deterministically_and_archived(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state.update({
+        "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "FINALIZE",
+        "LAST_REVIEW_STATUS": "PASS", "REVIEW_CORRECTION_DISPOSITION": "ACCEPTED",
+    })
+    review = "review-head\n" + ("material-review-evidence-" * 300) + "\nreview-tail"
+    worker = "worker-head\n" + ("material-worker-evidence-" * 300) + "\nworker-tail"
+    state["REVIEW_FINDINGS"] = review
+    state["WORKER_FINDINGS"] = worker
+    module._write_state_unlocked("test-task", state)
+    compact = module.load_state("test-task")
+
+    for field, original in (("REVIEW_FINDINGS", review), ("WORKER_FINDINGS", worker)):
+        value = compact[field]
+        assert value.startswith(original[:100])
+        assert value.endswith(original[-100:])
+        assert hashlib.sha256(original.encode("utf-8")).hexdigest() in value
+    assert compact["TELEMETRY"]["text_fields_truncated"] >= 2
+    archive_hashes = {row["sha256"] for row in compact["STATE_TEXT_ARCHIVES"]}
+    assert hashlib.sha256(review.encode("utf-8")).hexdigest() in archive_hashes
+    timeline = module.timeline_path("test-task").read_text(encoding="utf-8")
+    assert "STATE_TEXT_EVIDENCE" in timeline
+    assert "review-head" in timeline and "review-tail" in timeline
+    first = module._bounded_state_text(review, 1_600)
+    second = module._bounded_state_text(review, 1_600)
+    assert first == second
+
+
+def test_completed_units_remain_recoverable_and_deduplicable_after_compaction(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    unit = module._new_work_unit(
+        "FIX-001", "Correct normalized final_review finding [STORAGE_CONTAINMENT_PARITY]",
+        relevant_paths=["scripts/common/storage_paths.ps1"],
+        required_inputs=["resolver contract " + "x" * 500],
+        reuse_evidence=[f"reuse evidence {index} " + "x" * 400 for index in range(12)],
+    )
+    unit.update({
+        "status": "DONE", "validation_state": "PASS",
+        "failure_signature": "FINAL_REVIEW:stable-signature",
+        "review_finding_id": "FINAL_REVIEW:stable-signature",
+        "produced_outputs": ["scripts/common/storage_paths.ps1"],
+        "resolved_by": "FIX-001", "retry_history": [
+            {"signature": "stable", "count": index, "at": f"t{index}"}
+            for index in range(20)
+        ],
+    })
+    state["WORK_UNITS"] = [unit]
+    module._write_state_unlocked("test-task", state)
+    compact = module.load_state("test-task")
+    recovered = module._unit_by_id(compact, "FIX-001")
+
+    assert recovered is not None
+    assert recovered["status"] == "DONE"
+    assert recovered["failure_signature"] == "FINAL_REVIEW:stable-signature"
+    assert recovered["review_finding_id"] == "FINAL_REVIEW:stable-signature"
+    assert recovered["produced_outputs"] == ["scripts/common/storage_paths.ps1"]
+    assert recovered["validation_state"] == "PASS"
+    assert recovered["required_input_count"] == 1
+    assert recovered["reuse_evidence_count"] == 12
+    assert recovered["retry_history_count"] == 20
+    assert 1 <= len(recovered["retry_history"]) <= 5
+    assert module._runnable_work_units(compact) == []
+
+
+def test_active_running_unit_and_pending_worker_markers_survive_compaction(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    active = module._new_work_unit("WU-001", "Active recovery objective")
+    active.update({"status": "RUNNING", "objective": "active-" + "x" * 6_000})
+    state.update({
+        "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER",
+        "ACTIVE_PROCESS_KIND": "WORKER", "WORKER_PID": 4242,
+        "ACTIVE_WORK_UNIT_ID": "WU-001", "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+        "WORK_UNITS": [active],
+        "WORKER_FINDINGS": "TASK_RESULT=COMPLETED\n" + "worker-marker-" * 500,
+        "PENDING_UNIT_RESULTS": [{"id": "WU-001", "status": "DONE"}],
+        "HISTORICAL_FINDINGS": [
+            {"identity": f"old-{index}", "detail": "history-" + "z" * 2_000}
+            for index in range(100)
+        ],
+    })
+    module._write_state_unlocked("test-task", state)
+    compact = module.load_state("test-task")
+
+    assert compact["WORKER_PID"] == 4242
+    assert compact["ACTIVE_WORK_UNIT_IDS"] == ["WU-001"]
+    assert compact["PENDING_UNIT_RESULTS"] == [{"id": "WU-001", "status": "DONE"}]
+    assert compact["WORKER_FINDINGS"].startswith("TASK_RESULT=COMPLETED")
+    assert compact["WORKER_FINDINGS"] == state["WORKER_FINDINGS"]
+    assert compact["WORK_UNITS"][0]["objective"] == active["objective"]
+    assert len(compact["HISTORICAL_FINDINGS"]) == module.STATE_HISTORY_RETAIN
+
+
+def test_retry_signature_and_compacted_historical_identity_remain_effective(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    unit = module._new_work_unit(
+        "WU-001", "Repair one tracked source",
+        relevant_paths=["scripts/common/storage_paths.py"],
+    )
+    state["WORK_UNITS"] = [unit]
+    message = r"apply_patch denied for scripts/common/storage_paths.py: PermissionError [WinError 5]"
+    module._record_unit_failure(state, ["WU-001"], "WORKER_LOCAL_BLOCKER", message, "p0")
+    state["HISTORICAL_FINDINGS"] = [
+        {"identity": "PREEXISTING_BASELINE_RESIDUE", "code": "PREEXISTING_BASELINE_RESIDUE", "detail": "old"},
+        *({"identity": f"history-{index}", "detail": "x" * 1_000} for index in range(100)),
+    ]
+    module._write_state_unlocked("test-task", state)
+    compact = module.load_state("test-task")
+    key = next(iter(compact["RETRY_LEDGER"]))
+    count = compact["RETRY_LEDGER"][key]["count"]
+
+    module._record_unit_failure(
+        compact, ["WU-001"], "WORKER_LOCAL_BLOCKER",
+        "System.UnauthorizedAccessException writing scripts/common/storage_paths.py", "p0",
+    )
+    assert compact["RETRY_LEDGER"][key]["count"] == count + 1
+    before = len(compact["HISTORICAL_FINDINGS"])
+    compact["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+    assert module._queue_correction_work_unit(
+        compact, "FINAL_REVIEW",
+        "Pre-existing Anti-Bloat baseline residue outside this task is unchanged by the task.",
+        "p0",
+    ) is False
+    assert len(compact["HISTORICAL_FINDINGS"]) == before
+
+
+def test_state_near_hard_limit_compacts_before_failure(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state.update({"HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "FINALIZE"})
+    state["HISTORICAL_FINDINGS"] = [
+        {"identity": f"history-{index}", "detail": f"entry-{index}-" + "h" * 2_000}
+        for index in range(100)
+    ]
+    state["VALIDATION_RESULTS"] = [f"validation-{index}-" + "v" * 3_000 for index in range(100)]
+    state["TESTS_RUN"] = [f"test-{index}-" + "t" * 1_000 for index in range(100)]
+    state["TEST_HISTORY_START_INDEX"] = 100
+    assert len(module._json_bytes(state)) > module.MAX_STATE_BYTES
+
+    module._write_state_unlocked("test-task", state)
+    compact = module.load_state("test-task")
+    size = module.state_path("test-task").stat().st_size
+    assert size < module.STATE_COMPACTION_TARGET_BYTES
+    assert compact["STATE_STORAGE_STATUS"] == "COMPACTED"
+    assert compact["TELEMETRY"]["state_compactions"] >= 1
+    assert compact["TELEMETRY"]["state_bytes_before_compaction"] > module.MAX_STATE_BYTES
+    assert compact["TELEMETRY"]["state_bytes_after_compaction"] < module.MAX_STATE_BYTES
+    assert compact["TELEMETRY"]["historical_entries_compacted"] > 100
+
+
+def test_state_compaction_exhaustion_persists_terminal_diagnostic(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_id = "tiny-state"
+    module.task_dir(task_id).mkdir(parents=True)
+    state = module._new_state(task_id, "g" * 20_000, "independent-code", 2)
+    monkeypatch.setattr(module, "MAX_STATE_BYTES", 2_048)
+    monkeypatch.setattr(module, "STATE_COMPACTION_TARGET_BYTES", 1_500)
+
+    module._write_state_unlocked(task_id, state)
+    diagnostic = module.load_state(task_id)
+    assert diagnostic["HARNESS_STATE"] == "FAILED"
+    assert diagnostic["NEXT_ACTION_CODE"] == "DONE"
+    assert diagnostic["STATE_STORAGE_STATUS"] == "COMPACTION_EXHAUSTED"
+    assert diagnostic["STATE_STORAGE_FAILURE"].startswith("STATE_COMPACTION_EXHAUSTED:")
+    assert module.state_path(task_id).stat().st_size < 2_048
+    module._dispatch_r3(task_id)
+
+
+def test_longrun_synthetic_state_growth_stays_well_below_hard_limit(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state.update({
+        "HARNESS_STATE": "COMPLETED_WITH_DEFERRED_WORK", "NEXT_ACTION_CODE": "DONE",
+        "LAST_REVIEW_STATUS": "PASS_WITH_WARNINGS", "TERMINAL_OUTCOME": "COMPLETED_WITH_DEFERRED_WORK",
+    })
+    units = []
+    for index in range(module.MAX_WORK_UNITS):
+        unit = module._new_work_unit(
+            f"WU-{index:03d}", f"Historical objective {index} " + "o" * 900,
+            required_inputs=["input-" + "i" * 500 for _ in range(10)],
+            reuse_evidence=["reuse-" + "r" * 500 for _ in range(10)],
+        )
+        unit.update({
+            "status": ("DONE", "BLOCKED_LOCAL", "DEFERRED")[index % 3],
+            "validation_state": "PASS" if index % 3 == 0 else "NOT_RUN",
+            "blocker": {"code": "LOCAL", "detail": "b" * 2_000} if index % 3 else {},
+            "failure_signature": f"signature-{index}",
+            "retry_history": [{"signature": f"s-{index}", "count": retry} for retry in range(20)],
+        })
+        units.append(unit)
+    state["WORK_UNITS"] = units
+    for index in range(300):
+        module._queue_correction_work_unit(
+            state, "FINAL_REVIEW",
+            f"Storage containment parity defect in scripts/common/storage_paths.ps1 wording {index}",
+            "same-progress", ["scripts/common/storage_paths.ps1"],
+        )
+    state["HISTORICAL_FINDINGS"] = [
+        {"identity": f"historical-{index}", "detail": "h" * 2_000} for index in range(400)
+    ]
+    state["RESOLVED_FINDINGS"] = [
+        {"identity": f"resolved-{index}", "detail": "r" * 1_000} for index in range(300)
+    ]
+    state["VALIDATION_RESULTS"] = ["validation-" + "v" * 3_000 for _ in range(200)]
+    state["TESTS_RUN"] = ["pytest-" + "t" * 1_000 for _ in range(200)]
+    state["TEST_HISTORY_START_INDEX"] = 200
+    state["REVIEW_FINDINGS"] = "review-" + "q" * 8_000
+    state["WORKER_FINDINGS"] = "worker-" + "w" * 8_000
+    raw_size = len(module._json_bytes(state))
+    assert raw_size > 1_000_000
+
+    module._write_state_unlocked("test-task", state)
+    compact = module.load_state("test-task")
+    size = module.state_path("test-task").stat().st_size
+    assert size < 90_000
+    assert compact["HARNESS_STATE"] == "COMPLETED_WITH_DEFERRED_WORK"
+    assert compact["NEXT_ACTION_CODE"] == "DONE"
+    assert len(compact["WORK_UNITS"]) == module.MAX_WORK_UNITS + 1
+    assert len([unit for unit in compact["WORK_UNITS"] if unit["id"].startswith("FIX-")]) == 1
+    assert module._unit_by_id(compact, "WU-000")["status"] == "DONE"
+    assert module._unit_by_id(compact, "WU-001")["failure_signature"] == "signature-1"
+    assert len(compact["REVIEW_FINDING_LEDGER"]) == 1
+    assert compact["TELEMETRY"]["state_compactions"] >= 1
+    assert compact["TELEMETRY"]["historical_entries_compacted"] > 500
+    assert compact["TELEMETRY"]["review_bodies_deduplicated"] == 300
 
 
 def test_state_transition_validation() -> None:

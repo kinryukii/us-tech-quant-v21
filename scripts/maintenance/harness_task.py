@@ -52,6 +52,11 @@ MAX_STATE_BYTES = 131_072
 MAX_TIMELINE_BYTES = 262_144
 MAX_LIST_ITEMS = 100
 MAX_TEXT = 8_000
+STATE_COMPACTION_TARGET_BYTES = 98_304
+STATE_HISTORY_RETAIN = 16
+STATE_TEST_HISTORY_RETAIN = 24
+STATE_ARCHIVE_RETAIN = 40
+STATE_COMPACTION_VERSION = 1
 DEFAULT_MAX_CORRECTIONS = 2
 DEFAULT_FAILURE_RETRY_LIMIT = 2
 DEFAULT_PLANNER_RETRY_LIMIT = 1
@@ -438,11 +443,491 @@ def load_state(task_id: str) -> dict[str, Any]:
     return value
 
 
+def _bounded_state_text(
+    value: Any, limit: int, *, evidence_ref: str = "timeline.jsonl",
+) -> tuple[str, bool, str]:
+    """Retain deterministic head/tail evidence without changing external identities."""
+    text = str(value or "")
+    encoded = text.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    if len(encoded) <= limit:
+        return text, False, digest
+    marker = (
+        f"\n[STATE_TEXT_COMPACTED sha256={digest} bytes={len(encoded)} "
+        f"evidence={evidence_ref}]\n"
+    ).encode("utf-8")
+    if len(marker) >= limit:
+        marker = f"[COMPACTED sha256={digest}]".encode("utf-8")
+        if len(marker) > limit:
+            marker = f"[sha256={digest[:max(8, limit - 10)]}]".encode("utf-8")[:limit]
+        return marker.decode("utf-8", errors="ignore"), True, digest
+    available = max(0, limit - len(marker))
+    head = encoded[: available // 2].decode("utf-8", errors="ignore")
+    tail_bytes = available - available // 2
+    tail = encoded[-tail_bytes:].decode("utf-8", errors="ignore") if tail_bytes else ""
+    compact = head + marker.decode("utf-8") + tail
+    while len(compact.encode("utf-8")) > limit and tail:
+        tail = tail[1:]
+        compact = head + marker.decode("utf-8") + tail
+    return compact, True, digest
+
+
+def _state_row_identity(row: Any) -> str:
+    if isinstance(row, dict):
+        value = (
+            row.get("identity") or row.get("signature") or row.get("id")
+            or row.get("code") or ""
+        )
+        if value:
+            return hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:20]
+    payload = json.dumps(row, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:20]
+
+
+def _compact_mapping_text(
+    row: dict[str, Any], limits: dict[str, int], metrics: dict[str, int],
+) -> None:
+    for key, limit in limits.items():
+        if key not in row or not isinstance(row[key], str):
+            continue
+        bounded, truncated, _ = _bounded_state_text(row[key], limit)
+        if truncated:
+            row[key] = bounded
+            metrics["text_fields_truncated"] += 1
+
+
+def _compact_discovery_evidence(evidence: Any, metrics: dict[str, int]) -> Any:
+    if not isinstance(evidence, dict):
+        return evidence
+    compact = dict(evidence)
+    for field, retain, limit in (
+        ("tokens", 8, 160), ("warning_codes", 12, 240),
+        ("filename_matches", 16, 240), ("semantic_matches", 16, 360),
+        ("roots", 8, 160),
+    ):
+        values = compact.get(field)
+        if not isinstance(values, list):
+            continue
+        bounded = []
+        for value in values[:retain]:
+            text, truncated, _ = _bounded_state_text(value, limit)
+            bounded.append(text)
+            metrics["text_fields_truncated"] += int(truncated)
+        metrics["historical_entries_compacted"] += max(0, len(values) - len(bounded))
+        compact[field] = bounded
+    classifications = compact.get("candidate_classifications")
+    if isinstance(classifications, dict):
+        rows = list(classifications.items())[:24]
+        compact["candidate_classifications"] = {
+            _bounded_state_text(key, 240)[0]: _bounded_state_text(value, 160)[0]
+            for key, value in rows
+        }
+        metrics["historical_entries_compacted"] += max(0, len(classifications) - len(rows))
+    _compact_mapping_text(compact, {"classification": 500}, metrics)
+    return compact
+
+
+def _compact_history_collection(
+    state: dict[str, Any], field: str, *, retain: int,
+    detail_limit: int, metrics: dict[str, int],
+) -> None:
+    values = state.get(field)
+    if not isinstance(values, list):
+        return
+    dropped = values[:-retain] if len(values) > retain else []
+    kept = values[-retain:]
+    if dropped:
+        digests = state.setdefault("COMPACTED_HISTORY_IDENTITIES", {}).setdefault(field, [])
+        state["COMPACTED_HISTORY_IDENTITIES"][field] = list(dict.fromkeys([
+            *digests, *(_state_row_identity(row) for row in dropped),
+        ]))[-128:]
+        metrics["historical_entries_compacted"] += len(dropped)
+    compacted: list[Any] = []
+    for value in kept:
+        if isinstance(value, dict):
+            row = dict(value)
+            _compact_mapping_text(row, {
+                "detail": detail_limit, "description": detail_limit,
+                "objective": detail_limit, "evidence": detail_limit,
+                "output": detail_limit,
+            }, metrics)
+            compacted.append(row)
+        elif isinstance(value, str):
+            bounded, truncated, _ = _bounded_state_text(value, detail_limit)
+            compacted.append(bounded)
+            metrics["text_fields_truncated"] += int(truncated)
+        else:
+            compacted.append(value)
+    if compacted != values:
+        state[field] = compacted
+
+
+def _compact_work_units(
+    state: dict[str, Any], metrics: dict[str, int], *, aggressive: bool,
+) -> None:
+    active_ids = set(str(value) for value in state.get("ACTIVE_WORK_UNIT_IDS", []))
+    for unit in state.get("WORK_UNITS", []):
+        if not isinstance(unit, dict) or str(unit.get("id", "")) in active_ids:
+            continue
+        if unit.get("status") not in WORK_UNIT_TERMINAL_STATUSES:
+            continue
+        changed = False
+        for field, limit in (
+            ("objective", 140 if aggressive else 220),
+            ("next_action", 160 if aggressive else 220),
+            ("last_checkpoint", 160 if aggressive else 220),
+        ):
+            if isinstance(unit.get(field), str):
+                bounded, truncated, _ = _bounded_state_text(unit[field], limit)
+                if truncated:
+                    unit[field] = bounded
+                    metrics["text_fields_truncated"] += 1
+                    changed = True
+        identity = str(unit.get("canonical_identity", ""))
+        if len(identity.encode("utf-8")) > 160:
+            identity_digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            unit["canonical_identity"] = f"sha256:{identity_digest}"
+            metrics["text_fields_truncated"] += 1
+            changed = True
+        blocker = unit.get("blocker")
+        if isinstance(blocker, dict):
+            before = json.dumps(blocker, sort_keys=True, default=str)
+            _compact_mapping_text(
+                blocker,
+                {"detail": 160 if aggressive else 360, "reason": 160 if aggressive else 360},
+                metrics,
+            )
+            changed = changed or before != json.dumps(blocker, sort_keys=True, default=str)
+        evidence = list(unit.get("reuse_evidence", []))
+        evidence_retain = 1 if aggressive else 2
+        evidence_limit = 160 if aggressive else 220
+        if len(evidence) > evidence_retain or any(
+            len(str(value).encode("utf-8")) > evidence_limit for value in evidence
+        ):
+            digest = str(unit.get("reuse_evidence_sha256", "")) or hashlib.sha256(
+                json.dumps(evidence, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            ).hexdigest()
+            unit["reuse_evidence_count"] = len(evidence)
+            unit["reuse_evidence"] = (
+                [f"sha256:{digest}"] if aggressive else [
+                    _bounded_state_text(value, evidence_limit)[0]
+                    for value in evidence[:evidence_retain]
+                ]
+            )
+            if not aggressive:
+                unit["reuse_evidence_sha256"] = digest
+            else:
+                unit.pop("reuse_evidence_sha256", None)
+            metrics["historical_entries_compacted"] += max(1, len(evidence) - evidence_retain)
+            changed = True
+        required = list(unit.get("required_inputs", []))
+        if required:
+            unit["required_input_count"] = len(required)
+            unit["required_inputs_sha256"] = hashlib.sha256(
+                json.dumps(required, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            ).hexdigest()
+            unit.pop("required_inputs", None)
+            metrics["historical_entries_compacted"] += len(required)
+            changed = True
+        history = list(unit.get("retry_history", []))
+        retry_retain = 2 if aggressive else 5
+        if len(history) > retry_retain:
+            unit["retry_history_count"] = len(history)
+            unit["retry_history"] = history[-retry_retain:]
+            metrics["historical_entries_compacted"] += len(history) - retry_retain
+            changed = True
+        if aggressive:
+            for field, empty in (
+                ("parent_id", ""), ("relevant_paths", []), ("attempts", 0),
+            ):
+                if unit.get(field) == empty:
+                    unit.pop(field, None)
+                    changed = True
+        was_compacted = unit.get("state_compacted") == STATE_COMPACTION_VERSION
+        if changed or not was_compacted:
+            unit["state_compacted"] = STATE_COMPACTION_VERSION
+            metrics["historical_entries_compacted"] += int(not was_compacted)
+
+
+def _compact_retry_ledger(state: dict[str, Any], metrics: dict[str, int]) -> None:
+    ledger = state.get("RETRY_LEDGER")
+    if not isinstance(ledger, dict):
+        return
+    for value in ledger.values():
+        if not isinstance(value, dict):
+            continue
+        detail = str(value.get("last_detail", ""))
+        if detail:
+            value["last_detail_sha256"] = hashlib.sha256(detail.encode("utf-8")).hexdigest()
+            bounded, truncated, _ = _bounded_state_text(detail, 240)
+            if truncated:
+                value["last_detail"] = bounded
+                metrics["text_fields_truncated"] += 1
+        _compact_mapping_text(value, {"last_attempted_remedy": 160}, metrics)
+
+
+def _archive_state_text(
+    task_id: str, state: dict[str, Any], archives: list[dict[str, str]],
+) -> None:
+    known = {
+        str(row.get("sha256")) for row in state.get("STATE_TEXT_ARCHIVES", [])
+        if isinstance(row, dict)
+    }
+    metadata = list(state.get("STATE_TEXT_ARCHIVES", []))
+    for archive in archives:
+        digest = archive["sha256"]
+        if digest in known:
+            continue
+        text = archive.pop("text")
+        chunks = [text[index:index + 500] for index in range(0, len(text), 500)] or [""]
+        status = "TIMELINE"
+        for index, chunk in enumerate(chunks, 1):
+            detail = json.dumps({
+                "sha256": digest, "field": archive["field"], "part": index,
+                "parts": len(chunks), "text": chunk,
+            }, ensure_ascii=False, separators=(",", ":"))
+            try:
+                _append_event_unlocked(task_id, "STATE_TEXT_EVIDENCE", detail)
+            except HarnessError:
+                status = "TIMELINE_CAP_REACHED"
+                break
+        metadata.append({
+            **archive, "evidence": f"timeline.jsonl#STATE_TEXT_EVIDENCE:{digest}",
+            "status": status,
+        })
+        known.add(digest)
+    state["STATE_TEXT_ARCHIVES"] = metadata[-STATE_ARCHIVE_RETAIN:]
+
+
+def _compact_state_for_write(
+    task_id: str, state: dict[str, Any], *, aggressive: bool = False,
+) -> tuple[dict[str, int], list[dict[str, str]]]:
+    """Compact only historical prose; active scheduling/recovery identity is retained."""
+    metrics = {"historical_entries_compacted": 0, "text_fields_truncated": 0}
+    archives: list[dict[str, str]] = []
+    active_kind = str(state.get("ACTIVE_PROCESS_KIND", ""))
+    action = str(state.get("NEXT_ACTION_CODE", ""))
+    pending_review = state.get("REVIEW_CORRECTION_DISPOSITION") in {
+        "NOT_EVALUATED", "PENDING_CLASSIFICATION",
+    }
+    safe_text_fields = {
+        "PLANNER_FINDINGS": bool(state.get("WORK_UNITS")) and action != "PLAN" and active_kind != "PLANNER",
+        "WORKER_FINDINGS": action != "WORKER" and active_kind != "WORKER" and not state.get("WORKER_PID"),
+        "REVIEW_FINDINGS": action != "FINAL_REVIEW" and active_kind != "REVIEW" and not (
+            state.get("LAST_REVIEW_STATUS") == "FIX_REQUIRED" and pending_review
+        ),
+        "WORKER_TEST_EVIDENCE": action != "WORKER" and active_kind != "WORKER",
+    }
+    limits = {
+        "PLANNER_FINDINGS": 2_400 if not aggressive else 1_200,
+        "WORKER_FINDINGS": 3_200 if not aggressive else 1_600,
+        "REVIEW_FINDINGS": 3_200 if not aggressive else 1_600,
+        "WORKER_TEST_EVIDENCE": 2_000 if not aggressive else 1_000,
+    }
+    for field, safe in safe_text_fields.items():
+        value = state.get(field)
+        if not safe or not isinstance(value, str) or not value:
+            continue
+        bounded, truncated, digest = _bounded_state_text(value, limits[field])
+        if truncated:
+            archives.append({
+                "field": field, "sha256": digest,
+                "bytes": str(len(value.encode("utf-8"))), "text": value,
+            })
+            state[field] = bounded
+            metrics["text_fields_truncated"] += 1
+    for field, limit in (
+        ("CURRENT_ACTION", 600), ("WHY_CURRENT_ACTION", 1_000),
+        ("NEXT_ACTION", 600), ("WHY_NEXT_ACTION", 1_000),
+        ("CONTROLLER_EXCEPTION", 2_000), ("CONTROLLER_STDERR_TAIL", 4_000),
+        ("SUPERVISOR_EXCEPTION", 2_000), ("SUPERVISOR_STDERR_TAIL", 4_000),
+    ):
+        if isinstance(state.get(field), str):
+            bounded, truncated, _ = _bounded_state_text(state[field], limit)
+            if truncated:
+                state[field] = bounded
+                metrics["text_fields_truncated"] += 1
+    _compact_work_units(state, metrics, aggressive=aggressive)
+    _compact_retry_ledger(state, metrics)
+    for field, retain, limit in (
+        ("BLOCKERS", STATE_HISTORY_RETAIN, 300 if aggressive else 500),
+        ("LOCAL_BLOCKED_WORK", max(MAX_WORK_UNITS, STATE_HISTORY_RETAIN), 300 if aggressive else 500),
+        ("RESOLVED_FINDINGS", STATE_HISTORY_RETAIN, 240 if aggressive else 360),
+        ("HISTORICAL_FINDINGS", STATE_HISTORY_RETAIN, 240 if aggressive else 360),
+        ("VALIDATION_RESULTS", 20 if not aggressive else 12, 1_000 if not aggressive else 600),
+        ("STEERING_HISTORY", STATE_HISTORY_RETAIN, 500),
+    ):
+        _compact_history_collection(
+            state, field, retain=retain, detail_limit=limit, metrics=metrics,
+        )
+    tests = state.get("TESTS_RUN")
+    if isinstance(tests, list):
+        start = max(0, min(int(state.get("TEST_HISTORY_START_INDEX", 0)), len(tests)))
+        removable = min(max(0, len(tests) - STATE_TEST_HISTORY_RETAIN), start)
+        if removable:
+            state["COMPACTED_TEST_COUNT"] = int(state.get("COMPACTED_TEST_COUNT", 0)) + removable
+            tests = tests[removable:]
+            state["TEST_HISTORY_START_INDEX"] = start - removable
+            metrics["historical_entries_compacted"] += removable
+        compact_tests = []
+        for value in tests:
+            bounded, truncated, _ = _bounded_state_text(value, 600 if not aggressive else 400)
+            compact_tests.append(bounded)
+            metrics["text_fields_truncated"] += int(truncated)
+        state["TESTS_RUN"] = compact_tests
+    cache = state.get("REUSE_DISCOVERY_CACHE")
+    if isinstance(cache, dict):
+        cache["initial"] = _compact_discovery_evidence(cache.get("initial", {}), metrics)
+        incremental = list(cache.get("incremental", []))
+        if len(incremental) > 8:
+            metrics["historical_entries_compacted"] += len(incremental) - 8
+            incremental = incremental[-8:]
+        for row in incremental:
+            if isinstance(row, dict):
+                row["evidence"] = _compact_discovery_evidence(row.get("evidence", {}), metrics)
+        cache["incremental"] = incremental
+        evidence = state.get("REUSE_EVIDENCE")
+        if isinstance(evidence, dict):
+            compact_evidence = _compact_discovery_evidence(evidence, metrics)
+            if compact_evidence == cache.get("initial"):
+                state["REUSE_EVIDENCE"] = {
+                    "reference": "REUSE_DISCOVERY_CACHE.initial",
+                    "tokens": cache["initial"].get("tokens", []),
+                    "match_count_capped": cache["initial"].get("match_count_capped", 0),
+                    "classification": cache["initial"].get("classification", ""),
+                }
+                metrics["historical_entries_compacted"] += 1
+            else:
+                state["REUSE_EVIDENCE"] = compact_evidence
+    return metrics, archives
+
+
+def _state_storage_failure_snapshot(
+    state: dict[str, Any], before: int, after: int,
+) -> dict[str, Any]:
+    active_worker = isinstance(state.get("WORKER_PID"), int) and state["WORKER_PID"] > 0
+    keep = {
+        "TASK_ID", "HARNESS_VERSION", "GOAL_VERSION", "TASK_STARTED_AT", "DEADLINE_AT",
+        "TIME_BUDGET_HOURS", "TASK_KIND", "TASK_SCOPE", "SAFETY_FLAGS", "WORKTREE",
+        "TASK_TEMP_RUNTIME", "TASK_TEMP_RUNTIME_STATUS", "OVERFIT_GUARD", "ANTI_BLOAT",
+        "ANTI_BLOAT_TASK_DELTA", "REUSE_GUARD", "FILES_CHANGED", "FILES_CREATED",
+        "DEPENDENCIES_ADDED", "STOP_REQUESTED", "PAUSE_REQUESTED", "SUPERVISOR_PID",
+        "SUPERVISOR_HEARTBEAT_AT", "CONTROLLER_PID", "CONTROLLER_HEARTBEAT_AT",
+        "WORKER_PID", "WORKER_THREAD_ID", "ACTIVE_THREAD_ID", "ACTIVE_PROCESS_KIND",
+        "ACTIVE_WORK_UNIT_ID", "ACTIVE_WORK_UNIT_IDS", "PENDING_UNIT_RESULTS",
+        "CURRENT_RETRY_SIGNATURE", "CURRENT_RETRY_COUNT", "LAST_CHECKPOINT",
+        "LAST_MEANINGFUL_PROGRESS_AT", "STATE_TEXT_ARCHIVES", "TELEMETRY",
+    }
+    snapshot = {key: state.get(key) for key in keep if key in state}
+    active_ids = set(str(value) for value in state.get("ACTIVE_WORK_UNIT_IDS", []))
+    snapshot["WORK_UNITS"] = [
+        {
+            key: unit.get(key) for key in (
+                "id", "parent_id", "dependencies", "objective", "status", "relevant_paths",
+                "produced_outputs", "validation_state", "blocker", "failure_signature",
+                "last_checkpoint", "next_action", "attempts",
+            ) if key in unit
+        }
+        for unit in state.get("WORK_UNITS", [])
+        if str(unit.get("id", "")) in active_ids
+    ]
+    diagnosis = f"STATE_COMPACTION_EXHAUSTED:{before}->{after}>{MAX_STATE_BYTES}"
+    snapshot.update({
+        "HARNESS_STATE": "RUNNING" if active_worker else "FAILED",
+        "CURRENT_PHASE": "AUTOMATIC_RECOVERY" if active_worker else "STATE_STORAGE_FAILURE",
+        "CURRENT_ACTION": "State storage exhausted after safe compaction",
+        "WHY_CURRENT_ACTION": diagnosis,
+        "NEXT_ACTION": (
+            "Preserve the recorded worker and recover from its checkpoint"
+            if active_worker else "Inspect compact timeline diagnostics; no process should be redispatched"
+        ),
+        "WHY_NEXT_ACTION": "The 128 KiB hard state guard remained fail-closed.",
+        "NEXT_ACTION_CODE": state.get("NEXT_ACTION_CODE", "SELECT_WORK") if active_worker else "DONE",
+        "WORKER_STATUS": (
+            "STATE_STORAGE_FAILURE_WORKER_PRESERVED" if active_worker else "STATE_STORAGE_FAILURE"
+        ),
+        "HUMAN_ATTENTION_REQUIRED": False,
+        "TERMINAL_OUTCOME": "" if active_worker else "STATE_STORAGE_COMPACTION_EXHAUSTED",
+        "STATE_STORAGE_STATUS": "COMPACTION_EXHAUSTED",
+        "STATE_STORAGE_FAILURE": diagnosis,
+        "STATE_BYTES_BEFORE_FAILURE": before,
+        "STATE_BYTES_AFTER_SAFE_COMPACTION": after,
+        "LAST_UPDATED_AT": utc_now(),
+    })
+    goal, _, _ = _bounded_state_text(state.get("GOAL", ""), 1_000)
+    snapshot["GOAL"] = goal
+    return snapshot
+
+
 def _write_state_unlocked(task_id: str, state: dict[str, Any]) -> None:
     state["LAST_UPDATED_AT"] = utc_now()
+    before = len(_json_bytes(state))
+    metrics, archives = _compact_state_for_write(
+        task_id, state, aggressive=before > STATE_COMPACTION_TARGET_BYTES,
+    )
+    if any(metrics.values()):
+        _archive_state_text(task_id, state, archives)
+        telemetry = state.setdefault("TELEMETRY", {})
+        telemetry["state_compactions"] = int(telemetry.get("state_compactions", 0)) + 1
+        telemetry["state_bytes_before_compaction"] = before
+        telemetry["historical_entries_compacted"] = int(
+            telemetry.get("historical_entries_compacted", 0)
+        ) + metrics["historical_entries_compacted"]
+        telemetry["text_fields_truncated"] = int(
+            telemetry.get("text_fields_truncated", 0)
+        ) + metrics["text_fields_truncated"]
+    state["STATE_STORAGE_STATUS"] = "COMPACTED" if any(metrics.values()) else state.get(
+        "STATE_STORAGE_STATUS", "NORMAL"
+    )
+    for _ in range(3):
+        payload = _json_bytes(state)
+        state["STATE_BYTES_LAST_WRITE"] = len(payload)
+        if any(metrics.values()):
+            state["TELEMETRY"]["state_bytes_after_compaction"] = len(payload)
     payload = _json_bytes(state)
     if len(payload) > MAX_STATE_BYTES:
-        raise HarnessError(f"STATE_TOO_LARGE:{len(payload)}>{MAX_STATE_BYTES}")
+        failed = _state_storage_failure_snapshot(state, before, len(payload))
+        diagnostic_payload = _json_bytes(failed)
+        if len(diagnostic_payload) > MAX_STATE_BYTES:
+            active_worker = isinstance(state.get("WORKER_PID"), int) and state["WORKER_PID"] > 0
+            failed = {
+                "TASK_ID": task_id,
+                "HARNESS_STATE": "RUNNING" if active_worker else "FAILED",
+                "NEXT_ACTION_CODE": state.get("NEXT_ACTION_CODE", "SELECT_WORK") if active_worker else "DONE",
+                "CURRENT_PHASE": "AUTOMATIC_RECOVERY" if active_worker else "STATE_STORAGE_FAILURE",
+                "WORKER_STATUS": (
+                    "STATE_STORAGE_FAILURE_WORKER_PRESERVED" if active_worker else "STATE_STORAGE_FAILURE"
+                ),
+                "WORKER_PID": state.get("WORKER_PID"),
+                "ACTIVE_THREAD_ID": state.get("ACTIVE_THREAD_ID", ""),
+                "ACTIVE_PROCESS_KIND": state.get("ACTIVE_PROCESS_KIND", ""),
+                "ACTIVE_WORK_UNIT_ID": state.get("ACTIVE_WORK_UNIT_ID", ""),
+                "ACTIVE_WORK_UNIT_IDS": state.get("ACTIVE_WORK_UNIT_IDS", []),
+                "STOP_REQUESTED": False, "PAUSE_REQUESTED": False,
+                "HUMAN_ATTENTION_REQUIRED": False,
+                "STATE_STORAGE_STATUS": "COMPACTION_EXHAUSTED",
+                "STATE_STORAGE_FAILURE": (
+                    f"STATE_COMPACTION_EXHAUSTED:{before}->{len(payload)}>{MAX_STATE_BYTES}"
+                ),
+                "TERMINAL_OUTCOME": "" if active_worker else "STATE_STORAGE_COMPACTION_EXHAUSTED",
+                "LAST_UPDATED_AT": utc_now(),
+            }
+            diagnostic_payload = _json_bytes(failed)
+        if len(diagnostic_payload) > MAX_STATE_BYTES:
+            raise HarnessError(
+                f"STATE_STORAGE_DIAGNOSTIC_TOO_LARGE:{len(diagnostic_payload)}>{MAX_STATE_BYTES}"
+            )
+        state.clear()
+        state.update(failed)
+        _atomic_write(state_path(task_id), diagnostic_payload)
+        try:
+            _append_event_unlocked(
+                task_id, "STATE_STORAGE_COMPACTION_EXHAUSTED",
+                str(failed["STATE_STORAGE_FAILURE"]),
+            )
+        except HarnessError:
+            pass
+        return
     _atomic_write(state_path(task_id), payload)
 
 
@@ -561,6 +1046,7 @@ def _new_state(
         "LOCAL_BLOCKED_WORK": [],
         "RESOLVED_FINDINGS": [],
         "HISTORICAL_FINDINGS": [],
+        "COMPACTED_HISTORY_IDENTITIES": {},
         "STEERING_HISTORY": [],
         "PENDING_STEER": [],
         "CORRECTION_ATTEMPTS": 0,
@@ -641,6 +1127,10 @@ def _new_state(
         "LAST_CHECKPOINT": "TASK_ACCEPTED",
         "WAITING_STARTED_AT": "",
         "TERMINAL_OUTCOME": "",
+        "STATE_STORAGE_STATUS": "NORMAL",
+        "STATE_STORAGE_FAILURE": "",
+        "STATE_BYTES_LAST_WRITE": 0,
+        "STATE_TEXT_ARCHIVES": [],
         "TELEMETRY": {
             "total_wall_seconds": 0.0,
             "worker_wall_seconds": 0.0,
@@ -659,6 +1149,12 @@ def _new_state(
             "duplicate_planned_work_rejected": 0,
             "discovery_full_scans": 0,
             "discovery_incremental_refreshes": 0,
+            "state_compactions": 0,
+            "state_bytes_before_compaction": 0,
+            "state_bytes_after_compaction": 0,
+            "historical_entries_compacted": 0,
+            "text_fields_truncated": 0,
+            "review_bodies_deduplicated": 0,
         },
     }
     if task_contract:
@@ -2690,6 +3186,16 @@ def _apply_validated_unit_results(state: dict[str, Any]) -> None:
     _meaningful_progress(state, f"WORK_UNITS_VALIDATED:{completed}")
 
 
+def _historical_identity_seen(state: dict[str, Any], field: str, identity: str) -> bool:
+    if any(
+        isinstance(row, dict) and row.get("identity") == identity
+        for row in state.get(field, [])
+    ):
+        return True
+    digest = _state_row_identity({"identity": identity})
+    return digest in state.get("COMPACTED_HISTORY_IDENTITIES", {}).get(field, [])
+
+
 def _queue_correction_work_unit(
     state: dict[str, Any], source: str, detail: str, progress_hash: str,
     relevant_paths: Sequence[str] = (),
@@ -2700,7 +3206,7 @@ def _queue_correction_work_unit(
     }
     if analysis["baseline_residue"]:
         identity = "PREEXISTING_BASELINE_RESIDUE"
-        if not any(row.get("identity") == identity for row in state.get("HISTORICAL_FINDINGS", [])):
+        if not _historical_identity_seen(state, "HISTORICAL_FINDINGS", identity):
             state["HISTORICAL_FINDINGS"] = [
                 *state.get("HISTORICAL_FINDINGS", []),
                 {
@@ -2748,6 +3254,7 @@ def _queue_correction_work_unit(
     state["CURRENT_RETRY_SIGNATURE"] = signature
     state["CURRENT_RETRY_COUNT"] = count
     finding_ledger = state.setdefault("REVIEW_FINDING_LEDGER", {})
+    detail_sha256 = hashlib.sha256(detail.encode("utf-8")).hexdigest()
     finding_ledger[signature] = {
         "identity": semantic or signature,
         "count": count,
@@ -2755,12 +3262,20 @@ def _queue_correction_work_unit(
         "progress_hash": progress_hash,
         "correction_id": existing.get("id", "") if existing else "",
         "status": existing.get("status", "NEW") if existing else "NEW",
+        "summary": _bounded_state_text(detail, 240)[0],
+        "detail_sha256": detail_sha256,
+        "evidence_ref": (
+            f"state.json#REVIEW_FINDINGS|timeline.jsonl#STATE_TEXT_EVIDENCE:{detail_sha256}"
+        ),
         "updated_at": utc_now(),
     }
     if existing is not None and existing.get("status") == "DONE" and not same_progress:
         existing = None
     if existing is not None:
-        _telemetry_add(state, repeated_work_prevented=1, duplicate_planned_work_rejected=1)
+        _telemetry_add(
+            state, repeated_work_prevented=1, duplicate_planned_work_rejected=1,
+            review_bodies_deduplicated=int(source == "FINAL_REVIEW"),
+        )
         state["REVIEW_CORRECTION_DISPOSITION"] = (
             "EXISTING_CORRECTION_RUNNABLE"
             if existing.get("status") in {"READY", "RETRY", "RUNNING"}
@@ -2794,7 +3309,7 @@ def _queue_correction_work_unit(
     ][:10]
     unit = _new_work_unit(
         f"FIX-{next_number:03d}",
-        f"Correct the in-scope {source.lower()} finding [{semantic or signature}]: {detail[:360]}",
+        f"Correct normalized {source.lower()} finding [{semantic or signature}]",
         parent_id=parent_ids[0] if parent_ids else "",
         subsystem="correction",
         relevant_paths=affected_paths,
@@ -2802,6 +3317,7 @@ def _queue_correction_work_unit(
         reuse_evidence=[f"Correction extends the existing task diff; signature={signature}"],
     )
     unit["failure_signature"] = signature
+    unit["review_finding_id"] = signature
     unit["review_finding_identity"] = semantic or signature
     unit["resolves_unit_ids"] = parent_ids
     unit["last_checkpoint"] = "CORRECTION_GENERATED"
@@ -2810,6 +3326,8 @@ def _queue_correction_work_unit(
     finding_ledger[signature]["status"] = "READY"
     state["REVIEW_CORRECTION_DISPOSITION"] = "QUEUED"
     state["FINAL_REVIEW_ATTEMPTS"] = int(state.get("FINAL_REVIEW_ATTEMPTS", 0)) + int(source == "FINAL_REVIEW")
+    if source == "FINAL_REVIEW":
+        _telemetry_add(state, review_bodies_deduplicated=1)
     _meaningful_progress(state, f"CORRECTION_WORK_UNIT:{unit['id']}")
     return True
 
