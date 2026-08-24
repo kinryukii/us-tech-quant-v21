@@ -39,6 +39,12 @@ REQUIRED_STATE_FIELDS = {
     "TASK_TEMP_RUNTIME", "TASK_TEMP_RUNTIME_STATUS", "TASK_TEMP_RUNTIME_OWNED",
     "WORKER_TEST_STATUS", "WORKER_TEST_LIMITATION", "WORKER_TEST_EVIDENCE",
     "CONTROLLER_VALIDATION_STATUS", "WORKTREE_INVENTORY_STATUS",
+    "JUSTIFIED_CREATED_PATHS", "UNJUSTIFIED_CREATED_PATHS",
+    "HARNESS_VERSION", "WORK_UNITS", "ACTIVE_WORK_UNIT_ID", "ACTIVE_WORK_UNIT_IDS",
+    "CURRENT_WORK_UNIT", "ACTIVE_BLOCKERS", "LOCAL_BLOCKED_WORK", "RESOLVED_FINDINGS",
+    "HISTORICAL_FINDINGS", "RETRY_LEDGER", "REUSE_DISCOVERY_CACHE", "TELEMETRY",
+    "TASK_STARTED_AT", "TIME_BUDGET_HOURS", "DEADLINE_AT",
+    "LAST_MEANINGFUL_PROGRESS_AT", "LAST_CHECKPOINT", "SUPERVISOR_PID",
 }
 
 
@@ -66,6 +72,20 @@ def create_state(task_id: str = "test-task", goal: str = "Improve one small code
     module._write_state_unlocked(task_id, state)
     module._append_event_unlocked(task_id, "TASK_ACCEPTED", "test")
     module._set_current_task(task_id)
+    return state
+
+
+def use_r2_compat_state(state: dict) -> dict:
+    """Exercise persisted R2 dispatch semantics without changing R3 defaults."""
+    state["HARNESS_VERSION"] = 2
+    state["PLAN"] = [
+        {"phase": phase, "status": "PENDING", "action": phase, "why": "legacy compatibility"}
+        for phase in (
+            "R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE",
+            "IMPLEMENT", "TARGETED_TEST", "INDEPENDENT_REVIEW", "FINALIZE",
+        )
+    ]
+    module._sync_plan_progress(state)
     return state
 
 
@@ -140,6 +160,528 @@ def test_git_changes_returns_real_inventory() -> None:
     assert isinstance(inventory["dependencies"], list)
     assert inventory["changed_count"] >= len(inventory["changed"])
     assert inventory["created_count"] >= len(inventory["created"])
+
+
+def test_new_component_justification_survives_same_path_correction(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state["WORKTREE"] = str(worktree)
+    module._write_state_unlocked("test-task", state)
+    artifact = "docs/new-component.md"
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": [artifact], "created": [artifact], "dependencies": [],
+        "changed_count": 1, "created_count": 1,
+    })
+
+    module._refresh_changes(
+        "test-task",
+        worker_findings=(
+            "TASK_RESULT=COMPLETED\n"
+            "NEW_COMPONENT_JUSTIFICATION=No authoritative component existed"
+        ),
+    )
+    initial = module.load_state("test-task")
+    assert initial["REUSE_GUARD"] == "PASS_SEARCH_RECORDED"
+    assert initial["JUSTIFIED_CREATED_PATHS"] == [artifact]
+
+    module._refresh_changes(
+        "test-task",
+        worker_findings="TASK_RESULT=COMPLETED\nNEW_COMPONENT_JUSTIFICATION=NONE",
+    )
+    corrected = module.load_state("test-task")
+    assert corrected["REUSE_GUARD"] == "PASS_SEARCH_RECORDED"
+    assert corrected["NEW_COMPONENT_JUSTIFICATION"] == "No authoritative component existed"
+    assert corrected["JUSTIFIED_CREATED_PATHS"] == [artifact]
+    assert corrected["UNJUSTIFIED_CREATED_PATHS"] == []
+
+
+def test_correction_with_new_unjustified_path_fails_closed(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state["WORKTREE"] = str(worktree)
+    module._write_state_unlocked("test-task", state)
+    created = ["docs/component-a.md"]
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": list(created), "created": list(created), "dependencies": [],
+        "changed_count": len(created), "created_count": len(created),
+    })
+    module._refresh_changes(
+        "test-task",
+        worker_findings="NEW_COMPONENT_JUSTIFICATION=Component A had no reusable predecessor",
+    )
+
+    created.append("docs/component-b.md")
+    module._refresh_changes(
+        "test-task", worker_findings="NEW_COMPONENT_JUSTIFICATION=NONE",
+    )
+    corrected = module.load_state("test-task")
+    assert corrected["REUSE_GUARD"] == "HARD_BLOCKER_NEW_COMPONENT_JUSTIFICATION_MISSING"
+    assert corrected["JUSTIFIED_CREATED_PATHS"] == ["docs/component-a.md"]
+    assert corrected["UNJUSTIFIED_CREATED_PATHS"] == ["docs/component-b.md"]
+
+
+def test_initial_unjustified_component_behavior_remains_fail_closed(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state["WORKTREE"] = str(worktree)
+    module._write_state_unlocked("test-task", state)
+    artifact = "scripts/new_component.py"
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": [artifact], "created": [artifact], "dependencies": [],
+        "changed_count": 1, "created_count": 1,
+    })
+
+    module._refresh_changes(
+        "test-task", worker_findings="NEW_COMPONENT_JUSTIFICATION=NONE",
+    )
+    current = module.load_state("test-task")
+    assert current["REUSE_GUARD"] == "HARD_BLOCKER_NEW_COMPONENT_JUSTIFICATION_MISSING"
+    assert current["JUSTIFIED_CREATED_PATHS"] == []
+    assert current["UNJUSTIFIED_CREATED_PATHS"] == [artifact]
+
+
+def test_legacy_corrected_state_recovers_only_prevalidated_reviewed_path(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    artifact = "docs/existing-task-artifact.md"
+    state.pop("JUSTIFIED_CREATED_PATHS")
+    state.pop("UNJUSTIFIED_CREATED_PATHS")
+    state.update({
+        "WORKTREE": str(worktree),
+        "FILES_CREATED": [artifact],
+        "NEW_COMPONENT_JUSTIFICATION": "NONE",
+        "CORRECTION_ATTEMPTS": 1,
+        "LAST_REVIEW_STATUS": "FIX_REQUIRED",
+        "REVIEW_FINDINGS": f"Review of {worktree / artifact}:12 requires correction",
+    })
+    module._write_state_unlocked("test-task", state)
+    module._append_event_unlocked("test-task", "CHANGE_INVENTORY", "changed=1;created=1;dependencies=0")
+    module._append_event_unlocked(
+        "test-task", "TARGETED_VALIDATION_COMPLETED", "tests=PASS;preflight=PASS",
+    )
+    module._append_event_unlocked("test-task", "REVIEW_CLASSIFIED", "FIX_REQUIRED")
+    module._append_event_unlocked("test-task", "REVIEW_CORRECTION_REQUESTED", "attempt=1")
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": [artifact], "created": [artifact], "dependencies": [],
+        "changed_count": 1, "created_count": 1,
+    })
+
+    module._refresh_changes("test-task")
+    recovered = module.load_state("test-task")
+    assert recovered["REUSE_GUARD"] == "PASS_SEARCH_RECORDED"
+    assert recovered["JUSTIFIED_CREATED_PATHS"] == [artifact]
+    assert recovered["NEW_COMPONENT_JUSTIFICATION"] == (
+        "INHERITED_VALIDATED_PRE_CORRECTION_JUSTIFICATION"
+    )
+
+
+def test_repeated_identical_blocker_is_deduplicated(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    duplicate = {
+        "code": "NEW_COMPONENT_JUSTIFICATION_REQUIRED", "detail": "docs/a.md",
+    }
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "BLOCKERS": [duplicate, duplicate.copy()],
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["docs/a.md"], "created": ["docs/a.md"], "dependencies": [],
+        "changed_count": 1, "created_count": 1,
+    })
+
+    module._wait_human("test-task", "NEW_COMPONENT_JUSTIFICATION_REQUIRED", "docs/a.md")
+    module._wait_human("test-task", "NEW_COMPONENT_JUSTIFICATION_REQUIRED", "docs/a.md")
+    blockers = module.load_state("test-task")["BLOCKERS"]
+    assert blockers == [{
+        "code": "NEW_COMPONENT_JUSTIFICATION_REQUIRED", "detail": "docs/a.md",
+    }]
+
+
+def test_r3_plan_rejects_duplicate_identity_under_different_wording() -> None:
+    units, rejected = module._normalize_work_unit_plan([
+        {
+            "id": "WU-001", "objective": "Repair the existing market calendar loader",
+            "identity": "market-calendar-loader", "reuse_decision": "EXTEND",
+        },
+        {
+            "id": "WU-002", "objective": "Build another calendar ingestion utility",
+            "identity": "market calendar loader", "reuse_decision": "CREATE",
+        },
+    ], "Repair the loader")
+
+    assert [unit["id"] for unit in units] == ["WU-001"]
+    assert units[0]["reuse_decision"] == "EXTEND"
+    assert rejected == 1
+
+
+def test_r3_reuse_cache_refreshes_only_for_materially_new_created_paths(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    state["WORK_UNITS"] = [module._new_work_unit("WU-001", "Extend the existing task runner")]
+    state["REUSE_DISCOVERY_CACHE"] = module._initial_reuse_cache({
+        "filename_matches": ["scripts/maintenance/harness_task.py"],
+        "semantic_matches": [], "candidate_classifications": [],
+    })
+    module._write_state_unlocked("test-task", state)
+    calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def discover(query: str, roots=None) -> dict:
+        calls.append((query, tuple(roots or ())))
+        return {
+            "filename_matches": ["scripts/maintenance/harness_task.py"],
+            "semantic_matches": [], "candidate_classifications": [],
+        }
+
+    monkeypatch.setattr(module, "_discover_existing", discover)
+    unchanged = {"created": [], "changed": ["scripts/maintenance/harness_task.py"]}
+    first = {"created": ["scripts/maintenance/new_helper.py"], "changed": []}
+    second = {"created": ["scripts/maintenance/new_helper.py", "scripts/maintenance/other_helper.py"], "changed": []}
+
+    assert module._refresh_reuse_discovery_for_changes("test-task", unchanged, ["WU-001"]) is False
+    assert module._refresh_reuse_discovery_for_changes("test-task", first, ["WU-001"]) is True
+    assert module._refresh_reuse_discovery_for_changes("test-task", first, ["WU-001"]) is False
+    assert module._refresh_reuse_discovery_for_changes("test-task", second, ["WU-001"]) is True
+    refreshed = module.load_state("test-task")
+    assert len(calls) == 2
+    assert all(roots == ("scripts",) for _, roots in calls)
+    assert refreshed["TELEMETRY"]["discovery_incremental_refreshes"] == 2
+    assert refreshed["REUSE_DISCOVERY_CACHE"]["covered_created_paths"] == [
+        "scripts/maintenance/new_helper.py", "scripts/maintenance/other_helper.py",
+    ]
+
+
+def test_r3_parallel_version_suffix_component_is_rejected_for_reuse() -> None:
+    state = module._new_state("test-task", "Extend foo", "independent-code", 2)
+    state["REUSE_DISCOVERY_CACHE"] = module._initial_reuse_cache({
+        "filename_matches": ["scripts/foo.py"], "semantic_matches": [],
+    })
+    conflicts = module._parallel_component_conflicts(state, {
+        "created": ["scripts/foo_r3.py"], "changed": ["scripts/foo_r3.py"],
+    })
+
+    assert conflicts == ["scripts/foo_r3.py duplicates identity of existing scripts/foo.py"]
+
+
+def test_r3_failure_retries_are_per_signature_and_leave_independent_work_runnable() -> None:
+    state = module._new_state("test-task", "Repair two independent areas", "independent-code", 2)
+    state["WORK_UNITS"] = [
+        module._new_work_unit("WU-001", "Repair source-dependent loader"),
+        module._new_work_unit("WU-002", "Improve independent parser"),
+    ]
+    state["ACTIVE_WORK_UNIT_IDS"] = ["WU-001"]
+    state["WORK_UNITS"][0]["status"] = "RUNNING"
+    for _ in range(module.DEFAULT_FAILURE_RETRY_LIMIT + 1):
+        state["ACTIVE_WORK_UNIT_IDS"] = ["WU-001"]
+        state["WORK_UNITS"][0]["status"] = "RUNNING"
+        module._record_unit_failure(
+            state, ["WU-001"], "SOURCE_UNAVAILABLE", "SEC endpoint unavailable", "same-progress",
+        )
+
+    assert state["WORK_UNITS"][0]["status"] == "BLOCKED_LOCAL"
+    assert [unit["id"] for unit in module._runnable_work_units(state)] == ["WU-002"]
+    assert state["HARNESS_STATE"] == "PLANNING"
+
+
+def test_r3_permission_failure_is_local_without_acl_or_human_escalation(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    blocked = module._new_work_unit("WU-001", "Write one source-specific artifact")
+    independent = module._new_work_unit("WU-002", "Repair an independent parser")
+    blocked["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORK_UNITS": [blocked, independent],
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"], "ACTIVE_WORK_UNIT_ID": "WU-001",
+    })
+    module._write_state_unlocked("test-task", state)
+
+    module._record_local_blocker(
+        "test-task", ["WU-001"], "PATH_NOT_WRITABLE",
+        "No valid authorized fallback exists for this unit", progress_hash="unchanged",
+    )
+
+    current = module.load_state("test-task")
+    assert current["WORK_UNITS"][0]["status"] == "BLOCKED_LOCAL"
+    assert [unit["id"] for unit in module._runnable_work_units(current)] == ["WU-002"]
+    assert current["HARNESS_STATE"] == "RUNNING"
+    assert current["ACTIVE_BLOCKERS"] == []
+    assert current["HUMAN_ATTENTION_REQUIRED"] is False
+    assert current["TELEMETRY"]["local_blockers_bypassed"] == 1
+    assert "PERMISSION" not in module.HUMAN_BOUNDARY_KINDS
+    assert "PROTECTED_PERMISSION" in module.HUMAN_BOUNDARY_KINDS
+
+
+def test_r3_pending_steer_is_consumed_once_at_safe_boundary(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state["PENDING_STEER"] = ["Prefer the existing parser."]
+    state["STEERING_HISTORY"] = [{
+        "instruction": "Prefer the existing parser.", "accepted": True,
+    }]
+    module._write_state_unlocked("test-task", state)
+
+    assert module._consume_pending_steer("test-task") == ["Prefer the existing parser."]
+    assert module._consume_pending_steer("test-task") == []
+    consumed = module.load_state("test-task")
+    assert consumed["PENDING_STEER"] == []
+    assert consumed["STEERING_HISTORY"][0]["applied"] is True
+
+
+def test_r3_reviewer_crash_recovers_without_rerunning_completed_units(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    done = module._new_work_unit("WU-001", "Complete implementation")
+    done["status"] = "DONE"
+    state.update({
+        "HARNESS_STATE": "REVIEWING", "WORKTREE": str(worktree),
+        "CONTROLLER_PID": 999_999, "WORKER_PID": 999_998,
+        "ACTIVE_PROCESS_KIND": "REVIEW", "WORK_UNITS": [done],
+        "NEXT_ACTION_CODE": "FINAL_REVIEW",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["scripts/existing.py"], "created": [], "dependencies": [],
+    })
+
+    recovered = module.recover_if_interrupted("test-task")
+
+    assert recovered["HARNESS_STATE"] == "RUNNING"
+    assert recovered["NEXT_ACTION_CODE"] == "FINAL_REVIEW"
+    assert recovered["WORK_UNITS"][0]["status"] == "DONE"
+    assert recovered["HUMAN_ATTENTION_REQUIRED"] is False
+
+
+def test_r3_duplicate_controller_dispatch_is_prevented(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    state["CONTROLLER_PID"] = 4242
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(
+        module.subprocess, "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate spawned")),
+    )
+
+    assert module._spawn_controller("test-task") == 4242
+
+
+def test_r3_expired_budget_defers_remaining_work_with_continuation_plan() -> None:
+    state = module._new_state("test-task", "Finish bounded work", "independent-code", 2, max_hours=1)
+    state["WORK_UNITS"] = [
+        module._new_work_unit("WU-001", "Required unfinished work"),
+        module._new_work_unit("WU-002", "Optional unfinished work", optional=True),
+    ]
+    state["DEADLINE_AT"] = "2000-01-01T00:00:00+00:00"
+
+    assert module._remaining_budget_seconds(state) == 0
+    assert module._defer_for_expired_budget(state) == 2
+    assert {unit["status"] for unit in state["WORK_UNITS"]} == {"DEFERRED"}
+    assert all("future authorized task" in unit["next_action"] for unit in state["WORK_UNITS"])
+
+
+def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_control(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state(goal="Complete ten bounded independent engineering work units")
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    raw_units = [
+        {
+            "id": f"WU-{index:03d}",
+            "objective": f"Implement bounded subsystem capability {index}",
+            "identity": f"subsystem-capability-{index}",
+            "subsystem": "shared",
+            "reuse_decision": "REUSE" if index == 4 else "EXTEND" if index == 7 else "UNKNOWN",
+            "reuse_evidence": ["existing shared utility"] if index in {4, 7} else [],
+        }
+        for index in range(1, 11)
+    ]
+    raw_units.append({
+        "id": "WU-011", "objective": "Create duplicate wording for capability four",
+        "identity": "subsystem capability 4", "subsystem": "shared",
+    })
+    units, rejected = module._normalize_work_unit_plan(raw_units, state["GOAL"])
+    assert len(units) == 10 and rejected == 1
+    state.update({
+        "HARNESS_STATE": "RUNNING", "CURRENT_PHASE": "AUTONOMOUS_EXECUTION_LOOP",
+        "NEXT_ACTION_CODE": "SELECT_WORK", "WORKTREE": str(worktree),
+        "WORK_UNITS": units, "OVERFIT_GUARD": "PASS", "ANTI_BLOAT": "PASS",
+        "ANTI_BLOAT_TASK_DELTA": "PASS", "REUSE_GUARD": "PASS_SEARCH_RECORDED",
+        "REUSE_DISCOVERY_CACHE": module._initial_reuse_cache({
+            "filename_matches": ["scripts/existing_shared_utility.py"],
+            "semantic_matches": [], "candidate_classifications": [],
+        }),
+    })
+    state["TELEMETRY"]["duplicate_planned_work_rejected"] = rejected
+    for phase in ("HARD_PREFLIGHT", "DISCOVER_REUSE", "CREATE_ISOLATED_WORKTREE", "PLAN"):
+        module._plan_update(state, phase, "COMPLETED")
+    module._write_state_unlocked("test-task", state)
+
+    worker_batches: list[list[str]] = []
+    validation_calls = {"unit": 0, "final": 0, "review": 0, "cleanup": 0}
+
+    def result_row(unit_id: str, status: str, *, blocker: dict | None = None) -> dict:
+        current = module.load_state("test-task")
+        unit = module._unit_by_id(current, unit_id) or {}
+        return {
+            "id": unit_id, "status": status, "produced_outputs": [f"checkpoint/{unit_id}"],
+            "validation_state": "WORKER_CHECKPOINT", "blocker": blocker or {},
+            "last_checkpoint": f"TURN_{len(worker_batches) + 1}",
+            "next_action": "Retry differently" if status == "RETRY" else "No further action",
+            "reuse_decision": unit.get("reuse_decision", "UNKNOWN"),
+            "reuse_evidence": unit.get("reuse_evidence", []),
+        }
+
+    def worker_turn(task_id: str, prompt: str, review: bool = False, role: str = "") -> dict:
+        current = module.load_state(task_id)
+        active = list(current["ACTIVE_WORK_UNIT_IDS"])
+        worker_batches.append(active)
+        turn = len(worker_batches)
+        expected = {
+            1: ["WU-001", "WU-002", "WU-003"],
+            2: ["WU-002", "WU-004", "WU-005"],
+            3: ["WU-006", "WU-007", "WU-008"],
+            4: ["WU-006", "WU-009", "WU-010"],
+            5: ["FIX-001"],
+        }
+        assert active == expected[turn]
+        if turn == 1:
+            rows = [
+                result_row("WU-001", "DONE"), result_row("WU-002", "RETRY"),
+                result_row("WU-003", "DONE"),
+            ]
+            task_result, exit_code = "SOFTWARE_FAILURE", 1  # worker dies after a safe checkpoint
+        elif turn == 2:
+            rows = [
+                result_row("WU-002", "BLOCKED_LOCAL", blocker={
+                    "code": "SOURCE_UNAVAILABLE", "detail": "SEC source unavailable",
+                }),
+                result_row("WU-004", "DONE"),
+                result_row("WU-005", "BLOCKED_LOCAL", blocker={
+                    "code": "SOURCE_QUOTA_EXHAUSTED", "detail": "Moomoo quota exhausted for this branch",
+                }),
+            ]
+            task_result, exit_code = "BLOCKED", 0
+        elif turn == 3:
+            rows = [
+                result_row("WU-006", "RETRY", blocker={
+                    "code": "TARGETED_TEST_FAILURE", "detail": "one focused assertion failed",
+                }),
+                result_row("WU-007", "DONE"), result_row("WU-008", "DONE"),
+            ]
+            task_result, exit_code = "COMPLETED", 0
+        elif turn == 4:
+            rows = [
+                result_row("WU-006", "DONE"),
+                result_row("WU-009", "BLOCKED_LOCAL", blocker={
+                    "code": "PERMANENT_LOCAL_IMPOSSIBILITY", "detail": "coverage is unavailable",
+                }),
+                result_row("WU-010", "DONE"),
+            ]
+            task_result, exit_code = "COMPLETED", 0
+        else:
+            rows = [result_row("FIX-001", "DONE")]
+            task_result, exit_code = "COMPLETED", 0
+        message = (
+            f"TASK_RESULT={task_result}\nHOLDOUT_CONTAMINATION_RISK=NONE\n"
+            f"WORK_UNIT_RESULTS_JSON={json.dumps(rows, separators=(',', ':'))}\n"
+            "CHANGED_PATHS_JSON=[\"scripts/existing_shared_utility.py\"]"
+        )
+        module.update_task(task_id, {
+            "WORKER_FINDINGS": message, "PENDING_UNIT_RESULTS": rows,
+            "WORKER_STATUS": f"EXITED_{exit_code}", "WORKER_PID": None,
+            "ACTIVE_PROCESS_KIND": "", "ACTIVE_THREAD_ID": "",
+            "WORKER_TEST_STATUS": "PASS" if exit_code == 0 else "NOT_RUN",
+            "WORKTREE_INVENTORY_STATUS": "KNOWN",
+        })
+        return {"exit_code": exit_code, "message": message, "tests": []}
+
+    def unit_validation(task_id: str) -> tuple[bool, str]:
+        validation_calls["unit"] += 1
+        return True, "targeted controller validation passed"
+
+    def final_validation(task_id: str) -> tuple[bool, str]:
+        validation_calls["final"] += 1
+        module.update_task(task_id, {"CONTROLLER_VALIDATION_STATUS": "PASS"})
+        return True, "all final machine validation passed"
+
+    def final_review(task_id: str) -> str:
+        validation_calls["review"] += 1
+        classification = "FIX_REQUIRED" if validation_calls["review"] == 1 else "PASS"
+        findings = (
+            "Fix the compact in-scope summary" if classification == "FIX_REQUIRED"
+            else "No material defect"
+        )
+        module.update_task(task_id, {
+            "LAST_REVIEW_STATUS": classification, "REVIEW_FINDINGS": findings,
+            "CURRENT_PHASE": "FINAL_INDEPENDENT_REVIEW",
+        }, new_state="REVIEWING", event="REVIEW_CLASSIFIED", detail=classification)
+        return classification
+
+    def cleanup(task_id: str) -> None:
+        validation_calls["cleanup"] += 1
+
+    inventory = {
+        "changed": ["scripts/existing_shared_utility.py"], "created": [],
+        "dependencies": [], "changed_count": 1, "created_count": 0,
+    }
+    monkeypatch.setattr(module, "_run_codex_turn", worker_turn)
+    monkeypatch.setattr(module, "_run_unit_validation", unit_validation)
+    monkeypatch.setattr(module, "_run_final_validation", final_validation)
+    monkeypatch.setattr(module, "_perform_review", final_review)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "stable-progress")
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: inventory)
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", cleanup)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "COMPLETED_WITH_DEFERRED_WORK"
+    assert final["TERMINAL_OUTCOME"] == "COMPLETED_WITH_DEFERRED_WORK"
+    assert validation_calls == {"unit": 5, "final": 2, "review": 2, "cleanup": 1}
+    assert len(final["WORK_UNITS"]) == 11
+    assert module._work_unit_counts(final) == {
+        "total": 11, "done": 8, "runnable": 0, "local_blocked": 3, "deferred": 0,
+    }
+    assert "WU-001" not in worker_batches[1:] and "WU-003" not in worker_batches[1:]
+    assert worker_batches.count(["FIX-001"]) == 1
+    assert final["TELEMETRY"]["duplicate_planned_work_rejected"] == 1
+    assert final["TELEMETRY"]["reuse_hits"] == 3  # two planned reuse hits plus the in-place correction
+    assert final["TELEMETRY"]["local_blockers_bypassed"] == 2
+    assert not final["ACTIVE_BLOCKERS"]
+    assert final["HUMAN_ATTENTION_REQUIRED"] is False
+    assert worktree.is_dir()
+    events = [
+        json.loads(row)["event"]
+        for row in module.timeline_path("test-task").read_text(encoding="utf-8").splitlines()
+    ]
+    assert "WORKER_FAILURE_CHECKPOINT_RECOVERED" in events
+    assert "FINAL_REVIEW_CORRECTION_GENERATED" in events
+    assert "WAITING_HUMAN" not in events
 
 
 def test_negative_frozen_constraints_do_not_create_dependency_scope() -> None:
@@ -270,7 +812,7 @@ def test_normal_finalization_cleans_controller_owned_task_temp_runtime(
 def test_unwritable_task_temp_runtime_is_scoped_blocker_before_worker_launch(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = create_state()
+    state = use_r2_compat_state(create_state())
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
     state.update({"HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree), "NEXT_ACTION_CODE": "WORKER"})
@@ -411,7 +953,7 @@ def test_worker_checkpoint_keeps_status_observability_consistent(
         "NEXT_ACTION": "Launch bounded Codex worker",
         "WHY_NEXT_ACTION": "Preflight, reuse search, and isolation gates have passed.",
     })
-    for phase in ("R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE"):
+    for phase in ("HARD_PREFLIGHT", "DISCOVER_REUSE", "CREATE_ISOLATED_WORKTREE", "PLAN"):
         module._plan_update(state, phase, "COMPLETED")
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_git_changes", lambda path: {
@@ -429,19 +971,19 @@ def test_worker_checkpoint_keeps_status_observability_consistent(
     assert checkpoint["LAST_COMPLETED"] == "WORKER_TARGETED_TEST_CHECKPOINT"
     assert checkpoint["NEXT_ACTION"] == "Finish the worker turn and report its validation"
     assert "controller validation" in checkpoint["WHY_NEXT_ACTION"]
-    assert checkpoint["PROGRESS_SUMMARY"] == "3/7 plan steps completed; IMPLEMENT in progress"
+    assert checkpoint["PROGRESS_SUMMARY"] == "4/8 plan steps completed; AUTONOMOUS_EXECUTION_LOOP in progress"
     assert len(checkpoint["FILES_CHANGED"]) == 2
 
     module._record_worker_checkpoint("test-task", "SELF_REVIEW")
     checkpoint = module.load_state("test-task")
     assert checkpoint["CURRENT_PHASE"] == "SELF_REVIEW"
     assert checkpoint["LAST_COMPLETED"] == "WORKER_SELF_REVIEW_CHECKPOINT"
-    assert checkpoint["PROGRESS_SUMMARY"] == "3/7 plan steps completed; IMPLEMENT in progress"
+    assert checkpoint["PROGRESS_SUMMARY"] == "4/8 plan steps completed; AUTONOMOUS_EXECUTION_LOOP in progress"
 
     monkeypatch.setattr(module, "recover_if_interrupted", lambda task_id: module.load_state(task_id))
     assert module.command_status(argparse.Namespace(task_id="test-task")) == 0
     output = capsys.readouterr().out
-    assert "PROGRESS_SUMMARY=3/7 plan steps completed; IMPLEMENT in progress" in output
+    assert "PROGRESS_SUMMARY=4/8 plan steps completed; AUTONOMOUS_EXECUTION_LOOP in progress" in output
     assert "FILES_CHANGED_COUNT=2" in output
     assert "FILES_CREATED_COUNT=0" in output
 
@@ -540,7 +1082,7 @@ def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
         "WORKTREE": str(worktree),
         "TESTS_RUN": ["python -m pytest -q focused_test.py | exit=1"],
     })
-    for phase in ("R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE"):
+    for phase in ("HARD_PREFLIGHT", "DISCOVER_REUSE", "CREATE_ISOLATED_WORKTREE", "PLAN"):
         module._plan_update(state, phase, "COMPLETED")
     module._write_state_unlocked("test-task", state)
     observed_started: list[dict] = []
@@ -609,19 +1151,19 @@ def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
         assert Path(observed_popen["env"][name]).resolve() == runtime
     assert Path(observed_popen["env"]["USTQ_CACHE_ROOT"]).resolve() == runtime / "cache"
     started = observed_started[0]
-    assert started["CURRENT_PHASE"] == "IMPLEMENT"
+    assert started["CURRENT_PHASE"] == "AUTONOMOUS_EXECUTION_LOOP"
     assert "active" in started["CURRENT_ACTION"]
-    assert started["NEXT_ACTION"] == "Complete the bounded Codex worker turn"
-    assert started["PROGRESS_SUMMARY"] == "3/7 plan steps completed; IMPLEMENT in progress"
+    assert started["NEXT_ACTION"] == "Complete the Codex worker turn"
+    assert started["PROGRESS_SUMMARY"] == "4/8 plan steps completed; AUTONOMOUS_EXECUTION_LOOP in progress"
     assert started["WORKER_STATUS"] == "RUNNING"
     assert started["TEST_HISTORY_START_INDEX"] == 1
 
     completed = module.load_state("test-task")
-    assert completed["CURRENT_PHASE"] == "IMPLEMENT"
+    assert completed["CURRENT_PHASE"] == "AUTONOMOUS_EXECUTION_LOOP"
     assert "completed" in completed["CURRENT_ACTION"] and "active" not in completed["CURRENT_ACTION"]
     assert completed["LAST_COMPLETED"] == "WORKER_TURN_COMPLETED"
     assert completed["NEXT_ACTION"] == "Classify the completed worker result"
-    assert completed["PROGRESS_SUMMARY"] == "4/7 plan steps completed"
+    assert completed["PROGRESS_SUMMARY"] == "4/8 plan steps completed; AUTONOMOUS_EXECUTION_LOOP in progress"
     assert completed["WORKER_STATUS"] == "EXITED_0"
     assert completed["ACTIVE_PROCESS_KIND"] == ""
     assert completed["FILES_CHANGED"] == ["final_edit.py"]
@@ -636,7 +1178,7 @@ def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
 def test_validation_and_completion_checkpoints_are_coherent(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = create_state()
+    state = use_r2_compat_state(create_state())
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
     state.update({
@@ -700,7 +1242,7 @@ def test_validation_and_completion_checkpoints_are_coherent(
 def test_correction_and_waiting_human_checkpoints_are_coherent(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = create_state()
+    state = use_r2_compat_state(create_state())
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
     state.update({"HARNESS_STATE": "REVIEWING", "WORKTREE": str(worktree)})
@@ -750,7 +1292,10 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
     state.update({"HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree), "WORKER_STATUS": "EXITED_0"})
-    for phase in ("R1_PREFLIGHT", "DISCOVER_EXISTING", "CREATE_ISOLATED_WORKTREE", "IMPLEMENT", "TARGETED_TEST"):
+    for phase in (
+        "HARD_PREFLIGHT", "DISCOVER_REUSE", "CREATE_ISOLATED_WORKTREE", "PLAN",
+        "AUTONOMOUS_EXECUTION_LOOP", "FINAL_VALIDATION",
+    ):
         module._plan_update(state, phase, "COMPLETED")
     module._write_state_unlocked("test-task", state)
     observed_started: list[dict] = []
@@ -771,9 +1316,9 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
 
     started = observed_started[0]
     assert started["HARNESS_STATE"] == "REVIEWING"
-    assert started["CURRENT_PHASE"] == "INDEPENDENT_REVIEW"
+    assert started["CURRENT_PHASE"] == "FINAL_INDEPENDENT_REVIEW"
     assert started["WORKER_STATUS"] == "REVIEW_STARTING"
-    assert started["PROGRESS_SUMMARY"] == "5/7 plan steps completed; INDEPENDENT_REVIEW in progress"
+    assert started["PROGRESS_SUMMARY"] == "6/8 plan steps completed; FINAL_INDEPENDENT_REVIEW in progress"
     assert started["NEXT_ACTION"] == "Complete and classify the independent review"
     assert started["FILES_CHANGED"] == ["reviewed.py"]
 
@@ -781,7 +1326,7 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
     assert reviewed["CURRENT_ACTION"] == "Independent review completed with PASS"
     assert reviewed["LAST_COMPLETED"] == "INDEPENDENT_REVIEW_COMPLETED"
     assert reviewed["NEXT_ACTION"] == "Finalize and preserve the reviewed worktree"
-    assert reviewed["PROGRESS_SUMMARY"] == "6/7 plan steps completed"
+    assert reviewed["PROGRESS_SUMMARY"] == "7/8 plan steps completed"
     assert reviewed["WORKER_STATUS"] == "REVIEW_EXITED_0"
     assert "active" not in reviewed["CURRENT_ACTION"].lower()
     assert reviewed["FILES_CHANGED"] == ["reviewed.py"]
@@ -877,11 +1422,11 @@ def test_pause_resume_and_stop_preserve_resume_point(
     assert module.command_pause(argparse.Namespace(task_id="test-task")) == 0
     paused = module.load_state("test-task")
     assert paused["HARNESS_STATE"] == "PAUSED" and paused["PAUSE_REQUESTED"] is True
-    monkeypatch.setattr(module, "_spawn_controller", lambda task_id: 4242)
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda task_id: 4242)
     assert module.command_resume(argparse.Namespace(task_id="test-task", foreground=False)) == 0
     resumed = module.load_state("test-task")
     assert resumed["HARNESS_STATE"] == "PLANNING"
-    assert resumed["NEXT_ACTION_CODE"] == "R1_PREFLIGHT"
+    assert resumed["NEXT_ACTION_CODE"] == "HARD_PREFLIGHT"
     assert resumed["PAUSE_REQUESTED"] is False
     assert module.command_stop(argparse.Namespace(task_id="test-task")) == 0
     assert module.load_state("test-task")["HARNESS_STATE"] == "STOPPED"
@@ -1045,7 +1590,7 @@ def test_environment_limited_worker_delegates_to_authoritative_controller_valida
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
     controller_passes: bool,
 ) -> None:
-    state = create_state()
+    state = use_r2_compat_state(create_state())
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
     state.update({
@@ -1131,10 +1676,112 @@ def test_environment_limited_delegation_requires_known_inventory_and_passed_guar
     assert module._worker_test_environment_delegation_allowed(state, 0)[0] is False
 
 
-def test_real_worker_test_failure_uses_correction_path(
+@pytest.mark.parametrize("controller_passes", [True, False])
+def test_r3_environment_limited_worker_uses_authoritative_controller_without_retry_budget(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    controller_passes: bool,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Repair the focused implementation")
+    unit["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER", "WORKTREE": str(worktree),
+        "WORK_UNITS": [unit], "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+        "ACTIVE_WORK_UNIT_ID": "WU-001", "OVERFIT_GUARD": "PASS", "ANTI_BLOAT": "PASS",
+        "REUSE_GUARD": "PASS_SEARCH_RECORDED", "WORKTREE_INVENTORY_STATUS": "KNOWN",
+    })
+    module._write_state_unlocked("test-task", state)
+
+    def environment_limited(task_id: str, prompt: str, review: bool = False, role: str = "") -> dict:
+        module.update_task(task_id, {
+            "WORKER_FINDINGS": "TASK_RESULT=SOFTWARE_FAILURE\nHOLDOUT_CONTAMINATION_RISK=NONE",
+            "WORKER_TEST_STATUS": "ENVIRONMENT_LIMITED",
+            "WORKER_TEST_LIMITATION": module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
+            "WORKER_TEST_EVIDENCE": KNOWN_NESTED_PYTEST_TEMP_FAILURE,
+            "WORKER_STATUS": "EXITED_0", "WORKER_PID": None,
+            "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "",
+            "WORKTREE_INVENTORY_STATUS": "KNOWN",
+        })
+        return {"exit_code": 0, "message": "environment limited", "tests": []}
+
+    def controller_validation(task_id: str) -> tuple[bool, str]:
+        module.update_task(task_id, {
+            "CONTROLLER_VALIDATION_STATUS": "PASS" if controller_passes else "FAIL",
+            "STOP_REQUESTED": True,
+        })
+        return controller_passes, "controller validation result"
+
+    monkeypatch.setattr(module, "_run_codex_turn", environment_limited)
+    monkeypatch.setattr(module, "_run_unit_validation", controller_validation)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "same-progress")
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "STOPPED"
+    assert final["CORRECTION_ATTEMPTS"] == 0
+    assert final["WORK_UNITS"][0]["status"] == ("DONE" if controller_passes else "RETRY")
+    events = [
+        json.loads(row)["event"]
+        for row in module.timeline_path("test-task").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events.count("WORKER_TEST_ENVIRONMENT_LIMITATION_DELEGATED") == 1
+    if controller_passes:
+        assert final["RETRY_LEDGER"] == {}
+        assert not final["WORK_UNITS"][0]["retry_history"]
+    else:
+        assert len(final["RETRY_LEDGER"]) == 1
+
+
+def test_r3_live_worker_identity_prevents_redispatch_without_waiting_human(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Repair one implementation")
+    unit["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER", "WORKTREE": str(worktree),
+        "WORK_UNITS": [unit], "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
+    })
+    module._write_state_unlocked("test-task", state)
+
+    def orphaned(task_id: str, prompt: str, review: bool = False, role: str = "") -> dict:
+        module.update_task(task_id, {
+            "WORKER_FINDINGS": "TASK_RESULT=SOFTWARE_FAILURE\nHOLDOUT_CONTAMINATION_RISK=NONE",
+            "WORKER_PID": 4242, "ACTIVE_THREAD_ID": "thread-live",
+            "ACTIVE_PROCESS_KIND": "WORKER", "WORKER_STATUS": "RUNNING",
+        })
+        return {"exit_code": 1, "message": "controller lost worker handoff", "tests": []}
+
+    validated = {"called": False}
+    monkeypatch.setattr(module, "_run_codex_turn", orphaned)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(
+        module, "_run_unit_validation",
+        lambda task_id: (validated.update(called=True) or True, "unexpected"),
+    )
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "same-progress")
+
+    module._dispatch("test-task")
+
+    current = module.load_state("test-task")
+    assert validated["called"] is False
+    assert current["HARNESS_STATE"] == "RUNNING"
+    assert current["CURRENT_PHASE"] == "AUTOMATIC_RECOVERY"
+    assert current["WORKER_STATUS"] == "ORPHANED_RUNNING"
+    assert current["WORKER_PID"] == 4242
+    assert current["HUMAN_ATTENTION_REQUIRED"] is False
+
+
+def test_real_worker_test_failure_uses_correction_path(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = use_r2_compat_state(create_state())
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
     state.update({"HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER", "WORKTREE": str(worktree)})
@@ -1179,7 +1826,7 @@ def test_real_worker_test_failure_uses_correction_path(
 def test_live_or_orphan_worker_prevents_environment_limited_delegation(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = create_state()
+    state = use_r2_compat_state(create_state())
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
     state.update({
@@ -1223,7 +1870,7 @@ def test_live_or_orphan_worker_prevents_environment_limited_delegation(
 def test_software_correction_loop_is_bounded(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = create_state()
+    state = use_r2_compat_state(create_state())
     state.update({"HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER", "WORKTREE": str(isolated_roots[1] / "harness-task-test-task")})
     module._write_state_unlocked("test-task", state)
     calls = {"count": 0}
@@ -1262,9 +1909,14 @@ def test_crash_recovery_preserves_changed_file_inventory(
     state = create_state()
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Repair the interrupted implementation")
+    unit["status"] = "RUNNING"
     state.update({
         "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
         "CONTROLLER_PID": 999_999, "WORKER_PID": 999_998,
+        "ACTIVE_PROCESS_KIND": "WORKER",
+        "WORK_UNITS": [unit], "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
         "CURRENT_PHASE": "TARGETED_TEST", "CURRENT_ACTION": "Running targeted tests",
         "LAST_COMPLETED": "IMPLEMENTATION_WORKER_EXITED", "NEXT_ACTION": "Review the test result",
     })
@@ -1273,17 +1925,49 @@ def test_crash_recovery_preserves_changed_file_inventory(
     monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
     monkeypatch.setattr(module, "_git_changes", lambda path: {"changed": ["useful.py"], "created": ["useful.py"], "dependencies": []})
     recovered = module.recover_if_interrupted("test-task")
-    assert recovered["HARNESS_STATE"] == "WAITING_HUMAN"
-    assert recovered["CURRENT_PHASE"] == "WAITING_HUMAN"
-    assert "Recovered interrupted" in recovered["CURRENT_ACTION"]
-    assert "Neither recorded controller nor worker PID is active" in recovered["WHY_CURRENT_ACTION"]
+    assert recovered["HARNESS_STATE"] == "RUNNING"
+    assert recovered["CURRENT_PHASE"] == "AUTOMATIC_RECOVERY"
+    assert "persisted R3 checkpoint" in recovered["CURRENT_ACTION"]
+    assert "Both recorded processes are inactive" in recovered["WHY_CURRENT_ACTION"]
     assert recovered["LAST_COMPLETED"] == "IMPLEMENTATION_WORKER_EXITED"
-    assert recovered["NEXT_ACTION"].startswith("Human inspects")
-    assert "cannot safely continue" in recovered["WHY_NEXT_ACTION"]
+    assert recovered["LAST_CHECKPOINT"] == "AUTOMATIC_CRASH_RECOVERY:SELECT_WORK"
+    assert recovered["NEXT_ACTION"] == "Continue automatically at SELECT_WORK"
+    assert "never rerun" in recovered["WHY_NEXT_ACTION"]
     assert "TARGETED_TEST in progress" not in recovered["PROGRESS_SUMMARY"]
     assert recovered["FILES_CHANGED"] == ["useful.py"]
-    assert recovered["WORKER_STATUS"] == "INTERRUPTED_PROCESS_NOT_RUNNING"
-    assert recovered["HUMAN_ATTENTION_REQUIRED"] is True
+    assert recovered["WORKER_STATUS"] == "AUTOMATIC_CRASH_RECOVERY_PENDING"
+    assert recovered["HUMAN_ATTENTION_REQUIRED"] is False
+    assert recovered["TELEMETRY"]["crash_recoveries"] == 1
+    assert recovered["WORK_UNITS"][0]["status"] == "RETRY"
+    assert recovered["WORK_UNITS"][0]["last_checkpoint"] == "WORKER_INTERRUPTED_WITH_CHANGES"
+
+
+def test_crash_recovery_validates_only_a_persisted_structured_checkpoint(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete checkpointed implementation")
+    unit["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "CONTROLLER_PID": 999_999, "WORKER_PID": 999_998,
+        "ACTIVE_PROCESS_KIND": "WORKER", "WORK_UNITS": [unit],
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"], "ACTIVE_WORK_UNIT_ID": "WU-001",
+        "PENDING_UNIT_RESULTS": [{"id": "WU-001", "status": "DONE"}],
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["checkpointed.py"], "created": [], "dependencies": [],
+    })
+
+    recovered = module.recover_if_interrupted("test-task")
+
+    assert recovered["NEXT_ACTION_CODE"] == "UNIT_VALIDATE"
+    assert recovered["WORK_UNITS"][0]["status"] == "RUNNING"
+    assert recovered["ACTIVE_WORK_UNIT_IDS"] == ["WU-001"]
 
 
 def test_interruption_preserves_task_temp_runtime_identity(
@@ -1297,6 +1981,7 @@ def test_interruption_preserves_task_temp_runtime_identity(
     state.update({
         "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
         "CONTROLLER_PID": 999_999, "WORKER_PID": 999_998,
+        "ACTIVE_PROCESS_KIND": "WORKER",
         "CURRENT_PHASE": "IMPLEMENT", "CURRENT_ACTION": "Worker is active",
     })
     module._write_state_unlocked("test-task", state)
@@ -1307,7 +1992,8 @@ def test_interruption_preserves_task_temp_runtime_identity(
     })
 
     recovered = module.recover_if_interrupted("test-task")
-    assert recovered["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert recovered["HARNESS_STATE"] == "RUNNING"
+    assert recovered["CURRENT_PHASE"] == "AUTOMATIC_RECOVERY"
     assert recovered["TASK_ID"] == "test-task"
     assert Path(recovered["TASK_TEMP_RUNTIME"]).resolve() == runtime
     assert recovered["TASK_TEMP_RUNTIME_STATUS"] == "READY"
@@ -1340,17 +2026,17 @@ def test_controller_failure_with_dead_worker_is_terminal_and_coherent(
 
     assert module.run_task("test-task") == 1
     failed = module.load_state("test-task")
-    assert failed["HARNESS_STATE"] == "FAILED"
-    assert failed["CURRENT_PHASE"] == "FAILED"
-    assert failed["CURRENT_ACTION"] == "Controller failed; state and worktree preserved"
+    assert failed["HARNESS_STATE"] == "RUNNING"
+    assert failed["CURRENT_PHASE"] == "AUTOMATIC_RECOVERY"
+    assert failed["CURRENT_ACTION"] == "Controller failed; supervisor restart is pending"
     assert failed["WHY_CURRENT_ACTION"] == "RuntimeError:controller lost"
     assert failed["LAST_COMPLETED"] == "IMPLEMENTATION_WORKER_EXITED"
-    assert failed["NEXT_ACTION"].startswith("Human inspects")
-    assert "confirmed inactive" in failed["WHY_NEXT_ACTION"]
+    assert failed["NEXT_ACTION"] == "Supervisor starts one replacement controller from persisted state"
+    assert "prevent duplicate" in failed["WHY_NEXT_ACTION"]
     assert "TARGETED_TEST in progress" not in failed["PROGRESS_SUMMARY"]
-    assert failed["WORKER_STATUS"] == "CONTROLLER_FAILED"
+    assert failed["WORKER_STATUS"] == "CONTROLLER_RECOVERY_PENDING"
     assert failed["FILES_CHANGED"] == ["preserved.py"]
-    assert failed["HUMAN_ATTENTION_REQUIRED"] is True
+    assert failed["HUMAN_ATTENTION_REQUIRED"] is False
 
 
 def test_controller_failure_preserves_live_worker_and_stop_remains_effective(
@@ -1376,14 +2062,14 @@ def test_controller_failure_preserves_live_worker_and_stop_remains_effective(
 
     assert module.run_task("test-task") == 1
     orphaned = module.load_state("test-task")
-    assert orphaned["HARNESS_STATE"] == "WAITING_HUMAN"
-    assert orphaned["CURRENT_PHASE"] == "WAITING_HUMAN"
-    assert orphaned["WORKER_STATUS"] == "INTERRUPTED_CONTROLLER_WORKER_ALIVE"
+    assert orphaned["HARNESS_STATE"] == "RUNNING"
+    assert orphaned["CURRENT_PHASE"] == "AUTOMATIC_RECOVERY"
+    assert orphaned["WORKER_STATUS"] == "ORPHANED_RUNNING"
     assert orphaned["WORKER_PID"] == 4242
     assert orphaned["ACTIVE_THREAD_ID"] == "thread-live"
     assert orphaned["ACTIVE_PROCESS_KIND"] == "WORKER"
-    assert orphaned["HUMAN_ATTENTION_REQUIRED"] is True
-    assert "stops or recovers the orphaned worker" in orphaned["NEXT_ACTION"]
+    assert orphaned["HUMAN_ATTENTION_REQUIRED"] is False
+    assert "waits for the recorded worker" in orphaned["NEXT_ACTION"]
     assert "IMPLEMENT in progress" not in orphaned["PROGRESS_SUMMARY"]
 
     queued: list[tuple[str, str]] = []
