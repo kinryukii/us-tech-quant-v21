@@ -45,6 +45,15 @@ REQUIRED_STATE_FIELDS = {
     "HISTORICAL_FINDINGS", "RETRY_LEDGER", "REUSE_DISCOVERY_CACHE", "TELEMETRY",
     "TASK_STARTED_AT", "TIME_BUDGET_HOURS", "DEADLINE_AT",
     "LAST_MEANINGFUL_PROGRESS_AT", "LAST_CHECKPOINT", "SUPERVISOR_PID",
+    "CONTROLLER_PID", "CONTROLLER_LAUNCH_PID", "CONTROLLER_LAUNCH_TOKEN",
+    "CONTROLLER_PARENT_PID", "CONTROLLER_STARTED_AT", "CONTROLLER_READY_AT",
+    "CONTROLLER_HEARTBEAT_AT", "CONTROLLER_STARTUP_STATUS", "CONTROLLER_EXIT_CODE",
+    "CONTROLLER_EXCEPTION", "CONTROLLER_STDERR_TAIL", "CONTROLLER_BOOTSTRAP_LOG",
+    "CONTROLLER_STARTUP_RETRY_SIGNATURE", "CONTROLLER_STARTUP_RETRY_COUNT",
+    "SUPERVISOR_LAUNCH_PID", "SUPERVISOR_LAUNCH_TOKEN",
+    "SUPERVISOR_PARENT_PID", "SUPERVISOR_STARTED_AT", "SUPERVISOR_READY_AT",
+    "SUPERVISOR_HEARTBEAT_AT", "SUPERVISOR_EXIT_CODE", "SUPERVISOR_EXCEPTION",
+    "SUPERVISOR_STDERR_TAIL", "SUPERVISOR_STARTUP_STATUS", "SUPERVISOR_BOOTSTRAP_LOG",
 }
 
 
@@ -87,6 +96,24 @@ def use_r2_compat_state(state: dict) -> dict:
     ]
     module._sync_plan_progress(state)
     return state
+
+
+def use_supervisor_test_storage(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> argparse.Namespace:
+    """Keep synthetic storage roots sibling to, never above, the worktree fixture."""
+    base = isolated_roots[0].parents[1].parent
+    storage = argparse.Namespace(
+        python_exe=Path(sys.executable),
+        data_root=base / "supervisor-test-data",
+        cache_root=base / "supervisor-test-cache",
+        daily_root=base / "supervisor-test-daily",
+        backtest_root=base / "supervisor-test-backtests",
+        results_root=base / "supervisor-test-results",
+        envs_root=base / "supervisor-test-envs",
+    )
+    monkeypatch.setattr(module, "_storage_paths", lambda: storage)
+    return storage
 
 
 def test_state_schema_atomic_persistence_and_compact_timeline(isolated_roots: tuple[Path, Path]) -> None:
@@ -478,7 +505,12 @@ def test_r3_duplicate_controller_dispatch_is_prevented(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = create_state()
-    state["CONTROLLER_PID"] = 4242
+    state.update({
+        "CONTROLLER_PID": 4242,
+        "CONTROLLER_LAUNCH_PID": 4242,
+        "CONTROLLER_LAUNCH_TOKEN": "a" * 32,
+        "CONTROLLER_STARTUP_STATUS": "STARTING",
+    })
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 4242)
     monkeypatch.setattr(
@@ -487,6 +519,494 @@ def test_r3_duplicate_controller_dispatch_is_prevented(
     )
 
     assert module._spawn_controller("test-task") == 4242
+
+
+def test_controller_launch_token_adopts_runtime_pid_and_wrong_token_is_rejected(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    token = "b" * 32
+    state.update({
+        "HARNESS_STATE": "STOPPED",
+        "CONTROLLER_PID": 6101,
+        "CONTROLLER_LAUNCH_PID": 6101,
+        "CONTROLLER_LAUNCH_TOKEN": token,
+        "CONTROLLER_STARTUP_STATUS": "STARTING",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 6101)
+    monkeypatch.setattr(module, "_dispatch", lambda task_id: None)
+
+    assert module.run_task("test-task", launch_token=token) == 0
+    adopted = module.load_state("test-task")
+    assert adopted["CONTROLLER_LAUNCH_PID"] == 6101
+    assert adopted["CONTROLLER_PID"] == module.os.getpid()
+    assert adopted["CONTROLLER_PARENT_PID"] == module.os.getppid()
+    assert adopted["CONTROLLER_LAUNCH_TOKEN"] == ""
+    assert adopted["CONTROLLER_STARTUP_STATUS"] == "EXITED"
+    events = [
+        json.loads(row)["event"]
+        for row in module.timeline_path("test-task").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events.count("CONTROLLER_STARTED") == 1
+    assert events.count("CONTROLLER_READY") == 1
+
+    adopted.update({
+        "CONTROLLER_PID": 6101,
+        "CONTROLLER_LAUNCH_TOKEN": "c" * 32,
+        "CONTROLLER_STARTUP_STATUS": "STARTING",
+    })
+    module._write_state_unlocked("test-task", adopted)
+    with pytest.raises(module.HarnessError, match="DUPLICATE_CONTROLLER_PREVENTED"):
+        module.run_task("test-task", launch_token="wrong-token")
+    rejected = module.load_state("test-task")
+    assert rejected["CONTROLLER_PID"] == 6101
+    assert rejected["CONTROLLER_LAUNCH_TOKEN"] == "c" * 32
+
+
+def test_controller_ready_handshake_uses_one_shared_windows_safe_launch(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_state()
+    use_supervisor_test_storage(isolated_roots, monkeypatch)
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.delenv(name, raising=False)
+    observed: dict = {"launches": 0}
+
+    class ReadyController:
+        pid = 6201
+
+        def poll(self):
+            if not module.load_state("test-task").get("CONTROLLER_READY_AT"):
+                started = module.utc_now()
+                module.update_task("test-task", {
+                    "CONTROLLER_PID": 7201,
+                    "CONTROLLER_STARTED_AT": started,
+                    "CONTROLLER_STARTUP_STATUS": "STARTED",
+                }, event="CONTROLLER_STARTED", detail="simulated runtime adoption")
+                ready = module.utc_now()
+                module.update_task("test-task", {
+                    "CONTROLLER_READY_AT": ready,
+                    "CONTROLLER_HEARTBEAT_AT": ready,
+                    "CONTROLLER_STARTUP_STATUS": "READY",
+                }, event="CONTROLLER_READY", detail="simulated runtime ready")
+            return 0
+
+        def terminate(self):
+            raise AssertionError("ready runtime must remain alive")
+
+        def wait(self, timeout=None):
+            return 0
+
+    def launch(*args, **kwargs):
+        observed.update({"args": args, **kwargs})
+        observed["launches"] += 1
+        return ReadyController()
+
+    monkeypatch.setattr(module.subprocess, "Popen", launch)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 7201)
+
+    assert module._spawn_controller("test-task", startup_timeout=0.5) == 7201
+    assert module._spawn_controller("test-task", startup_timeout=0.5) == 7201
+    ready = module.load_state("test-task")
+    runtime = module.task_temp_runtime("test-task")
+    command = observed["args"][0]
+    assert observed["launches"] == 1
+    assert ready["CONTROLLER_LAUNCH_PID"] == 6201
+    assert ready["CONTROLLER_PID"] == 7201
+    assert ready["CONTROLLER_STARTUP_STATUS"] == "READY"
+    assert ready["CONTROLLER_HEARTBEAT_AT"]
+    assert command[3:6] == ["_run", "--task-id", "test-task"]
+    assert command[6] == "--launch-token" and len(command[7]) == 32
+    assert Path(observed["cwd"]).resolve() == module.REPO.resolve()
+    assert all(Path(observed["env"][name]).resolve() == runtime for name in ("TEMP", "TMP", "TMPDIR"))
+    if module.os.name == "nt":
+        assert observed["creationflags"] & module.subprocess.DETACHED_PROCESS
+        assert observed["creationflags"] & module.subprocess.CREATE_BREAKAWAY_FROM_JOB
+        assert ready["CONTROLLER_SPAWN_MODE"] == "WINDOWS_DETACHED_BREAKAWAY"
+    events = [
+        json.loads(row)["event"]
+        for row in module.timeline_path("test-task").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events.count("CONTROLLER_DISPATCHED") == 1
+    assert events.count("CONTROLLER_STARTED") == 1
+    assert events.count("CONTROLLER_READY") == 1
+    assert events.count("CONTROLLER_STARTUP_HANDSHAKE_PASSED") == 1
+
+
+def test_controller_exit_before_started_retries_by_signature_then_fails_terminally(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_state()
+    use_supervisor_test_storage(isolated_roots, monkeypatch)
+    launched: list[int] = []
+
+    class ExitedController:
+        def __init__(self, pid: int):
+            self.pid = pid
+
+        def poll(self):
+            return 17
+
+        def terminate(self):
+            raise AssertionError("already exited")
+
+        def wait(self, timeout=None):
+            return 17
+
+    def launch(*args, **kwargs):
+        pid = 6300 + len(launched)
+        launched.append(pid)
+        kwargs["stderr"].write(b"controller bootstrap failed before started\n")
+        kwargs["stderr"].flush()
+        return ExitedController(pid)
+
+    monkeypatch.setattr(module.subprocess, "Popen", launch)
+
+    assert module._spawn_controller("test-task", startup_timeout=0.2) is None
+    first = module.load_state("test-task")
+    assert first["HARNESS_STATE"] == "PLANNING"
+    assert first["CONTROLLER_STARTUP_STATUS"] == "RETRY"
+    assert first["CONTROLLER_STARTUP_RETRY_COUNT"] == 1
+    signature = first["CONTROLLER_STARTUP_RETRY_SIGNATURE"]
+    assert signature.startswith("CONTROLLER_BOOTSTRAP:")
+    assert first["CONTROLLER_STARTUP_RETRY_BACKOFF_SECONDS"] > 0
+
+    assert module._spawn_controller("test-task", startup_timeout=0.2) is None
+    assert module._spawn_controller("test-task", startup_timeout=0.2) is None
+    failed = module.load_state("test-task")
+    assert failed["HARNESS_STATE"] == "FAILED"
+    assert failed["CONTROLLER_STARTUP_STATUS"] == "FAILED"
+    assert failed["CONTROLLER_STARTUP_RETRY_COUNT"] == 3
+    assert failed["CONTROLLER_STARTUP_RETRY_SIGNATURE"] == signature
+    assert failed["CONTROLLER_EXIT_CODE"] == 17
+    assert "controller bootstrap failed" in failed["CONTROLLER_STDERR_TAIL"]
+    assert failed["TERMINAL_OUTCOME"] == "CONTROLLER_STARTUP_FAILED"
+    assert failed["HUMAN_ATTENTION_REQUIRED"] is False
+    assert len(launched) == 3
+    assert module._spawn_controller("test-task", startup_timeout=0.2) is None
+    assert len(launched) == 3
+    ledger = failed["RETRY_LEDGER"][signature]
+    assert ledger["count"] == 3
+
+
+def test_ready_controller_crash_recovers_progress_without_human_boundary(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    done = module._new_work_unit("WU-001", "Already completed unit")
+    done["status"] = "DONE"
+    state.update({"HARNESS_STATE": "RUNNING", "WORK_UNITS": [done]})
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(
+        module, "_dispatch",
+        lambda task_id: (_ for _ in ()).throw(RuntimeError("controller runtime crash")),
+    )
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+
+    assert module.run_task("test-task") == 1
+    crashed = module.load_state("test-task")
+    assert crashed["HARNESS_STATE"] == "RUNNING"
+    assert crashed["CONTROLLER_STARTUP_STATUS"] == "RUNTIME_FAILED"
+    assert crashed["CONTROLLER_EXIT_CODE"] == 1
+    assert crashed["CONTROLLER_PID"] == module.os.getpid()
+    assert crashed["WORK_UNITS"][0]["status"] == "DONE"
+    assert crashed["HUMAN_ATTENTION_REQUIRED"] is False
+
+    recovered = module.recover_if_interrupted("test-task")
+    assert recovered["HARNESS_STATE"] == "RUNNING"
+    assert recovered["CONTROLLER_PID"] is None
+    assert recovered["WORK_UNITS"][0]["status"] == "DONE"
+    assert recovered["HUMAN_ATTENTION_REQUIRED"] is False
+
+
+def test_controller_explicit_stop_wins_stale_running_transition_cleanly(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    state["HARNESS_STATE"] = "RUNNING"
+    module._write_state_unlocked("test-task", state)
+
+    def stop_then_stale_transition(task_id: str) -> None:
+        module.update_task(task_id, {
+            "STOP_REQUESTED": True,
+        }, new_state="STOPPING", event="STOP_REQUESTED")
+        raise module.HarnessError("INVALID_STATE_TRANSITION:STOPPING->RUNNING")
+
+    monkeypatch.setattr(module, "_dispatch", stop_then_stale_transition)
+
+    assert module.run_task("test-task") == 0
+    stopped = module.load_state("test-task")
+    assert stopped["HARNESS_STATE"] == "STOPPING"
+    assert stopped["CONTROLLER_STARTUP_STATUS"] == "EXITED"
+    assert stopped["CONTROLLER_EXIT_CODE"] == 0
+    assert stopped["CONTROLLER_EXCEPTION"] == ""
+    events = [
+        json.loads(row)["event"]
+        for row in module.timeline_path("test-task").read_text(encoding="utf-8").splitlines()
+    ]
+    assert "CONTROLLER_CONTROL_BOUNDARY_EXIT" in events
+
+
+def test_supervisor_spawn_exit_before_started_fails_handshake_with_diagnostics(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_state()
+    use_supervisor_test_storage(isolated_roots, monkeypatch)
+    observed: dict = {}
+
+    class ExitedSupervisor:
+        pid = 5101
+
+        def poll(self):
+            return 17
+
+        def terminate(self):
+            raise AssertionError("already exited")
+
+        def wait(self, timeout=None):
+            return 17
+
+    def launch(*args, **kwargs):
+        observed.update({"args": args, **kwargs})
+        kwargs["stderr"].write(b"fatal bootstrap traceback\n")
+        kwargs["stderr"].flush()
+        return ExitedSupervisor()
+
+    monkeypatch.setattr(module.subprocess, "Popen", launch)
+
+    with pytest.raises(module.HarnessError, match="SUPERVISOR_STARTUP_FAILED"):
+        module._spawn_supervisor("test-task", startup_timeout=0.5)
+
+    failed = module.load_state("test-task")
+    assert failed["HARNESS_STATE"] == "FAILED"
+    assert failed["CURRENT_PHASE"] == "SUPERVISOR_STARTUP_FAILED"
+    assert failed["SUPERVISOR_STARTUP_STATUS"] == "FAILED"
+    assert failed["SUPERVISOR_PID"] == 5101
+    assert failed["SUPERVISOR_PARENT_PID"] == module.os.getpid()
+    assert failed["SUPERVISOR_EXIT_CODE"] == 17
+    assert "exited before READY" in failed["SUPERVISOR_EXCEPTION"]
+    assert "fatal bootstrap traceback" in failed["SUPERVISOR_STDERR_TAIL"]
+    assert failed["TERMINAL_OUTCOME"] == "SUPERVISOR_STARTUP_FAILED"
+    assert observed["stdin"] is subprocess.DEVNULL
+    assert observed["stdout"] is subprocess.DEVNULL
+
+
+def test_supervisor_ready_child_outlives_start_parent_contract_and_uses_stable_invocation(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_state()
+    use_supervisor_test_storage(isolated_roots, monkeypatch)
+    observed: dict = {}
+
+    class ReadySupervisor:
+        pid = 5102
+        terminated = False
+
+        def poll(self):
+            if not module.load_state("test-task").get("SUPERVISOR_READY_AT"):
+                now = module.utc_now()
+                module.update_task("test-task", {
+                    "SUPERVISOR_PID": 6102,
+                    "SUPERVISOR_STARTED_AT": now,
+                    "SUPERVISOR_READY_AT": now,
+                    "SUPERVISOR_HEARTBEAT_AT": now,
+                    "SUPERVISOR_STARTUP_STATUS": "READY",
+                }, event="SUPERVISOR_READY", detail="simulated child ready")
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return None
+
+    process = ReadySupervisor()
+
+    def launch(*args, **kwargs):
+        observed.update({"args": args, **kwargs})
+        return process
+
+    monkeypatch.setattr(module.subprocess, "Popen", launch)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 6102)
+
+    assert module._spawn_supervisor("test-task", startup_timeout=0.5) == 6102
+
+    ready = module.load_state("test-task")
+    command = observed["args"][0]
+    runtime = module.task_temp_runtime("test-task")
+    assert ready["SUPERVISOR_STARTUP_STATUS"] == "READY"
+    assert ready["SUPERVISOR_STARTED_AT"] and ready["SUPERVISOR_HEARTBEAT_AT"]
+    assert ready["SUPERVISOR_LAUNCH_PID"] == 5102
+    assert ready["SUPERVISOR_PID"] == 6102
+    assert process.terminated is False
+    assert Path(command[0]).resolve() == module._storage_paths().python_exe.resolve()
+    assert Path(command[2]).resolve() == module.SCRIPT.resolve()
+    assert command[3:6] == ["_supervise", "--task-id", "test-task"]
+    assert command[6] == "--launch-token" and len(command[7]) == 32
+    assert Path(observed["cwd"]).resolve() == module.REPO.resolve()
+    assert observed["close_fds"] is True
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        assert Path(observed["env"][name]).resolve() == runtime
+    if module.os.name == "nt":
+        assert observed["creationflags"] & module.subprocess.DETACHED_PROCESS
+        assert observed["creationflags"] & module.subprocess.CREATE_NEW_PROCESS_GROUP
+        assert observed["creationflags"] & module.subprocess.CREATE_BREAKAWAY_FROM_JOB
+        assert ready["SUPERVISOR_SPAWN_MODE"] == "WINDOWS_DETACHED_BREAKAWAY"
+    events = [
+        json.loads(row)["event"]
+        for row in module.timeline_path("test-task").read_text(encoding="utf-8").splitlines()
+    ]
+    assert "SUPERVISOR_STARTUP_HANDSHAKE_PASSED" in events
+
+
+def test_supervisor_missing_host_temp_uses_external_task_runtime_without_permission_change(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_state()
+    use_supervisor_test_storage(isolated_roots, monkeypatch)
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.delenv(name, raising=False)
+    observed: dict = {}
+
+    class ReadySupervisor:
+        pid = 5103
+
+        def poll(self):
+            if module.load_state("test-task")["SUPERVISOR_STARTUP_STATUS"] != "READY":
+                now = module.utc_now()
+                module.update_task("test-task", {
+                    "SUPERVISOR_PID": self.pid, "SUPERVISOR_STARTED_AT": now,
+                    "SUPERVISOR_READY_AT": now, "SUPERVISOR_HEARTBEAT_AT": now,
+                    "SUPERVISOR_STARTUP_STATUS": "READY",
+                })
+            return None
+
+        def terminate(self):
+            raise AssertionError("ready Supervisor must remain alive")
+
+        def wait(self, timeout=None):
+            return None
+
+    def launch(*args, **kwargs):
+        observed.update(kwargs)
+        return ReadySupervisor()
+
+    monkeypatch.setattr(module.subprocess, "Popen", launch)
+    assert module._spawn_supervisor("test-task", startup_timeout=0.5) == 5103
+
+    runtime = module.task_temp_runtime("test-task")
+    assert runtime.is_dir()
+    assert module.REPO.resolve() not in runtime.parents
+    assert module.load_state("test-task")["TASK_TEMP_RUNTIME_STATUS"] == "READY"
+    assert all(Path(observed["env"][name]).resolve() == runtime for name in ("TEMP", "TMP", "TMPDIR"))
+    source = module._worker_prompt(module.load_state("test-task"))
+    assert "Never change ACLs" in source and "icacls/takeown" in source
+
+
+def test_supervisor_initialization_exception_is_persisted(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    state.update({
+        "SUPERVISOR_PID": module.os.getpid(),
+        "SUPERVISOR_PARENT_PID": 4000,
+        "SUPERVISOR_STARTUP_STATUS": "STARTING",
+    })
+    module._write_state_unlocked("test-task", state)
+    real_update = module.update_task
+    injected = {"value": False}
+
+    def fail_initialization(*args, **kwargs):
+        if kwargs.get("event") == "SUPERVISOR_STARTED" and not injected["value"]:
+            injected["value"] = True
+            raise RuntimeError("initialization boom")
+        return real_update(*args, **kwargs)
+
+    monkeypatch.setattr(module, "update_task", fail_initialization)
+
+    assert module.run_supervisor("test-task", poll_seconds=0) == 1
+
+    failed = module.load_state("test-task")
+    assert failed["SUPERVISOR_STARTUP_STATUS"] == "FAILED"
+    assert failed["SUPERVISOR_EXIT_CODE"] == 1
+    assert failed["SUPERVISOR_EXCEPTION"] == "RuntimeError:initialization boom"
+    assert "initialization boom" in failed["SUPERVISOR_STDERR_TAIL"]
+
+
+def test_supervisor_launch_token_adopts_runtime_pid_without_weakening_duplicate_guard(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    token = "a" * 32
+    state.update({
+        "HARNESS_STATE": "PAUSED", "SUPERVISOR_PID": 5105,
+        "SUPERVISOR_LAUNCH_PID": 5105, "SUPERVISOR_LAUNCH_TOKEN": token,
+        "SUPERVISOR_PARENT_PID": 4000, "SUPERVISOR_STARTUP_STATUS": "STARTING",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 5105)
+
+    assert module.run_supervisor("test-task", poll_seconds=0, launch_token=token) == 0
+
+    adopted = module.load_state("test-task")
+    assert adopted["SUPERVISOR_LAUNCH_PID"] == 5105
+    assert adopted["SUPERVISOR_PID"] == module.os.getpid()
+    assert adopted["SUPERVISOR_PARENT_PID"] == module.os.getppid()
+    assert adopted["SUPERVISOR_LAUNCH_TOKEN"] == ""
+    assert adopted["SUPERVISOR_EXIT_CODE"] == 0
+    assert adopted["SUPERVISOR_STARTUP_STATUS"] == "EXITED"
+    assert adopted["SUPERVISOR_EXCEPTION"] == ""
+
+
+def test_supervisor_startup_does_not_spawn_duplicate_and_completed_task_is_unchanged(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    now = module.utc_now()
+    state.update({
+        "SUPERVISOR_PID": 5104, "SUPERVISOR_STARTED_AT": now,
+        "SUPERVISOR_READY_AT": now, "SUPERVISOR_HEARTBEAT_AT": now,
+        "SUPERVISOR_STARTUP_STATUS": "READY",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 5104)
+    monkeypatch.setattr(
+        module.subprocess, "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("duplicate Supervisor spawned")),
+    )
+    assert module._spawn_supervisor("test-task", startup_timeout=0.1) == 5104
+
+    completed = module.load_state("test-task")
+    completed["HARNESS_STATE"] = "COMPLETED"
+    completed["TERMINAL_OUTCOME"] = "COMPLETED"
+    module._write_state_unlocked("test-task", completed)
+    before = module.load_state("test-task")
+    after = module.recover_if_interrupted("test-task")
+    assert after == before
+    assert module._spawn_controller("test-task", startup_timeout=0.1) is None
+
+
+def test_supervisor_cooperative_stop_wins_recovery_race_cleanly(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    state["CONTROLLER_PID"] = 5200
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+
+    def stop_during_recovery(task_id: str) -> dict:
+        module.update_task(task_id, new_state="STOPPED", event="STOP_REQUESTED")
+        raise module.HarnessError("INVALID_STATE_TRANSITION:STOPPED->RUNNING")
+
+    monkeypatch.setattr(module, "recover_if_interrupted", stop_during_recovery)
+
+    assert module.run_supervisor("test-task", poll_seconds=0) == 0
+    stopped = module.load_state("test-task")
+    assert stopped["HARNESS_STATE"] == "STOPPED"
+    assert stopped["SUPERVISOR_STARTUP_STATUS"] == "EXITED"
+    assert stopped["SUPERVISOR_EXIT_CODE"] == 0
+    assert stopped["SUPERVISOR_EXCEPTION"] == ""
 
 
 def test_r3_expired_budget_defers_remaining_work_with_continuation_plan() -> None:

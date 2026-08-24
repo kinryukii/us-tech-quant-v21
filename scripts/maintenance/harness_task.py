@@ -14,6 +14,7 @@ import subprocess
 import sys
 import time
 import tomllib
+import traceback
 from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -89,6 +90,14 @@ DISCOVERY_TEXT_SUFFIXES = {".json", ".md", ".ps1", ".py", ".toml", ".txt", ".yam
 TASK_TEMP_RUNTIME_PREFIX = "harness-runtime-"
 TASK_TEMP_OWNER_MARKER = ".harness-runtime-owner.json"
 WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION = "WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_WINERROR5"
+SUPERVISOR_STARTUP_TIMEOUT_SECONDS = 10.0
+SUPERVISOR_STARTUP_POLL_SECONDS = 0.1
+SUPERVISOR_BOOTSTRAP_LOG_NAME = "supervisor-bootstrap.stderr.log"
+MAX_SUPERVISOR_DIAGNOSTIC_BYTES = 16_384
+CONTROLLER_STARTUP_TIMEOUT_SECONDS = 10.0
+CONTROLLER_STARTUP_RETRY_LIMIT = 2
+CONTROLLER_STARTUP_BACKOFF_SECONDS = 0.5
+CONTROLLER_BOOTSTRAP_LOG_NAME = "controller-bootstrap.stderr.log"
 
 
 class HarnessError(RuntimeError):
@@ -165,6 +174,83 @@ def state_path(task_id: str) -> Path:
 
 def timeline_path(task_id: str) -> Path:
     return task_dir(task_id) / "timeline.jsonl"
+
+
+def supervisor_bootstrap_log_path(task_id: str) -> Path:
+    """Keep bootstrap diagnostics with compact external task state, not source/runtime."""
+    return task_dir(task_id) / SUPERVISOR_BOOTSTRAP_LOG_NAME
+
+
+def controller_bootstrap_log_path(task_id: str) -> Path:
+    """Keep Controller bootstrap diagnostics beside the existing compact task state."""
+    return task_dir(task_id) / CONTROLLER_BOOTSTRAP_LOG_NAME
+
+
+def _diagnostic_tail(path: Path, limit: int = MAX_SUPERVISOR_DIAGNOSTIC_BYTES) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - limit))
+            return handle.read(limit).decode("utf-8", errors="replace")[-limit:]
+    except OSError:
+        return ""
+
+
+def _bound_bootstrap_log(path: Path) -> None:
+    """Bound diagnostics before a restart while preserving the most recent evidence."""
+    if not path.exists() or path.stat().st_size <= MAX_SUPERVISOR_DIAGNOSTIC_BYTES:
+        return
+    tail = _diagnostic_tail(path)
+    path.write_text(tail, encoding="utf-8")
+
+
+def _launch_token_adoption(state: dict[str, Any], kind: str, token: str) -> bool:
+    prefix = kind.upper()
+    return bool(
+        token
+        and state.get(f"{prefix}_STARTUP_STATUS") == "STARTING"
+        and secrets.compare_digest(str(state.get(f"{prefix}_LAUNCH_TOKEN", "")), token)
+    )
+
+
+def _background_process_modes() -> list[tuple[str, int]]:
+    if os.name != "nt":
+        return [("STANDARD", 0)]
+    detached = (
+        getattr(subprocess, "DETACHED_PROCESS", 0)
+        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    )
+    return [
+        (
+            "WINDOWS_DETACHED_BREAKAWAY",
+            detached | getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0),
+        ),
+        ("WINDOWS_DETACHED_FALLBACK", detached),
+    ]
+
+
+def _launch_background_process(
+    command: Sequence[str], *, environment: dict[str, str], log_path: Path,
+) -> tuple[subprocess.Popen[Any], str]:
+    """Launch one detached child using the shared Windows-safe bootstrap contract."""
+    _bound_bootstrap_log(log_path)
+    errors: list[str] = []
+    modes = _background_process_modes()
+    for index, (mode, flags) in enumerate(modes):
+        try:
+            with log_path.open("ab", buffering=0) as stderr_handle:
+                process = subprocess.Popen(
+                    list(command), cwd=str(REPO.resolve()), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=stderr_handle, close_fds=True,
+                    creationflags=flags, env=environment,
+                )
+            return process, mode
+        except OSError as exc:
+            errors.append(f"{mode}:{type(exc).__name__}:{exc}")
+            if index + 1 >= len(modes) or getattr(exc, "winerror", None) not in {5, 87}:
+                break
+    raise HarnessError("BACKGROUND_CREATE_PROCESS_FAILED:" + " | ".join(errors))
 
 
 def validate_task_id(task_id: str) -> None:
@@ -468,8 +554,33 @@ def _new_state(
         "ACTIVE_THREAD_ID": "",
         "ACTIVE_PROCESS_KIND": "",
         "CONTROLLER_PID": None,
+        "CONTROLLER_LAUNCH_PID": None,
+        "CONTROLLER_LAUNCH_TOKEN": "",
+        "CONTROLLER_PARENT_PID": None,
+        "CONTROLLER_STARTED_AT": "",
+        "CONTROLLER_READY_AT": "",
+        "CONTROLLER_STARTUP_STATUS": "NOT_STARTED",
+        "CONTROLLER_EXIT_CODE": None,
+        "CONTROLLER_EXCEPTION": "",
+        "CONTROLLER_STDERR_TAIL": "",
+        "CONTROLLER_BOOTSTRAP_LOG": str(controller_bootstrap_log_path(task_id)),
+        "CONTROLLER_SPAWN_MODE": "",
+        "CONTROLLER_STARTUP_RETRY_SIGNATURE": "",
+        "CONTROLLER_STARTUP_RETRY_COUNT": 0,
+        "CONTROLLER_STARTUP_RETRY_BACKOFF_SECONDS": 0.0,
         "SUPERVISOR_PID": None,
+        "SUPERVISOR_LAUNCH_PID": None,
+        "SUPERVISOR_LAUNCH_TOKEN": "",
+        "SUPERVISOR_PARENT_PID": None,
+        "SUPERVISOR_STARTED_AT": "",
+        "SUPERVISOR_READY_AT": "",
         "SUPERVISOR_HEARTBEAT_AT": "",
+        "SUPERVISOR_EXIT_CODE": None,
+        "SUPERVISOR_EXCEPTION": "",
+        "SUPERVISOR_STDERR_TAIL": "",
+        "SUPERVISOR_STARTUP_STATUS": "NOT_STARTED",
+        "SUPERVISOR_BOOTSTRAP_LOG": str(supervisor_bootstrap_log_path(task_id)),
+        "SUPERVISOR_SPAWN_MODE": "",
         "CONTROLLER_HEARTBEAT_AT": "",
         "BASE_HEAD": "",
         "BASE_BRANCH": "",
@@ -3553,10 +3664,14 @@ def _record_controller_failure(task_id: str, exc: Exception) -> dict[str, Any]:
         except Exception as inventory_exc:
             inventory_error = f";inventory={type(inventory_exc).__name__}:{inventory_exc}"[:2_000]
     detail = f"{type(exc).__name__}:{exc}{inventory_error}"[:MAX_TEXT]
+    trace_tail = traceback.format_exc()[-MAX_SUPERVISOR_DIAGNOSTIC_BYTES:]
 
     if int(state.get("HARNESS_VERSION", 2)) >= 3:
         def r3_recovery(value: dict[str, Any]) -> None:
-            value["CONTROLLER_PID"] = None
+            value["CONTROLLER_EXIT_CODE"] = 1
+            value["CONTROLLER_EXCEPTION"] = detail
+            value["CONTROLLER_STDERR_TAIL"] = trace_tail
+            value["CONTROLLER_STARTUP_STATUS"] = "RUNTIME_FAILED"
             value["WORKER_STATUS"] = (
                 "ORPHANED_RUNNING" if worker_liveness is True
                 else "ORPHANED_STATUS_UNKNOWN" if worker_may_be_alive
@@ -3616,59 +3731,338 @@ def _record_controller_failure(task_id: str, exc: Exception) -> dict[str, Any]:
     }, new_state="FAILED", event="CONTROLLER_FAILED", detail=detail, mutate=mark_controller_failed)
 
 
-def run_task(task_id: str) -> int:
-    prior = load_state(task_id).get("CONTROLLER_PID")
-    if prior not in (None, os.getpid()) and _pid_alive(prior) is not False:
-        raise HarnessError(f"DUPLICATE_CONTROLLER_PREVENTED:{prior}")
-    update_task(task_id, {"CONTROLLER_PID": os.getpid()}, event="CONTROLLER_STARTED", detail=f"pid={os.getpid()}")
+def _record_controller_startup_failure(
+    task_id: str, reason: str, *, pid: int | None, exit_code: int | None,
+) -> dict[str, Any]:
+    current = load_state(task_id)
+    signature = _failure_signature("CONTROLLER_BOOTSTRAP", reason)
+    key = signature
+    prior = current.setdefault("RETRY_LEDGER", {}).get(key, {})
+    count = int(prior.get("count", 0)) + 1
+    retry_allowed = count <= CONTROLLER_STARTUP_RETRY_LIMIT
+    backoff = min(8.0, CONTROLLER_STARTUP_BACKOFF_SECONDS * (2 ** (count - 1)))
+    effective_exit = exit_code if exit_code is not None else current.get("CONTROLLER_EXIT_CODE")
+    tail = _diagnostic_tail(controller_bootstrap_log_path(task_id)) or str(
+        current.get("CONTROLLER_STDERR_TAIL", "")
+    )
+
+    def record(value: dict[str, Any]) -> None:
+        value.setdefault("RETRY_LEDGER", {})[key] = {
+            "count": count,
+            "progress_hash": "CONTROLLER_NOT_READY",
+            "last_attempted_remedy": "AUTONOMOUS_CONTROLLER_RESTART",
+            "last_detail": reason[:1_000],
+            "updated_at": utc_now(),
+        }
+        value["CONTROLLER_PID"] = None
+        value["CONTROLLER_LAUNCH_TOKEN"] = ""
+        value["CONTROLLER_EXIT_CODE"] = effective_exit
+        value["CONTROLLER_EXCEPTION"] = reason[:MAX_TEXT]
+        value["CONTROLLER_STDERR_TAIL"] = tail[-MAX_SUPERVISOR_DIAGNOSTIC_BYTES:]
+        value["CONTROLLER_STARTUP_RETRY_SIGNATURE"] = signature
+        value["CONTROLLER_STARTUP_RETRY_COUNT"] = count
+        value["CONTROLLER_STARTUP_RETRY_BACKOFF_SECONDS"] = backoff if retry_allowed else 0.0
+        value["CURRENT_RETRY_SIGNATURE"] = signature
+        value["CURRENT_RETRY_COUNT"] = count
+        value["CONTROLLER_STARTUP_STATUS"] = "RETRY" if retry_allowed else "FAILED"
+        value["WORKER_STATUS"] = (
+            "CONTROLLER_STARTUP_RETRY" if retry_allowed else "CONTROLLER_STARTUP_FAILED"
+        )
+        value["CURRENT_PHASE"] = (
+            "CONTROLLER_STARTUP_RETRY" if retry_allowed else "CONTROLLER_STARTUP_FAILED"
+        )
+        value["CURRENT_ACTION"] = (
+            "Controller bootstrap failed; bounded automatic retry scheduled"
+            if retry_allowed else
+            "Controller bootstrap repeatedly failed before autonomous execution"
+        )
+        value["WHY_CURRENT_ACTION"] = reason[:MAX_TEXT]
+        value["NEXT_ACTION"] = (
+            f"Retry Controller bootstrap after {backoff:.1f}s"
+            if retry_allowed else
+            "Inspect the preserved Controller bootstrap diagnostics"
+        )
+        value["WHY_NEXT_ACTION"] = (
+            "The normalized startup signature remains within its bounded retry budget."
+            if retry_allowed else
+            "The same deterministic startup failure exhausted its autonomous retry budget."
+        )
+        value["HUMAN_ATTENTION_REQUIRED"] = False
+        if not retry_allowed:
+            value["LAST_COMPLETED"] = "CONTROLLER_STARTUP_FAILED"
+            value["TERMINAL_OUTCOME"] = "CONTROLLER_STARTUP_FAILED"
+            _close_active_plan(value, "FAILED")
+
+    result = update_task(
+        task_id, new_state=(None if retry_allowed else "FAILED"),
+        event=("CONTROLLER_STARTUP_RETRY" if retry_allowed else "CONTROLLER_STARTUP_FAILED"),
+        detail=f"signature={signature};count={count};pid={pid};exit={effective_exit};{reason[:500]}",
+        mutate=record,
+    )
+    return result
+
+
+def run_task(task_id: str, *, launch_token: str = "") -> int:
+    bootstrap_state = load_state(task_id)
+    prior = bootstrap_state.get("CONTROLLER_PID")
+    token_adoption = _launch_token_adoption(bootstrap_state, "CONTROLLER", launch_token)
+    if prior not in (None, os.getpid()) and _pid_alive(prior) is not False and not token_adoption:
+        raise HarnessError(
+            f"DUPLICATE_CONTROLLER_PREVENTED:recorded={prior};current={os.getpid()}"
+        )
+    exit_code = 1
+    ready = False
     try:
+        started_at = utc_now()
+        update_task(task_id, {
+            "CONTROLLER_PID": os.getpid(),
+            "CONTROLLER_LAUNCH_TOKEN": "",
+            "CONTROLLER_PARENT_PID": os.getppid(),
+            "CONTROLLER_STARTED_AT": started_at,
+            "CONTROLLER_STARTUP_STATUS": "STARTED",
+            "CONTROLLER_EXIT_CODE": None,
+            "CONTROLLER_EXCEPTION": "",
+        }, event="CONTROLLER_STARTED", detail=f"pid={os.getpid()};parent={os.getppid()}")
+        ready_at = utc_now()
+        update_task(task_id, {
+            "CONTROLLER_READY_AT": ready_at,
+            "CONTROLLER_HEARTBEAT_AT": ready_at,
+            "CONTROLLER_STARTUP_STATUS": "READY",
+            "CONTROLLER_STARTUP_RETRY_SIGNATURE": "",
+            "CONTROLLER_STARTUP_RETRY_COUNT": 0,
+            "CONTROLLER_STARTUP_RETRY_BACKOFF_SECONDS": 0.0,
+            "CURRENT_RETRY_SIGNATURE": "",
+            "CURRENT_RETRY_COUNT": 0,
+        }, event="CONTROLLER_READY", detail=f"pid={os.getpid()};heartbeat={ready_at}")
+        ready = True
         _dispatch(task_id)
-        return 0
+        exit_code = 0
     except Exception as exc:
-        try:
-            _record_controller_failure(task_id, exc)
-        except Exception:
-            pass
-        return 1
+        exception_text = f"{type(exc).__name__}:{exc}"[:MAX_TEXT]
+        trace_tail = traceback.format_exc()[-MAX_SUPERVISOR_DIAGNOSTIC_BYTES:]
+        control_state = load_state(task_id)
+        controlled_transition_exit = bool(
+            isinstance(exc, HarnessError)
+            and str(exc).startswith("INVALID_STATE_TRANSITION:")
+            and (
+                (
+                    control_state.get("STOP_REQUESTED")
+                    and control_state.get("HARNESS_STATE") in {"STOPPING", "STOPPED"}
+                )
+                or (
+                    control_state.get("PAUSE_REQUESTED")
+                    and control_state.get("HARNESS_STATE") == "PAUSED"
+                )
+            )
+        )
+        if controlled_transition_exit:
+            exit_code = 0
+            update_task(task_id, {
+                "CONTROLLER_EXCEPTION": "",
+                "CONTROLLER_STDERR_TAIL": "",
+            }, event="CONTROLLER_CONTROL_BOUNDARY_EXIT", detail=(
+                f"state={control_state.get('HARNESS_STATE')};{exception_text}"
+            ))
+        else:
+            try:
+                if ready:
+                    _record_controller_failure(task_id, exc)
+                    update_task(task_id, {
+                        "CONTROLLER_EXIT_CODE": 1,
+                        "CONTROLLER_EXCEPTION": exception_text,
+                        "CONTROLLER_STDERR_TAIL": trace_tail,
+                        "CONTROLLER_STARTUP_STATUS": "RUNTIME_FAILED",
+                    })
+                else:
+                    update_task(task_id, {
+                        "CONTROLLER_EXIT_CODE": 1,
+                        "CONTROLLER_EXCEPTION": exception_text,
+                        "CONTROLLER_STDERR_TAIL": trace_tail,
+                        "CONTROLLER_STARTUP_STATUS": "FAILED",
+                    }, event="CONTROLLER_INITIALIZATION_FAILED", detail=exception_text)
+            except Exception:
+                pass
+            traceback.print_exc(file=sys.stderr)
     finally:
         try:
-            state = load_state(task_id)
-            if state.get("CONTROLLER_PID") == os.getpid():
-                update_task(task_id, {"CONTROLLER_PID": None})
+            current = load_state(task_id)
+            if current.get("CONTROLLER_PID") == os.getpid():
+                status = str(current.get("CONTROLLER_STARTUP_STATUS", ""))
+                update_task(task_id, {
+                    "CONTROLLER_EXIT_CODE": exit_code,
+                    "CONTROLLER_STARTUP_STATUS": (
+                        status if status in {"FAILED", "RUNTIME_FAILED"} else "EXITED"
+                    ),
+                    "CONTROLLER_STDERR_TAIL": (
+                        current.get("CONTROLLER_STDERR_TAIL") or
+                        _diagnostic_tail(controller_bootstrap_log_path(task_id))
+                    ),
+                }, event="CONTROLLER_EXITED", detail=f"pid={os.getpid()};exit={exit_code}")
         except Exception:
             pass
+    return exit_code
 
 
-def _spawn_controller(task_id: str) -> int:
-    existing = load_state(task_id).get("CONTROLLER_PID")
+def _wait_for_controller_startup(
+    task_id: str, process: subprocess.Popen[Any], *, timeout: float,
+) -> dict[str, Any] | None:
+    deadline = time.monotonic() + max(0.1, timeout)
+    while time.monotonic() < deadline:
+        exit_code = process.poll()
+        state = load_state(task_id)
+        runtime_pid = state.get("CONTROLLER_PID")
+        runtime_alive = (
+            exit_code is None
+            if runtime_pid == process.pid
+            else _pid_alive(runtime_pid) is not False
+        )
+        if (
+            state.get("CONTROLLER_LAUNCH_PID") == process.pid
+            and state.get("CONTROLLER_STARTUP_STATUS") == "READY"
+            and state.get("CONTROLLER_STARTED_AT")
+            and state.get("CONTROLLER_HEARTBEAT_AT")
+            and runtime_alive
+        ):
+            return state
+        launcher_exit_without_adoption = (
+            exit_code is not None and runtime_pid in {None, process.pid}
+        )
+        failed_and_inactive = (
+            state.get("CONTROLLER_STARTUP_STATUS") in {"FAILED", "RUNTIME_FAILED", "EXITED"}
+            and runtime_alive is False
+        )
+        if launcher_exit_without_adoption or failed_and_inactive:
+            reason = state.get("CONTROLLER_EXCEPTION") or "Controller exited before READY"
+            _record_controller_startup_failure(
+                task_id, str(reason), pid=int(runtime_pid or process.pid), exit_code=exit_code,
+            )
+            return None
+        time.sleep(SUPERVISOR_STARTUP_POLL_SECONDS)
+    try:
+        process.terminate()
+        process.wait(timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    reason = f"Controller did not emit READY within {timeout:.1f}s"
+    _record_controller_startup_failure(
+        task_id, reason, pid=process.pid, exit_code=process.poll(),
+    )
+    return None
+
+
+def _spawn_controller(
+    task_id: str, *, startup_timeout: float = CONTROLLER_STARTUP_TIMEOUT_SECONDS,
+) -> int | None:
+    state = load_state(task_id)
+    if state["HARNESS_STATE"] not in ACTIVE_STATES:
+        return None
+    existing = state.get("CONTROLLER_PID")
     if existing and _pid_alive(existing) is not False:
         return int(existing)
-    python = _storage_paths().python_exe
-    command = [str(python), "-B", str(SCRIPT), "_run", "--task-id", task_id]
-    flags = 0
-    if os.name == "nt":
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    process = subprocess.Popen(
-        command, cwd=str(REPO), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
-    )
-    update_task(task_id, {"CONTROLLER_PID": process.pid}, event="CONTROLLER_DISPATCHED", detail=f"pid={process.pid}")
-    return process.pid
-
-
-def run_supervisor(task_id: str, *, poll_seconds: float = 2.0) -> int:
-    prior = load_state(task_id).get("SUPERVISOR_PID")
-    if prior not in (None, os.getpid()) and _pid_alive(prior) is not False:
-        raise HarnessError(f"DUPLICATE_SUPERVISOR_PREVENTED:{prior}")
-    update_task(task_id, {
-        "SUPERVISOR_PID": os.getpid(), "SUPERVISOR_HEARTBEAT_AT": utc_now(),
-    }, event="SUPERVISOR_STARTED", detail=f"pid={os.getpid()}")
-    last_heartbeat = 0.0
     try:
+        runtime = _ensure_task_temp_runtime(task_id)
+        environment = _task_temp_environment(runtime)
+        log_path = controller_bootstrap_log_path(task_id)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except (HarnessError, OSError) as exc:
+        _record_controller_startup_failure(
+            task_id,
+            f"CONTROLLER_BOOTSTRAP_RUNTIME_UNAVAILABLE:{type(exc).__name__}:{exc}",
+            pid=None, exit_code=None,
+        )
+        return None
+    launch_token = secrets.token_hex(16)
+    update_task(task_id, {
+        "CONTROLLER_PID": None,
+        "CONTROLLER_LAUNCH_PID": None,
+        "CONTROLLER_LAUNCH_TOKEN": launch_token,
+        "CONTROLLER_PARENT_PID": os.getpid(),
+        "CONTROLLER_STARTED_AT": "",
+        "CONTROLLER_READY_AT": "",
+        "CONTROLLER_HEARTBEAT_AT": "",
+        "CONTROLLER_EXIT_CODE": None,
+        "CONTROLLER_EXCEPTION": "",
+        "CONTROLLER_STDERR_TAIL": "",
+        "CONTROLLER_STARTUP_STATUS": "STARTING",
+        "CONTROLLER_BOOTSTRAP_LOG": str(log_path),
+    }, event="CONTROLLER_STARTUP_BEGIN", detail=f"parent={os.getpid()};runtime={runtime}")
+    python = _storage_paths().python_exe.resolve()
+    command = [
+        str(python), "-B", str(SCRIPT.resolve()), "_run",
+        "--task-id", task_id, "--launch-token", launch_token,
+    ]
+    try:
+        process, mode = _launch_background_process(
+            command, environment=environment, log_path=log_path,
+        )
+    except HarnessError as exc:
+        _record_controller_startup_failure(
+            task_id, f"CONTROLLER_CREATE_PROCESS_FAILED:{exc}",
+            pid=None, exit_code=None,
+        )
+        return None
+
+    def record_dispatched(value: dict[str, Any]) -> None:
+        value["CONTROLLER_LAUNCH_PID"] = process.pid
+        value["CONTROLLER_SPAWN_MODE"] = mode
+        if value.get("CONTROLLER_STARTUP_STATUS") not in {"STARTED", "READY"}:
+            value["CONTROLLER_PID"] = process.pid
+            value["CONTROLLER_STARTUP_STATUS"] = "STARTING"
+
+    update_task(
+        task_id, event="CONTROLLER_DISPATCHED",
+        detail=f"pid={process.pid};parent={os.getpid()};mode={mode}",
+        mutate=record_dispatched,
+    )
+    ready_state = _wait_for_controller_startup(task_id, process, timeout=startup_timeout)
+    if ready_state is None:
+        return None
+    runtime_pid = int(ready_state["CONTROLLER_PID"])
+    update_task(task_id, event="CONTROLLER_STARTUP_HANDSHAKE_PASSED", detail=(
+        f"pid={runtime_pid};launch_pid={process.pid};"
+        f"started={ready_state['CONTROLLER_STARTED_AT']};"
+        f"heartbeat={ready_state['CONTROLLER_HEARTBEAT_AT']}"
+    ))
+    return runtime_pid
+
+
+def run_supervisor(
+    task_id: str, *, poll_seconds: float = 2.0, launch_token: str = "",
+) -> int:
+    """Own one task until quiescence and always persist initialization/exit evidence."""
+    exit_code = 1
+    initialized = False
+    try:
+        bootstrap_state = load_state(task_id)
+        prior = bootstrap_state.get("SUPERVISOR_PID")
+        token_adoption = _launch_token_adoption(bootstrap_state, "SUPERVISOR", launch_token)
+        if prior not in (None, os.getpid()) and _pid_alive(prior) is not False and not token_adoption:
+            raise HarnessError(
+                f"DUPLICATE_SUPERVISOR_PREVENTED:recorded={prior};current={os.getpid()}"
+            )
+        started_at = utc_now()
+        update_task(task_id, {
+            "SUPERVISOR_PID": os.getpid(),
+            "SUPERVISOR_LAUNCH_TOKEN": "",
+            "SUPERVISOR_PARENT_PID": os.getppid(),
+            "SUPERVISOR_STARTED_AT": started_at,
+            "SUPERVISOR_STARTUP_STATUS": "STARTED",
+            "SUPERVISOR_EXIT_CODE": None,
+            "SUPERVISOR_EXCEPTION": "",
+        }, event="SUPERVISOR_STARTED", detail=f"pid={os.getpid()};parent={os.getppid()}")
+        ready_at = utc_now()
+        update_task(task_id, {
+            "SUPERVISOR_READY_AT": ready_at,
+            "SUPERVISOR_HEARTBEAT_AT": ready_at,
+            "SUPERVISOR_STARTUP_STATUS": "READY",
+        }, event="SUPERVISOR_READY", detail=f"pid={os.getpid()};heartbeat={ready_at}")
+        initialized = True
+        exit_code = 0
+        last_heartbeat = time.monotonic()
         while True:
             state = load_state(task_id)
             if state["HARNESS_STATE"] in TERMINAL_STATES | {"PAUSED", "WAITING_HUMAN", "BLOCKED"}:
-                return 0
+                break
             now = time.monotonic()
             if now - last_heartbeat >= 30:
                 update_task(task_id, {"SUPERVISOR_HEARTBEAT_AT": utc_now()})
@@ -3685,34 +4079,212 @@ def run_supervisor(task_id: str, *, poll_seconds: float = 2.0) -> int:
                 time.sleep(poll_seconds)
                 continue
             if state.get("CONTROLLER_PID") or state.get("WORKER_PID"):
-                recover_if_interrupted(task_id)
+                try:
+                    recover_if_interrupted(task_id)
+                except HarnessError:
+                    # A cooperative stop may become authoritative between this
+                    # loop's liveness read and recovery's state transition.
+                    if load_state(task_id)["HARNESS_STATE"] in TERMINAL_STATES | {
+                        "PAUSED", "WAITING_HUMAN", "BLOCKED",
+                    }:
+                        break
+                    raise
                 state = load_state(task_id)
             if state["HARNESS_STATE"] in ACTIVE_STATES:
                 _spawn_controller(task_id)
-            time.sleep(poll_seconds)
-    finally:
+            latest = load_state(task_id)
+            backoff = (
+                float(latest.get("CONTROLLER_STARTUP_RETRY_BACKOFF_SECONDS", 0.0) or 0.0)
+                if latest.get("CONTROLLER_STARTUP_STATUS") == "RETRY" else 0.0
+            )
+            time.sleep(max(poll_seconds, backoff))
+    except BaseException as exc:
+        exit_code = 1
+        exception_text = f"{type(exc).__name__}:{exc}"[:MAX_TEXT]
+        trace_tail = traceback.format_exc()[-MAX_SUPERVISOR_DIAGNOSTIC_BYTES:]
         try:
-            if load_state(task_id).get("SUPERVISOR_PID") == os.getpid():
-                update_task(task_id, {"SUPERVISOR_PID": None})
+            update_task(task_id, {
+                "SUPERVISOR_EXIT_CODE": exit_code,
+                "SUPERVISOR_EXCEPTION": exception_text,
+                "SUPERVISOR_STDERR_TAIL": trace_tail,
+                "SUPERVISOR_STARTUP_STATUS": "FAILED" if not initialized else "RUNTIME_FAILED",
+            }, event=(
+                "SUPERVISOR_INITIALIZATION_FAILED" if not initialized else "SUPERVISOR_RUNTIME_FAILED"
+            ), detail=exception_text)
         except Exception:
             pass
+        traceback.print_exc(file=sys.stderr)
+    finally:
+        try:
+            current = load_state(task_id)
+            if current.get("SUPERVISOR_PID") == os.getpid():
+                status = str(current.get("SUPERVISOR_STARTUP_STATUS", ""))
+                update_task(task_id, {
+                    "SUPERVISOR_EXIT_CODE": exit_code,
+                    "SUPERVISOR_STARTUP_STATUS": (
+                        status if status in {"FAILED", "RUNTIME_FAILED"} else "EXITED"
+                    ),
+                    "SUPERVISOR_STDERR_TAIL": (
+                        current.get("SUPERVISOR_STDERR_TAIL") or
+                        _diagnostic_tail(supervisor_bootstrap_log_path(task_id))
+                    ),
+                }, event="SUPERVISOR_EXITED", detail=f"pid={os.getpid()};exit={exit_code}")
+        except Exception:
+            pass
+    return exit_code
 
 
-def _spawn_supervisor(task_id: str) -> int:
-    existing = load_state(task_id).get("SUPERVISOR_PID")
-    if existing and _pid_alive(existing) is not False:
-        return int(existing)
-    python = _storage_paths().python_exe
-    command = [str(python), "-B", str(SCRIPT), "_supervise", "--task-id", task_id]
-    flags = 0
-    if os.name == "nt":
-        flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    process = subprocess.Popen(
-        command, cwd=str(REPO), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
+def _record_supervisor_startup_failure(
+    task_id: str, reason: str, *, pid: int | None, exit_code: int | None,
+) -> None:
+    log_path = supervisor_bootstrap_log_path(task_id)
+    tail = _diagnostic_tail(log_path)
+    current = load_state(task_id)
+    target_state = None if current["HARNESS_STATE"] in TERMINAL_STATES else "FAILED"
+
+    def mark_failed(value: dict[str, Any]) -> None:
+        _close_active_plan(value, "FAILED")
+
+    update_task(task_id, {
+        "SUPERVISOR_PID": pid,
+        "SUPERVISOR_EXIT_CODE": exit_code,
+        "SUPERVISOR_EXCEPTION": reason[:MAX_TEXT],
+        "SUPERVISOR_STDERR_TAIL": tail,
+        "SUPERVISOR_STARTUP_STATUS": "FAILED",
+        "CURRENT_PHASE": "SUPERVISOR_STARTUP_FAILED",
+        "CURRENT_ACTION": "Supervisor failed before autonomous execution became authoritative",
+        "WHY_CURRENT_ACTION": reason[:MAX_TEXT],
+        "LAST_COMPLETED": "SUPERVISOR_STARTUP_FAILED",
+        "NEXT_ACTION": "Correct the Supervisor bootstrap defect, then start a new task",
+        "WHY_NEXT_ACTION": "This start attempt is terminal and no Supervisor owns the task.",
+        "HUMAN_ATTENTION_REQUIRED": True,
+        "WORKER_STATUS": "SUPERVISOR_STARTUP_FAILED",
+        "TERMINAL_OUTCOME": "SUPERVISOR_STARTUP_FAILED",
+    }, new_state=target_state, event="SUPERVISOR_STARTUP_FAILED", detail=(
+        f"pid={pid};exit={exit_code};{reason[:700]}"
+    ), mutate=mark_failed)
+
+
+def _wait_for_supervisor_startup(
+    task_id: str, process: subprocess.Popen[Any], *, timeout: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + max(0.1, timeout)
+    while time.monotonic() < deadline:
+        exit_code = process.poll()
+        # poll() and the child can advance concurrently; read authoritative
+        # persisted startup state only after observing the launcher status.
+        state = load_state(task_id)
+        runtime_pid = state.get("SUPERVISOR_PID")
+        runtime_alive = (
+            exit_code is None
+            if runtime_pid == process.pid
+            else _pid_alive(runtime_pid) is not False
+        )
+        if (
+            state.get("SUPERVISOR_LAUNCH_PID") == process.pid
+            and state.get("SUPERVISOR_STARTUP_STATUS") == "READY"
+            and state.get("SUPERVISOR_STARTED_AT")
+            and state.get("SUPERVISOR_HEARTBEAT_AT")
+            and runtime_alive
+        ):
+            return state
+        launcher_exit_without_adoption = (
+            exit_code is not None and runtime_pid in {None, process.pid}
+        )
+        if launcher_exit_without_adoption or state.get("SUPERVISOR_STARTUP_STATUS") in {"FAILED", "RUNTIME_FAILED", "EXITED"}:
+            reason = state.get("SUPERVISOR_EXCEPTION") or "Supervisor exited before READY"
+            _record_supervisor_startup_failure(
+                task_id, str(reason), pid=int(runtime_pid or process.pid), exit_code=exit_code,
+            )
+            raise HarnessError(
+                f"SUPERVISOR_STARTUP_FAILED:{task_id}:pid={process.pid}:exit={exit_code}:{reason}"
+            )
+        time.sleep(SUPERVISOR_STARTUP_POLL_SECONDS)
+    try:
+        process.terminate()
+        process.wait(timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    exit_code = process.poll()
+    reason = f"Supervisor did not emit READY within {timeout:.1f}s"
+    _record_supervisor_startup_failure(
+        task_id, reason, pid=process.pid, exit_code=exit_code,
     )
-    update_task(task_id, {"SUPERVISOR_PID": process.pid}, event="SUPERVISOR_DISPATCHED", detail=f"pid={process.pid}")
-    return process.pid
+    raise HarnessError(
+        f"SUPERVISOR_STARTUP_FAILED:{task_id}:pid={process.pid}:exit={exit_code}:timeout={timeout:.1f}s"
+    )
+
+
+def _spawn_supervisor(
+    task_id: str, *, startup_timeout: float = SUPERVISOR_STARTUP_TIMEOUT_SECONDS,
+) -> int:
+    existing_state = load_state(task_id)
+    existing = existing_state.get("SUPERVISOR_PID")
+    if existing and _pid_alive(existing) is not False:
+        if (
+            existing_state.get("SUPERVISOR_STARTUP_STATUS") == "READY"
+            and existing_state.get("SUPERVISOR_HEARTBEAT_AT")
+        ):
+            return int(existing)
+        raise HarnessError(f"SUPERVISOR_STARTUP_ALREADY_IN_PROGRESS:{existing}")
+    log_path = supervisor_bootstrap_log_path(task_id)
+    try:
+        runtime = _ensure_task_temp_runtime(task_id)
+        environment = _task_temp_environment(runtime)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _bound_bootstrap_log(log_path)
+    except (HarnessError, OSError) as exc:
+        reason = f"SUPERVISOR_BOOTSTRAP_RUNTIME_UNAVAILABLE:{type(exc).__name__}:{exc}"
+        _record_supervisor_startup_failure(task_id, reason, pid=None, exit_code=None)
+        raise HarnessError(f"SUPERVISOR_STARTUP_FAILED:{task_id}:{reason}") from exc
+    launch_token = secrets.token_hex(16)
+    update_task(task_id, {
+        "SUPERVISOR_PID": None,
+        "SUPERVISOR_LAUNCH_PID": None,
+        "SUPERVISOR_LAUNCH_TOKEN": launch_token,
+        "SUPERVISOR_PARENT_PID": os.getpid(),
+        "SUPERVISOR_STARTED_AT": "",
+        "SUPERVISOR_READY_AT": "",
+        "SUPERVISOR_HEARTBEAT_AT": "",
+        "SUPERVISOR_EXIT_CODE": None,
+        "SUPERVISOR_EXCEPTION": "",
+        "SUPERVISOR_STDERR_TAIL": "",
+        "SUPERVISOR_STARTUP_STATUS": "STARTING",
+        "SUPERVISOR_BOOTSTRAP_LOG": str(log_path),
+    }, event="SUPERVISOR_STARTUP_BEGIN", detail=f"parent={os.getpid()};runtime={runtime}")
+    python = _storage_paths().python_exe.resolve()
+    command = [
+        str(python), "-B", str(SCRIPT.resolve()), "_supervise",
+        "--task-id", task_id, "--launch-token", launch_token,
+    ]
+    try:
+        process, mode = _launch_background_process(
+            command, environment=environment, log_path=log_path,
+        )
+        update_task(task_id, {"SUPERVISOR_SPAWN_MODE": mode})
+    except HarnessError as exc:
+        reason = f"SUPERVISOR_CREATE_PROCESS_FAILED:{exc}"
+        _record_supervisor_startup_failure(task_id, reason, pid=None, exit_code=None)
+        raise HarnessError(f"SUPERVISOR_STARTUP_FAILED:{task_id}:{reason}")
+
+    def record_dispatched(value: dict[str, Any]) -> None:
+        value["SUPERVISOR_LAUNCH_PID"] = process.pid
+        if value.get("SUPERVISOR_STARTUP_STATUS") not in {"STARTED", "READY"}:
+            value["SUPERVISOR_PID"] = process.pid
+            value["SUPERVISOR_STARTUP_STATUS"] = "STARTING"
+
+    update_task(
+        task_id, event="SUPERVISOR_DISPATCHED",
+        detail=f"pid={process.pid};parent={os.getpid()};mode={load_state(task_id).get('SUPERVISOR_SPAWN_MODE')}",
+        mutate=record_dispatched,
+    )
+    ready = _wait_for_supervisor_startup(task_id, process, timeout=startup_timeout)
+    runtime_pid = int(ready["SUPERVISOR_PID"])
+    update_task(task_id, event="SUPERVISOR_STARTUP_HANDSHAKE_PASSED", detail=(
+        f"pid={runtime_pid};launch_pid={process.pid};"
+        f"started={ready['SUPERVISOR_STARTED_AT']};heartbeat={ready['SUPERVISOR_HEARTBEAT_AT']}"
+    ))
+    return runtime_pid
 
 
 def _positive_hours(value: str) -> float:
@@ -3773,7 +4345,16 @@ def command_status(args: argparse.Namespace) -> int:
         "ANTI_BLOAT_TASK_DELTA", "REUSE_GUARD", "WORKER_STATUS",
         "ACTIVE_PROCESS_KIND", "CURRENT_WORK_UNIT", "LAST_MEANINGFUL_PROGRESS_AT",
         "CURRENT_RETRY_SIGNATURE", "CURRENT_RETRY_COUNT", "LAST_CHECKPOINT",
-        "CONTROLLER_VALIDATION_STATUS", "HUMAN_ATTENTION_REQUIRED", "LAST_UPDATED_AT",
+        "CONTROLLER_VALIDATION_STATUS", "CONTROLLER_PID", "CONTROLLER_LAUNCH_PID",
+        "CONTROLLER_PARENT_PID", "CONTROLLER_STARTUP_STATUS", "CONTROLLER_STARTED_AT",
+        "CONTROLLER_READY_AT", "CONTROLLER_HEARTBEAT_AT", "CONTROLLER_EXIT_CODE",
+        "CONTROLLER_EXCEPTION", "CONTROLLER_STDERR_TAIL",
+        "CONTROLLER_STARTUP_RETRY_SIGNATURE", "CONTROLLER_STARTUP_RETRY_COUNT",
+        "SUPERVISOR_PID", "SUPERVISOR_LAUNCH_PID",
+        "SUPERVISOR_PARENT_PID",
+        "SUPERVISOR_STARTUP_STATUS", "SUPERVISOR_STARTED_AT", "SUPERVISOR_READY_AT",
+        "SUPERVISOR_HEARTBEAT_AT", "SUPERVISOR_EXIT_CODE", "SUPERVISOR_EXCEPTION",
+        "SUPERVISOR_STDERR_TAIL", "HUMAN_ATTENTION_REQUIRED", "LAST_UPDATED_AT",
     )
     for key in keys:
         value = str(state.get(key)).replace("\r", "\\r").replace("\n", "\\n")
@@ -4003,11 +4584,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         if raw[:1] == ["_run"]:
             internal = argparse.ArgumentParser(add_help=False)
             internal.add_argument("--task-id", required=True)
-            return run_task(internal.parse_args(raw[1:]).task_id)
+            internal.add_argument("--launch-token", default="")
+            internal_args = internal.parse_args(raw[1:])
+            return run_task(
+                internal_args.task_id, launch_token=internal_args.launch_token,
+            )
         if raw[:1] == ["_supervise"]:
             internal = argparse.ArgumentParser(add_help=False)
             internal.add_argument("--task-id", required=True)
-            return run_supervisor(internal.parse_args(raw[1:]).task_id)
+            internal.add_argument("--launch-token", default="")
+            internal_args = internal.parse_args(raw[1:])
+            return run_supervisor(
+                internal_args.task_id, launch_token=internal_args.launch_token,
+            )
         args = build_parser().parse_args(raw)
         return int(args.func(args))
     except (HarnessError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
