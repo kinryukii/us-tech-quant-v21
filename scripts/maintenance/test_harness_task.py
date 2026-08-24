@@ -769,6 +769,60 @@ def test_r3_review_finding_deduplicates_wording_without_new_correction() -> None
     assert state["TELEMETRY"]["duplicate_planned_work_rejected"] == 1
 
 
+def test_r3_final_review_identity_is_canonical_across_entrypoints() -> None:
+    state = module._new_state("test-task", "Repair one path", "independent-code", 2)
+    relevant_paths = ["scripts/common/storage_paths.py"]
+    detail = "Reviewer write was denied with Access Denied."
+
+    finding = module._review_finding_identity(state, detail, relevant_paths)
+    signature = module._failure_signature(
+        "FINAL_REVIEW", detail, relevant_paths, state=state,
+    )
+    assert finding["identity"] == (
+        "PERMISSION:WRITE|scripts/common/storage_paths.py|ACCESS_DENIED"
+    )
+    assert signature == finding["signature"]
+
+    assert module._queue_correction_work_unit(
+        state, "FINAL_REVIEW", detail, "same-progress", relevant_paths,
+    ) is True
+    correction = state["WORK_UNITS"][-1]
+    assert correction["failure_signature"] == signature
+    assert correction["review_finding_identity"] == finding["identity"]
+    assert state["LAST_REVIEW_FINDING_IDENTITY"] == finding["identity"]
+    assert set(state["REVIEW_FINDING_LEDGER"]) == {signature}
+
+
+def test_r3_nonactionable_review_identities_do_not_share_empty_signature() -> None:
+    complete = module._new_state("complete", "Complete audit", "independent-code", 2)
+    done = module._new_work_unit("WU-001", "Complete audit")
+    done["status"] = "DONE"
+    complete["WORK_UNITS"] = [done]
+    incomplete = module._new_state("incomplete", "Complete required work", "independent-code", 2)
+    baseline = module._new_state("baseline", "Audit task delta", "independent-code", 2)
+    baseline["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+
+    findings = [
+        module._review_finding_identity(
+            complete, "No reviewable diff; the clean worktree has zero files changed.",
+        ),
+        module._review_finding_identity(
+            incomplete, "Task incomplete: no reviewable output and mandatory work remains blocked.",
+        ),
+        module._review_finding_identity(
+            baseline,
+            "The inherited Anti-Bloat CRLF baseline residue is unchanged by this task.",
+        ),
+    ]
+
+    assert [finding["identity"] for finding in findings] == [
+        "VALID_ZERO_DIFF_COMPLETION",
+        "TASK_INCOMPLETE",
+        "PREEXISTING_BASELINE_RESIDUE",
+    ]
+    assert len({finding["signature"] for finding in findings}) == 3
+
+
 def test_r3_validated_correction_reconciles_parent_and_reopens_dependency() -> None:
     state = module._new_state("test-task", "Repair storage containment", "independent-code", 2)
     parent = module._new_work_unit(
@@ -840,6 +894,7 @@ def test_r3_preexisting_anti_bloat_residue_does_not_generate_task_correction() -
     )
     assert module._queue_correction_work_unit(state, "FINAL_REVIEW", residue, "p1") is False
     assert not state["WORK_UNITS"]
+    assert state["LAST_REVIEW_FINDING_IDENTITY"] == "PREEXISTING_BASELINE_RESIDUE"
     assert state["HISTORICAL_FINDINGS"][-1]["code"] == "PREEXISTING_BASELINE_RESIDUE"
 
     task_delta = "Anti-Bloat task delta violation: a task-created .venv must be removed."
@@ -858,6 +913,7 @@ def test_r3_zero_diff_completion_and_incomplete_zero_diff_converge_without_corre
         complete, "FINAL_REVIEW", "No reviewable diff; the clean worktree has zero files changed.", "p0",
     ) is False
     assert complete["REVIEW_CORRECTION_DISPOSITION"] == "VALID_ZERO_DIFF_COMPLETION"
+    assert complete["LAST_REVIEW_FINDING_IDENTITY"] == "VALID_ZERO_DIFF_COMPLETION"
     assert len(complete["WORK_UNITS"]) == 1
 
     incomplete = module._new_state("incomplete", "Complete required work", "independent-code", 2)
@@ -868,6 +924,7 @@ def test_r3_zero_diff_completion_and_incomplete_zero_diff_converge_without_corre
         incomplete, "FINAL_REVIEW", "Task incomplete: no reviewable output and mandatory work remains blocked.", "p0",
     ) is False
     assert incomplete["REVIEW_CORRECTION_DISPOSITION"] == "INCOMPLETE_NO_RUNNABLE_REMEDY"
+    assert incomplete["LAST_REVIEW_FINDING_IDENTITY"] == "TASK_INCOMPLETE"
     assert len(incomplete["WORK_UNITS"]) == 1
 
 
@@ -1815,6 +1872,13 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
     assert final["TELEMETRY"]["reuse_hits"] == 3  # two planned reuse hits plus the in-place correction
     assert final["TELEMETRY"]["local_blockers_bypassed"] == 2
     assert final["TELEMETRY"]["repeated_work_prevented"] == 1
+    correction = next(unit for unit in final["WORK_UNITS"] if unit["id"] == "FIX-001")
+    assert final["LAST_REVIEW_FINDING_IDENTITY"] == correction["review_finding_identity"]
+    convergence_finding = next(
+        row for row in final["HISTORICAL_FINDINGS"]
+        if row.get("code") == "CONVERGENCE_REVIEW_FINDING"
+    )
+    assert convergence_finding["identity"] == correction["review_finding_identity"]
     assert not final["ACTIVE_BLOCKERS"]
     assert final["HUMAN_ATTENTION_REQUIRED"] is False
     assert worktree.is_dir()

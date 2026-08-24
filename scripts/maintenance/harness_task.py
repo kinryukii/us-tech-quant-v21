@@ -1514,7 +1514,7 @@ def _review_finding_analysis(
     text = detail.casefold()
     paths = list(dict.fromkeys([*_evidence_paths(detail), *(str(path).replace("\\", "/") for path in relevant_paths)]))
     identities: list[str] = []
-    permission = _permission_failure_signature(detail)
+    permission = _permission_failure_signature(detail, relevant_paths)
     if permission:
         identities.append(permission)
     if (
@@ -1568,16 +1568,47 @@ def _review_finding_analysis(
     }
 
 
+def _review_finding_identity(
+    state: dict[str, Any], detail: str, relevant_paths: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Return the one canonical identity and signature for reviewer findings."""
+    finding = _review_finding_analysis(state, detail, relevant_paths)
+    if finding["identities"]:
+        identity = "+".join(finding["identities"])
+    elif finding["no_output"]:
+        required_units = [
+            unit for unit in state.get("WORK_UNITS", []) if not unit.get("optional")
+        ]
+        if required_units and all(unit.get("status") == "DONE" for unit in required_units):
+            identity = "VALID_ZERO_DIFF_COMPLETION"
+        elif finding["incomplete"]:
+            identity = "TASK_INCOMPLETE"
+        else:
+            identity = "NO_REVIEWABLE_OUTPUT"
+    elif finding["incomplete"]:
+        identity = "TASK_INCOMPLETE"
+    elif finding["baseline_residue"]:
+        identity = "PREEXISTING_BASELINE_RESIDUE"
+    else:
+        identity = "UNCLASSIFIED_REVIEW_FINDING"
+    finding["identity"] = identity
+    finding["signature"] = (
+        f"FINAL_REVIEW:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
+    )
+    return finding
+
+
 def _failure_signature(
     kind: str, detail: str, relevant_paths: Sequence[str] = (),
+    *, state: dict[str, Any] | None = None,
 ) -> str:
+    if kind.upper() == "FINAL_REVIEW":
+        return _review_finding_identity(
+            state if state is not None else {}, detail, relevant_paths,
+        )["signature"]
     permission = _permission_failure_signature(detail, relevant_paths)
     if permission:
         return permission
-    if kind.upper() == "FINAL_REVIEW":
-        analysis = _review_finding_analysis({}, detail)
-        semantic = "+".join(analysis["identities"] or (["TASK_INCOMPLETE"] if analysis["incomplete"] else ["BASELINE_RESIDUE"]))
-        return f"FINAL_REVIEW:{hashlib.sha256(semantic.encode('utf-8')).hexdigest()[:16]}"
     normalized = re.sub(r"[A-Za-z]:[/\\][^\s:]+", "<path>", detail.casefold())
     normalized = re.sub(r"\b\d+(?:\.\d+)?\b", "<n>", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()[:500]
@@ -3200,10 +3231,16 @@ def _queue_correction_work_unit(
     state: dict[str, Any], source: str, detail: str, progress_hash: str,
     relevant_paths: Sequence[str] = (),
 ) -> bool:
-    analysis = _review_finding_analysis(state, detail, relevant_paths) if source == "FINAL_REVIEW" else {
+    finding = (
+        _review_finding_identity(state, detail, relevant_paths)
+        if source == "FINAL_REVIEW" else None
+    )
+    analysis = finding if finding is not None else {
         "identities": [], "paths": list(relevant_paths), "baseline_residue": False,
         "incomplete": False, "no_output": False,
     }
+    if finding is not None:
+        state["LAST_REVIEW_FINDING_IDENTITY"] = finding["identity"]
     if analysis["baseline_residue"]:
         identity = "PREEXISTING_BASELINE_RESIDUE"
         if not _historical_identity_seen(state, "HISTORICAL_FINDINGS", identity):
@@ -3217,23 +3254,20 @@ def _queue_correction_work_unit(
                 },
             ][-MAX_LIST_ITEMS:]
     if source == "FINAL_REVIEW" and not analysis["identities"]:
-        if analysis["no_output"] and all(
-            unit.get("status") == "DONE" for unit in state.get("WORK_UNITS", [])
-            if not unit.get("optional")
-        ):
+        if finding["identity"] == "VALID_ZERO_DIFF_COMPLETION":
             state["REVIEW_CORRECTION_DISPOSITION"] = "VALID_ZERO_DIFF_COMPLETION"
-        elif analysis["incomplete"]:
+        elif finding["identity"] in {"TASK_INCOMPLETE", "NO_REVIEWABLE_OUTPUT"}:
             state["REVIEW_CORRECTION_DISPOSITION"] = "INCOMPLETE_NO_RUNNABLE_REMEDY"
         else:
             state["REVIEW_CORRECTION_DISPOSITION"] = "PREEXISTING_BASELINE_RESIDUE"
         _telemetry_add(state, repeated_work_prevented=1)
         return False
-    semantic = "+".join(analysis["identities"])
+    semantic = finding["identity"] if finding is not None else ""
     signature = (
-        f"FINAL_REVIEW:{hashlib.sha256(semantic.encode('utf-8')).hexdigest()[:16]}"
-        if source == "FINAL_REVIEW" else _failure_signature(source, detail)
+        finding["signature"] if finding is not None else _failure_signature(source, detail)
     )
-    state["LAST_REVIEW_FINDING_IDENTITY"] = semantic if source == "FINAL_REVIEW" else signature
+    if finding is None:
+        state["LAST_REVIEW_FINDING_IDENTITY"] = signature
     existing = next(
         (
             unit for unit in state.get("WORK_UNITS", [])
@@ -4375,10 +4409,12 @@ def _dispatch_r3(task_id: str) -> None:
                 queued = {"value": False}
                 def review_correction(value: dict[str, Any]) -> None:
                     if value.get("CONVERGENCE_MODE"):
-                        analysis = _review_finding_analysis(value, findings, value.get("FILES_CHANGED", []))
-                        semantic = "+".join(analysis["identities"])
+                        finding = _review_finding_identity(
+                            value, findings, value.get("FILES_CHANGED", []),
+                        )
+                        semantic = finding["identity"]
                         value["LAST_REVIEW_FINDING_IDENTITY"] = semantic
-                        signature = f"FINAL_REVIEW:{hashlib.sha256(semantic.encode('utf-8')).hexdigest()[:16]}"
+                        signature = finding["signature"]
                         duplicate = any(
                             unit.get("failure_signature") == signature
                             for unit in value.get("WORK_UNITS", [])
@@ -4391,7 +4427,12 @@ def _dispatch_r3(task_id: str) -> None:
                         )
                         value["HISTORICAL_FINDINGS"] = [
                             *value.get("HISTORICAL_FINDINGS", []),
-                            {"code": "CONVERGENCE_REVIEW_FINDING", "detail": findings[:1_000], "at": utc_now()},
+                            {
+                                "identity": semantic,
+                                "code": "CONVERGENCE_REVIEW_FINDING",
+                                "detail": findings[:1_000],
+                                "at": utc_now(),
+                            },
                         ][-MAX_LIST_ITEMS:]
                     else:
                         queued["value"] = _queue_correction_work_unit(
