@@ -54,6 +54,10 @@ REQUIRED_STATE_FIELDS = {
     "SUPERVISOR_PARENT_PID", "SUPERVISOR_STARTED_AT", "SUPERVISOR_READY_AT",
     "SUPERVISOR_HEARTBEAT_AT", "SUPERVISOR_EXIT_CODE", "SUPERVISOR_EXCEPTION",
     "SUPERVISOR_STDERR_TAIL", "SUPERVISOR_STARTUP_STATUS", "SUPERVISOR_BOOTSTRAP_LOG",
+    "SUPERVISOR_TRANSIENT_STATE_WRITE_FAILURES", "SUPERVISOR_LAST_TRANSIENT_EXCEPTION",
+    "LAST_REVIEW_PROGRESS_HASH", "LAST_REVIEW_FINDING_IDENTITY", "REVIEW_FINDING_LEDGER",
+    "REVIEW_CORRECTION_DISPOSITION", "CONVERGENCE_MODE", "CONVERGENCE_STARTED_AT",
+    "HARD_DEADLINE_REACHED_AT", "POST_DEADLINE_MACHINE_GRACE_SECONDS",
 }
 
 
@@ -454,6 +458,140 @@ def test_r3_permission_failure_is_local_without_acl_or_human_escalation(
     assert current["TELEMETRY"]["local_blockers_bypassed"] == 1
     assert "PERMISSION" not in module.HUMAN_BOUNDARY_KINDS
     assert "PROTECTED_PERMISSION" in module.HUMAN_BOUNDARY_KINDS
+
+
+def test_r3_review_finding_deduplicates_wording_without_new_correction() -> None:
+    state = module._new_state("test-task", "Repair storage containment", "independent-code", 2)
+    parent = module._new_work_unit(
+        "WU-001", "Repair storage containment parity",
+        relevant_paths=["scripts/common/storage_paths.py", "scripts/common/storage_paths.ps1"],
+    )
+    parent["status"] = "BLOCKED_LOCAL"
+    state["WORK_UNITS"] = [parent]
+    state["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+    first = (
+        "The explicit RepoRoot containment is defective in scripts/common/storage_paths.ps1; "
+        "repository-root equality is accepted. The inherited Anti-Bloat CRLF baseline residue is outside this diff."
+    )
+    second = (
+        "High: scripts/common/storage_paths.ps1 permits the repo root as external, breaking storage resolver parity. "
+        "All Anti-Bloat hashes match Git blobs; that pre-existing residue is unchanged by this task."
+    )
+
+    assert module._queue_correction_work_unit(
+        state, "FINAL_REVIEW", first, "same-progress", ["scripts/common/storage_paths.ps1"],
+    ) is True
+    assert module._queue_correction_work_unit(
+        state, "FINAL_REVIEW", second, "same-progress", ["scripts/common/storage_paths.ps1"],
+    ) is True
+
+    corrections = [unit for unit in state["WORK_UNITS"] if unit["id"].startswith("FIX-")]
+    assert len(corrections) == 1
+    assert corrections[0]["review_finding_identity"] == "STORAGE_CONTAINMENT_PARITY|scripts/common/storage_paths"
+    assert state["TELEMETRY"]["repeated_work_prevented"] == 1
+    assert state["TELEMETRY"]["duplicate_planned_work_rejected"] == 1
+
+
+def test_r3_validated_correction_reconciles_parent_and_reopens_dependency() -> None:
+    state = module._new_state("test-task", "Repair storage containment", "independent-code", 2)
+    parent = module._new_work_unit(
+        "WU-001", "Repair storage containment parity",
+        relevant_paths=["scripts/common/storage_paths.ps1"],
+    )
+    parent.update({"status": "BLOCKED_LOCAL", "blocker": {"code": "ACCESS_DENIED"}})
+    dependent = module._new_work_unit(
+        "WU-002", "Validate the repaired storage chain", dependencies=["WU-001"],
+    )
+    dependent.update({
+        "status": "DEFERRED",
+        "blocker": {"code": "DEPENDENCY_UNAVAILABLE", "dependencies": ["WU-001"]},
+    })
+    state["WORK_UNITS"] = [parent, dependent]
+    assert module._queue_correction_work_unit(
+        state, "FINAL_REVIEW",
+        "RepoRoot containment in scripts/common/storage_paths.ps1 accepts repository equality.",
+        "progress-a", ["scripts/common/storage_paths.ps1"],
+    ) is True
+    correction = state["WORK_UNITS"][-1]
+    correction["status"] = "RUNNING"
+    state["ACTIVE_WORK_UNIT_IDS"] = [correction["id"]]
+    state["PENDING_UNIT_RESULTS"] = [{
+        "id": correction["id"], "status": "DONE", "produced_outputs": [],
+        "validation_state": "PASS", "blocker": {}, "last_checkpoint": "VALIDATED",
+        "next_action": "", "reuse_decision": "EXTEND", "reuse_evidence": [],
+    }]
+
+    module._apply_validated_unit_results(state)
+
+    assert parent["status"] == "DONE"
+    assert parent["resolved_by"] == correction["id"]
+    assert dependent["status"] == "READY"
+    assert dependent["last_checkpoint"] == "DEPENDENCY_RESOLVED"
+    assert any(row.get("work_unit_id") == "WU-001" for row in state["RESOLVED_FINDINGS"])
+
+
+def test_r3_permission_failure_signature_uses_operation_target_and_error_class() -> None:
+    messages = [
+        r"apply_patch write denied for scripts/common/storage_paths.py: PermissionError [WinError 5]",
+        r"System.UnauthorizedAccessException while writing D:\repo\scripts\common\storage_paths.py",
+        r"Absolute and relative writes to scripts/common/storage_paths.py were denied with access denied",
+    ]
+    signatures = {module._failure_signature("WORKER_LOCAL_BLOCKER", message) for message in messages}
+    assert signatures == {"PERMISSION:WRITE|scripts/common/storage_paths.py|ACCESS_DENIED"}
+
+    state = module._new_state("test-task", "Repair one path", "independent-code", 2)
+    unit = module._new_work_unit(
+        "WU-001", "Repair one tracked source path",
+        relevant_paths=["scripts/common/storage_paths.py"],
+    )
+    state["WORK_UNITS"] = [unit]
+    for message in [*messages, "Tracked resolver files reject writes with UnauthorizedAccessException"]:
+        module._record_unit_failure(state, ["WU-001"], "WORKER_LOCAL_BLOCKER", message, "unchanged")
+    assert unit["status"] == "BLOCKED_LOCAL"
+    assert len(state["RETRY_LEDGER"]) == 1
+    assert state["ACTIVE_BLOCKERS"] == []
+    assert state["HARNESS_STATE"] == "PLANNING"
+
+
+def test_r3_preexisting_anti_bloat_residue_does_not_generate_task_correction() -> None:
+    state = module._new_state("test-task", "Audit one active path", "independent-code", 2)
+    state["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+    state["FILES_CHANGED"] = ["scripts/common/storage_paths.py"]
+    residue = (
+        "The Anti-Bloat guard reports 30 inherited CRLF baseline violations outside this diff; "
+        "all hashes match Git blobs and the issue is unchanged by the task."
+    )
+    assert module._queue_correction_work_unit(state, "FINAL_REVIEW", residue, "p1") is False
+    assert not state["WORK_UNITS"]
+    assert state["HISTORICAL_FINDINGS"][-1]["code"] == "PREEXISTING_BASELINE_RESIDUE"
+
+    task_delta = "Anti-Bloat task delta violation: a task-created .venv must be removed."
+    assert module._queue_correction_work_unit(state, "FINAL_REVIEW", task_delta, "p1") is True
+    assert len(state["WORK_UNITS"]) == 1
+    mixed = "The inherited CRLF baseline is unchanged, but this task-created .venv is a new Anti-Bloat violation."
+    assert module._review_finding_analysis(state, mixed)["baseline_residue"] is False
+
+
+def test_r3_zero_diff_completion_and_incomplete_zero_diff_converge_without_correction() -> None:
+    complete = module._new_state("complete", "Audit and make no change if unwarranted", "independent-code", 2)
+    audit = module._new_work_unit("WU-001", "Complete the authorized audit")
+    audit["status"] = "DONE"
+    complete["WORK_UNITS"] = [audit]
+    assert module._queue_correction_work_unit(
+        complete, "FINAL_REVIEW", "No reviewable diff; the clean worktree has zero files changed.", "p0",
+    ) is False
+    assert complete["REVIEW_CORRECTION_DISPOSITION"] == "VALID_ZERO_DIFF_COMPLETION"
+    assert len(complete["WORK_UNITS"]) == 1
+
+    incomplete = module._new_state("incomplete", "Complete required work", "independent-code", 2)
+    blocked = module._new_work_unit("WU-001", "Required blocked work")
+    blocked["status"] = "BLOCKED_LOCAL"
+    incomplete["WORK_UNITS"] = [blocked]
+    assert module._queue_correction_work_unit(
+        incomplete, "FINAL_REVIEW", "Task incomplete: no reviewable output and mandatory work remains blocked.", "p0",
+    ) is False
+    assert incomplete["REVIEW_CORRECTION_DISPOSITION"] == "INCOMPLETE_NO_RUNNABLE_REMEDY"
+    assert len(incomplete["WORK_UNITS"]) == 1
 
 
 def test_r3_pending_steer_is_consumed_once_at_safe_boundary(
@@ -940,7 +1078,7 @@ def test_supervisor_launch_token_adopts_runtime_pid_without_weakening_duplicate_
     state = create_state()
     token = "a" * 32
     state.update({
-        "HARNESS_STATE": "PAUSED", "SUPERVISOR_PID": 5105,
+        "HARNESS_STATE": "STOPPED", "SUPERVISOR_PID": 5105,
         "SUPERVISOR_LAUNCH_PID": 5105, "SUPERVISOR_LAUNCH_TOKEN": token,
         "SUPERVISOR_PARENT_PID": 4000, "SUPERVISOR_STARTUP_STATUS": "STARTING",
     })
@@ -1023,6 +1161,198 @@ def test_r3_expired_budget_defers_remaining_work_with_continuation_plan() -> Non
     assert all("future authorized task" in unit["next_action"] for unit in state["WORK_UNITS"])
 
 
+def test_r3_hard_deadline_dispatches_no_codex_and_terminalizes(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "SELECT_WORK", "DEADLINE_AT": "2000-01-01T00:00:00+00:00",
+        "TIME_BUDGET_HOURS": 1.0,
+        "WORK_UNITS": [module._new_work_unit("WU-001", "Required unfinished work")],
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(
+        module, "_run_codex_turn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("Codex started after deadline")),
+    )
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["HARD_DEADLINE_REACHED_AT"]
+    assert final["WORK_UNITS"][0]["status"] == "DEFERRED"
+    assert final["REVIEW_CORRECTION_DISPOSITION"] == "HARD_DEADLINE_NO_NEW_LLM_WORK"
+
+
+def test_r3_review_near_deadline_is_deferred_without_expensive_turn(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    done = module._new_work_unit("WU-001", "Complete useful work")
+    done["status"] = "DONE"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINAL_REVIEW", "WORK_UNITS": [done],
+        "DEADLINE_AT": (module.datetime.now(module.timezone.utc) + module.timedelta(seconds=120)).isoformat(),
+        "TIME_BUDGET_HOURS": 1.0,
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(
+        module, "_perform_review",
+        lambda task_id: (_ for _ in ()).throw(AssertionError("late reviewer started")),
+    )
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "stable")
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/existing.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] in module.TERMINAL_STATES
+    assert final["CONVERGENCE_MODE"] is True
+    assert final["REVIEW_CORRECTION_DISPOSITION"] == "REVIEW_DEFERRED_INSUFFICIENT_CONVERGENCE_BUDGET"
+    assert final["TELEMETRY"]["reviewer_turns"] == 0
+
+
+def test_r3_no_progress_final_review_is_not_launched_again(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    done = module._new_work_unit("WU-001", "Complete useful work")
+    done["status"] = "DONE"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINAL_REVIEW", "WORK_UNITS": [done],
+        "LAST_REVIEW_STATUS": "FIX_REQUIRED",
+    })
+    state["LAST_REVIEW_PROGRESS_HASH"] = module._review_progress_hash(state, "same-diff")
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "same-diff")
+    monkeypatch.setattr(
+        module, "_perform_review",
+        lambda task_id: (_ for _ in ()).throw(AssertionError("duplicate reviewer started")),
+    )
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/existing.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] in module.TERMINAL_STATES
+    assert final["REVIEW_CORRECTION_DISPOSITION"] == "REVIEW_SKIPPED_NO_MATERIAL_PROGRESS"
+    assert final["TELEMETRY"]["repeated_work_prevented"] == 1
+
+
+def test_r3_incomplete_zero_diff_review_terminalizes_without_correction_loop(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    blocked = module._new_work_unit("WU-001", "Mandatory work with no authorized remedy")
+    blocked["status"] = "BLOCKED_LOCAL"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINAL_REVIEW", "WORK_UNITS": [blocked],
+    })
+    module._write_state_unlocked("test-task", state)
+    reviews = {"count": 0}
+
+    def incomplete_review(task_id: str) -> str:
+        reviews["count"] += 1
+        module.update_task(task_id, {
+            "LAST_REVIEW_STATUS": "FIX_REQUIRED",
+            "REVIEW_FINDINGS": "Task incomplete: no reviewable output and mandatory work remains blocked.",
+        }, new_state="REVIEWING")
+        return "FIX_REQUIRED"
+
+    monkeypatch.setattr(module, "_perform_review", incomplete_review)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "zero-diff")
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert reviews["count"] == 1
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["REVIEW_CORRECTION_DISPOSITION"] == "INCOMPLETE_NO_RUNNABLE_REMEDY"
+    assert not any(unit["id"].startswith("FIX-") for unit in final["WORK_UNITS"])
+
+
+def test_atomic_state_replace_retries_transient_windows_access_denial(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    real_replace = module.os.replace
+    calls = {"count": 0}
+
+    def transient_replace(source, target):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise PermissionError(13, "transient sharing violation", str(target))
+        return real_replace(source, target)
+
+    monkeypatch.setattr(module.os, "replace", transient_replace)
+    state["CURRENT_ACTION"] = "retry atomic state replace"
+    module._write_state_unlocked("test-task", state)
+
+    assert calls["count"] == 2
+    assert module.load_state("test-task")["CURRENT_ACTION"] == "retry atomic state replace"
+    assert not list(module.task_dir("test-task").glob(".state.json.*.tmp"))
+
+
+def test_supervisor_remains_watchdog_through_extended_nonterminal_interval(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    state.update({"HARNESS_STATE": "RUNNING", "CONTROLLER_PID": 4242})
+    module._write_state_unlocked("test-task", state)
+    sleeps = {"count": 0}
+    clock = {"value": 0.0}
+
+    def monotonic() -> float:
+        clock["value"] += 31.0
+        return clock["value"]
+
+    def bounded_sleep(seconds: float) -> None:
+        sleeps["count"] += 1
+        if sleeps["count"] == 4:
+            module.update_task("test-task", new_state="STOPPED", event="SYNTHETIC_TERMINAL")
+
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: pid == 4242)
+    monkeypatch.setattr(module.time, "monotonic", monotonic)
+    monkeypatch.setattr(module.time, "sleep", bounded_sleep)
+
+    assert module.run_supervisor("test-task", poll_seconds=0) == 0
+    final = module.load_state("test-task")
+    assert sleeps["count"] == 4
+    assert final["HARNESS_STATE"] == "STOPPED"
+    assert final["SUPERVISOR_HEARTBEAT_AT"]
+    assert final["SUPERVISOR_STARTUP_STATUS"] == "EXITED"
+    assert final["SUPERVISOR_EXIT_CODE"] == 0
+
+
 def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_control(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1032,9 +1362,15 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
     raw_units = [
         {
             "id": f"WU-{index:03d}",
-            "objective": f"Implement bounded subsystem capability {index}",
+            "objective": (
+                "Repair storage containment parity capability 9"
+                if index == 9 else f"Implement bounded subsystem capability {index}"
+            ),
             "identity": f"subsystem-capability-{index}",
             "subsystem": "shared",
+            "dependencies": ["WU-009"] if index == 10 else [],
+            "optional": index == 10,
+            "relevant_paths": ["scripts/common/storage_paths.ps1"] if index == 9 else [],
             "reuse_decision": "REUSE" if index == 4 else "EXTEND" if index == 7 else "UNKNOWN",
             "reuse_evidence": ["existing shared utility"] if index in {4, 7} else [],
         }
@@ -1085,7 +1421,7 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
             1: ["WU-001", "WU-002", "WU-003"],
             2: ["WU-002", "WU-004", "WU-005"],
             3: ["WU-006", "WU-007", "WU-008"],
-            4: ["WU-006", "WU-009", "WU-010"],
+            4: ["WU-006", "WU-009"],
             5: ["FIX-001"],
         }
         assert active == expected[turn]
@@ -1098,7 +1434,8 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
         elif turn == 2:
             rows = [
                 result_row("WU-002", "BLOCKED_LOCAL", blocker={
-                    "code": "SOURCE_UNAVAILABLE", "detail": "SEC source unavailable",
+                    "code": "PATH_NOT_WRITABLE",
+                    "detail": "apply_patch write denied for scripts/common/storage_paths.py: PermissionError [WinError 5]",
                 }),
                 result_row("WU-004", "DONE"),
                 result_row("WU-005", "BLOCKED_LOCAL", blocker={
@@ -1118,9 +1455,8 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
             rows = [
                 result_row("WU-006", "DONE"),
                 result_row("WU-009", "BLOCKED_LOCAL", blocker={
-                    "code": "PERMANENT_LOCAL_IMPOSSIBILITY", "detail": "coverage is unavailable",
+                    "code": "FIXABLE_LOCAL_DEFECT", "detail": "storage containment parity remains incomplete",
                 }),
-                result_row("WU-010", "DONE"),
             ]
             task_result, exit_code = "COMPLETED", 0
         else:
@@ -1151,10 +1487,11 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
 
     def final_review(task_id: str) -> str:
         validation_calls["review"] += 1
-        classification = "FIX_REQUIRED" if validation_calls["review"] == 1 else "PASS"
+        classification = "FIX_REQUIRED"
         findings = (
-            "Fix the compact in-scope summary" if classification == "FIX_REQUIRED"
-            else "No material defect"
+            "RepoRoot equality remains accepted by scripts/common/storage_paths.ps1; the inherited Anti-Bloat CRLF residue is outside this diff."
+            if validation_calls["review"] == 1
+            else "Storage resolver parity still permits the repository root as external in scripts/common/storage_paths.ps1. All baseline hashes match Git blobs; that residue is pre-existing."
         )
         module.update_task(task_id, {
             "LAST_REVIEW_STATUS": classification, "REVIEW_FINDINGS": findings,
@@ -1166,7 +1503,7 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
         validation_calls["cleanup"] += 1
 
     inventory = {
-        "changed": ["scripts/existing_shared_utility.py"], "created": [],
+        "changed": ["scripts/common/storage_paths.ps1"], "created": [],
         "dependencies": [], "changed_count": 1, "created_count": 0,
     }
     monkeypatch.setattr(module, "_run_codex_turn", worker_turn)
@@ -1174,24 +1511,33 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
     monkeypatch.setattr(module, "_run_final_validation", final_validation)
     monkeypatch.setattr(module, "_perform_review", final_review)
     monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "stable-progress")
+    monkeypatch.setattr(
+        module, "_in_convergence_window",
+        lambda value, now=None: any(
+            unit.get("id") == "FIX-001" and unit.get("status") == "DONE"
+            for unit in value.get("WORK_UNITS", [])
+        ),
+    )
     monkeypatch.setattr(module, "_refresh_changes", lambda task_id: inventory)
     monkeypatch.setattr(module, "_cleanup_task_temp_runtime", cleanup)
 
     module._dispatch("test-task")
 
     final = module.load_state("test-task")
-    assert final["HARNESS_STATE"] == "COMPLETED_WITH_DEFERRED_WORK"
-    assert final["TERMINAL_OUTCOME"] == "COMPLETED_WITH_DEFERRED_WORK"
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["TERMINAL_OUTCOME"] == "FAILED"
+    assert final["TERMINAL_SUCCESS"] is False
     assert validation_calls == {"unit": 5, "final": 2, "review": 2, "cleanup": 1}
     assert len(final["WORK_UNITS"]) == 11
     assert module._work_unit_counts(final) == {
-        "total": 11, "done": 8, "runnable": 0, "local_blocked": 3, "deferred": 0,
+        "total": 11, "done": 8, "runnable": 0, "local_blocked": 2, "deferred": 1,
     }
     assert "WU-001" not in worker_batches[1:] and "WU-003" not in worker_batches[1:]
     assert worker_batches.count(["FIX-001"]) == 1
-    assert final["TELEMETRY"]["duplicate_planned_work_rejected"] == 1
+    assert final["TELEMETRY"]["duplicate_planned_work_rejected"] == 2
     assert final["TELEMETRY"]["reuse_hits"] == 3  # two planned reuse hits plus the in-place correction
     assert final["TELEMETRY"]["local_blockers_bypassed"] == 2
+    assert final["TELEMETRY"]["repeated_work_prevented"] == 1
     assert not final["ACTIVE_BLOCKERS"]
     assert final["HUMAN_ATTENTION_REQUIRED"] is False
     assert worktree.is_dir()
@@ -1201,6 +1547,7 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
     ]
     assert "WORKER_FAILURE_CHECKPOINT_RECOVERED" in events
     assert "FINAL_REVIEW_CORRECTION_GENERATED" in events
+    assert "CONVERGENCE_MODE_STARTED" in events
     assert "WAITING_HUMAN" not in events
 
 
@@ -1312,7 +1659,7 @@ def test_normal_finalization_cleans_controller_owned_task_temp_runtime(
     state = module.load_state("test-task")
     state.update({
         "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
-        "NEXT_ACTION_CODE": "FINALIZE",
+        "NEXT_ACTION_CODE": "FINALIZE", "LAST_REVIEW_STATUS": "PASS",
     })
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {

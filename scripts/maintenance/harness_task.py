@@ -98,6 +98,10 @@ CONTROLLER_STARTUP_TIMEOUT_SECONDS = 10.0
 CONTROLLER_STARTUP_RETRY_LIMIT = 2
 CONTROLLER_STARTUP_BACKOFF_SECONDS = 0.5
 CONTROLLER_BOOTSTRAP_LOG_NAME = "controller-bootstrap.stderr.log"
+CONVERGENCE_FRACTION = 0.10
+MIN_FINAL_REVIEW_START_SECONDS = 600.0
+POST_DEADLINE_MACHINE_GRACE_SECONDS = 60.0
+STATE_REPLACE_RETRY_SECONDS = (0.0, 0.025, 0.05, 0.1, 0.2, 0.4)
 
 
 class HarnessError(RuntimeError):
@@ -269,7 +273,22 @@ def _atomic_write(path: Path, payload: bytes) -> None:
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    try:
+        for index, delay in enumerate(STATE_REPLACE_RETRY_SECONDS):
+            if delay:
+                time.sleep(delay)
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if index + 1 == len(STATE_REPLACE_RETRY_SECONDS):
+                    raise
+    finally:
+        if temporary.exists():
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
 
 def _runtime_owner(task_id: str, runtime: Path) -> dict[str, str]:
@@ -579,6 +598,8 @@ def _new_state(
         "SUPERVISOR_EXCEPTION": "",
         "SUPERVISOR_STDERR_TAIL": "",
         "SUPERVISOR_STARTUP_STATUS": "NOT_STARTED",
+        "SUPERVISOR_TRANSIENT_STATE_WRITE_FAILURES": 0,
+        "SUPERVISOR_LAST_TRANSIENT_EXCEPTION": "",
         "SUPERVISOR_BOOTSTRAP_LOG": str(supervisor_bootstrap_log_path(task_id)),
         "SUPERVISOR_SPAWN_MODE": "",
         "CONTROLLER_HEARTBEAT_AT": "",
@@ -605,9 +626,17 @@ def _new_state(
         "WORKER_REPORTED_CHANGED_PATHS": [],
         "PENDING_UNIT_RESULTS": [],
         "FINAL_REVIEW_ATTEMPTS": 0,
+        "LAST_REVIEW_PROGRESS_HASH": "",
+        "LAST_REVIEW_FINDING_IDENTITY": "",
+        "REVIEW_FINDING_LEDGER": {},
+        "REVIEW_CORRECTION_DISPOSITION": "NOT_EVALUATED",
         "TASK_STARTED_AT": started_at,
         "TIME_BUDGET_HOURS": max_hours,
         "DEADLINE_AT": deadline_at,
+        "CONVERGENCE_MODE": False,
+        "CONVERGENCE_STARTED_AT": "",
+        "HARD_DEADLINE_REACHED_AT": "",
+        "POST_DEADLINE_MACHINE_GRACE_SECONDS": POST_DEADLINE_MACHINE_GRACE_SECONDS,
         "LAST_MEANINGFUL_PROGRESS_AT": started_at,
         "LAST_CHECKPOINT": "TASK_ACCEPTED",
         "WAITING_STARTED_AT": "",
@@ -692,6 +721,53 @@ def _remaining_budget_seconds(state: dict[str, Any], *, now: datetime | None = N
     except ValueError:
         return 0.0
     return max(0.0, (deadline_value - (now or datetime.now(timezone.utc))).total_seconds())
+
+
+def _in_convergence_window(state: dict[str, Any], *, now: datetime | None = None) -> bool:
+    remaining = _remaining_budget_seconds(state, now=now)
+    hours = state.get("TIME_BUDGET_HOURS")
+    if remaining is None or hours in (None, ""):
+        return False
+    try:
+        total = max(0.0, float(hours) * 3600.0)
+    except (TypeError, ValueError):
+        return False
+    return total > 0 and remaining <= total * CONVERGENCE_FRACTION
+
+
+def _deadline_expired(state: dict[str, Any], *, now: datetime | None = None) -> bool:
+    remaining = _remaining_budget_seconds(state, now=now)
+    return remaining is not None and remaining <= 0
+
+
+def _review_progress_hash(state: dict[str, Any], diff_hash: str) -> str:
+    """Hash only material review evidence, excluding review/correction bookkeeping."""
+    units = [
+        {
+            "id": unit.get("id"),
+            "status": unit.get("status"),
+            "validation": unit.get("validation_state"),
+            "resolved_by": unit.get("resolved_by", ""),
+        }
+        for unit in state.get("WORK_UNITS", [])
+        if not str(unit.get("id", "")).startswith("FIX-")
+    ]
+    payload = {
+        "diff": diff_hash,
+        "units": units,
+        "controller_validation": state.get("CONTROLLER_VALIDATION_STATUS"),
+        "anti_delta": state.get("ANTI_BLOAT_TASK_DELTA"),
+        "active_blockers": sorted(
+            str(row.get("identity", "")) for row in state.get("ACTIVE_BLOCKERS", [])
+        ),
+        "resolved": sorted(
+            f"{row.get('code', '')}:{row.get('work_unit_id', '')}:{row.get('resolved_by', '')}"
+            for row in state.get("RESOLVED_FINDINGS", [])
+        ),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
 
 
 def _telemetry_add(state: dict[str, Any], **increments: float | int) -> None:
@@ -894,7 +970,118 @@ def _select_work_unit_batch(state: dict[str, Any]) -> list[str]:
     return ids
 
 
-def _failure_signature(kind: str, detail: str) -> str:
+def _evidence_paths(detail: str) -> list[str]:
+    paths: list[str] = []
+    for match in re.finditer(
+        r"(?i)(?:^|[^a-z0-9_])((?:scripts|fast3|tests|config|docs)[\\/][^\s\]\[()<>`'\"]+)",
+        detail,
+    ):
+        path = match.group(1).replace("\\", "/").rstrip(".,;:")
+        path = re.sub(r":\d+(?::\d+)?$", "", path)
+        if path not in paths:
+            paths.append(path[:500])
+    return paths[:30]
+
+
+def _permission_failure_signature(
+    detail: str, fallback_paths: Sequence[str] = (),
+) -> str:
+    if not re.search(
+        r"permissionerror|winerror\s*5|access(?:\s+is)?\s+denied|unauthorizedaccessexception|"
+        r"reject(?:ed|s)?\s+writes?|unwritable|not\s+writable|writes?\s+(?:were\s+)?denied",
+        detail,
+        re.I,
+    ):
+        return ""
+    if re.search(r"\bdelete|unlink|remove-item|\bremove\b", detail, re.I):
+        operation = "DELETE"
+    elif re.search(r"operation\s*[=:]\s*replace|os\.replace|replace-item", detail, re.I):
+        operation = "REPLACE"
+    else:
+        operation = "WRITE"
+    paths = [path for path in _evidence_paths(detail) if "_pytest/" not in path.casefold()]
+    if not paths:
+        paths = [str(path).replace("\\", "/") for path in fallback_paths]
+    if paths:
+        target = paths[0].casefold()
+    elif re.search(r"tracked\s+(?:source|resolver|test|subdirector|path)", detail, re.I):
+        target = "tracked-source"
+    else:
+        target = "unknown-target"
+    return f"PERMISSION:{operation}|{target}|ACCESS_DENIED"
+
+
+def _review_finding_analysis(
+    state: dict[str, Any], detail: str, relevant_paths: Sequence[str] = (),
+) -> dict[str, Any]:
+    """Reduce reviewer prose to stable defect classes and authoritative scope."""
+    text = detail.casefold()
+    paths = list(dict.fromkeys([*_evidence_paths(detail), *(str(path).replace("\\", "/") for path in relevant_paths)]))
+    identities: list[str] = []
+    permission = _permission_failure_signature(detail)
+    if permission:
+        identities.append(permission)
+    if (
+        ("storage_paths" in text or "storage resolver" in text)
+        and re.search(r"containment|repo(?:sitory)?root|repository root|external", text)
+    ):
+        identities.append("STORAGE_CONTAINMENT_PARITY|scripts/common/storage_paths")
+    if re.search(
+        r"(?:pit|lookahead|leakage|holdout|2026)[^.\n]{0,120}"
+        r"(?:violation|bypass|weaken|contaminat|optimi[sz])",
+        text,
+    ):
+        identities.append("RESEARCH_SAFETY_BOUNDARY")
+    anti_bloat = "anti-bloat" in text or "anti_bloat" in text
+    baseline_words = re.search(
+        r"pre[- ]?existing|inherited|baseline residue|outside (?:this |the )?(?:task|diff)|"
+        r"unchanged by|hashes? match git blobs?|crlf",
+        text,
+    )
+    task_delta_clean = str(state.get("ANTI_BLOAT_TASK_DELTA", "")).startswith("PASS")
+    task_caused_words = re.search(
+        r"task[- ]created|task delta (?:fail|violation)|new (?:task )?violation|"
+        r"introduced by (?:this|the) (?:task|diff|change)|created \.venv",
+        text,
+    )
+    baseline_residue = bool(
+        anti_bloat and baseline_words and task_delta_clean and not task_caused_words
+    )
+    if anti_bloat and not baseline_residue:
+        identities.append("ANTI_BLOAT_TASK_DELTA")
+    if re.search(r"duplicate (?:component|implementation|identity)|parallel component", text):
+        identities.append("DUPLICATE_COMPONENT_IDENTITY")
+    if re.search(r"assertionerror|syntaxerror|module not found|modulenotfounderror", text):
+        identities.append("SOFTWARE_TEST_FAILURE")
+    incomplete = bool(re.search(
+        r"task (?:is )?incomplete|goal (?:is )?incomplete|no reviewable (?:diff|output)|"
+        r"zero (?:files changed|completed work units)|mandatory .*remain|work remains (?:undone|blocked|deferred)",
+        text,
+    ))
+    no_output = bool(re.search(r"no reviewable (?:diff|output)|zero files changed|clean worktree", text))
+    if not identities and not incomplete and not baseline_residue:
+        codes = sorted(set(re.findall(r"\b[A-Z][A-Z0-9_]{4,}\b", detail)))[:3]
+        subsystem = next((path.rsplit("/", 1)[0].casefold() for path in paths if "/" in path), "general")
+        identities.append("GENERIC_CORRECTNESS|" + ("+".join(codes).casefold() or subsystem))
+    return {
+        "identities": sorted(set(identities)),
+        "paths": paths[:30],
+        "baseline_residue": baseline_residue,
+        "incomplete": incomplete,
+        "no_output": no_output,
+    }
+
+
+def _failure_signature(
+    kind: str, detail: str, relevant_paths: Sequence[str] = (),
+) -> str:
+    permission = _permission_failure_signature(detail, relevant_paths)
+    if permission:
+        return permission
+    if kind.upper() == "FINAL_REVIEW":
+        analysis = _review_finding_analysis({}, detail)
+        semantic = "+".join(analysis["identities"] or (["TASK_INCOMPLETE"] if analysis["incomplete"] else ["BASELINE_RESIDUE"]))
+        return f"FINAL_REVIEW:{hashlib.sha256(semantic.encode('utf-8')).hexdigest()[:16]}"
     normalized = re.sub(r"[A-Za-z]:[/\\][^\s:]+", "<path>", detail.casefold())
     normalized = re.sub(r"\b\d+(?:\.\d+)?\b", "<n>", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()[:500]
@@ -905,7 +1092,13 @@ def _record_unit_failure(
     state: dict[str, Any], unit_ids: Sequence[str], kind: str, detail: str,
     progress_hash: str, *, retry_limit: int = DEFAULT_FAILURE_RETRY_LIMIT,
 ) -> bool:
-    signature = _failure_signature(kind, detail)
+    signature_paths = [
+        str(path)
+        for unit_id in unit_ids
+        if (unit := _unit_by_id(state, unit_id))
+        for path in unit.get("relevant_paths", [])
+    ]
+    signature = _failure_signature(kind, detail, signature_paths)
     ledger = state.setdefault("RETRY_LEDGER", {})
     all_blocked = True
     for unit_id in unit_ids:
@@ -1646,7 +1839,7 @@ def _review_prompt(state: dict[str, Any]) -> str:
 
 Work-unit summary: {unit_summary}
 
-Inspect the final diff and relevant repository evidence. Source remains read-only; use inherited external temporary runtime for harmless inspection. Worker test status: {state.get('WORKER_TEST_STATUS')}; worker limitation: {state.get('WORKER_TEST_LIMITATION')}; Controller authoritative validation: {state.get('CONTROLLER_VALIDATION_STATUS')} with evidence {state.get('VALIDATION_RESULTS', [])}. If your pytest encounters exactly {WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION}, rely on Controller test evidence and continue source/scope/safety/reuse review. Assess goal completion, correctness, tests, PIT/leakage, exposed-2026 boundaries, declared data roles, Anti-Bloat, duplicate identities/implementations, frozen assets, unresolved local work, and whether deferred work invalidates completed outputs. Guard states: overfit={state['OVERFIT_GUARD']}; anti_bloat={state['ANTI_BLOAT']}; reuse={state['REUSE_GUARD']}.
+Inspect the final diff and relevant repository evidence. Source remains read-only; use inherited external temporary runtime for harmless inspection. Worker test status: {state.get('WORKER_TEST_STATUS')}; worker limitation: {state.get('WORKER_TEST_LIMITATION')}; Controller authoritative validation: {state.get('CONTROLLER_VALIDATION_STATUS')} with evidence {state.get('VALIDATION_RESULTS', [])}. If your pytest encounters exactly {WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION}, rely on Controller test evidence and continue source/scope/safety/reuse review. Assess goal completion, correctness, tests, PIT/leakage, exposed-2026 boundaries, declared data roles, Anti-Bloat, duplicate identities/implementations, frozen assets, unresolved local work, and whether deferred work invalidates completed outputs. Guard states: overfit={state['OVERFIT_GUARD']}; anti_bloat={state['ANTI_BLOAT']}; anti_bloat_task_delta={state.get('ANTI_BLOAT_TASK_DELTA')}; preexisting_residue={state.get('ANTI_BLOAT_BASELINE_RESIDUE', [])}; reuse={state['REUSE_GUARD']}. A zero diff is valid when all meaningful authorized audit units are complete and evidence says no safe change is warranted. Proven pre-existing unchanged residue outside task paths may be reported but is not a task correction. Do not request a generic output-only correction when blocked/deferred units already represent all remaining authorized remedies.
 
 End with exactly one classification line and concise findings:
 REVIEW_STATUS=PASS|PASS_WITH_WARNINGS|FIX_REQUIRED|HUMAN_DECISION_REQUIRED
@@ -1795,6 +1988,8 @@ def _run_codex_turn(
     task_id: str, prompt: str, *, review: bool = False, role: str = "",
 ) -> dict[str, Any]:
     state = load_state(task_id)
+    if _deadline_expired(state):
+        raise HarnessError("CODEX_DISPATCH_FORBIDDEN_AFTER_DEADLINE")
     worktree = Path(state["WORKTREE"])
     assert_registered_isolated_worktree(worktree)
     runtime = _ensure_task_temp_runtime(task_id)
@@ -2293,7 +2488,9 @@ def _append_unique_blocker(state: dict[str, Any], code: str, detail: str) -> Non
 
 
 def _blocker_identity(code: str, detail: str, scope: str = "GLOBAL") -> str:
-    normalized = re.sub(r"\s+", " ", detail.casefold()).strip()[:1_000]
+    normalized = _permission_failure_signature(detail) or re.sub(
+        r"\s+", " ", detail.casefold()
+    ).strip()[:1_000]
     payload = f"{scope}:{code}:{normalized}".encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:20]
 
@@ -2348,7 +2545,11 @@ def _record_local_blocker(
         )
         rows = list(state.get("LOCAL_BLOCKED_WORK", []))
         for unit_id in unit_ids:
-            identity = _blocker_identity(code, detail, unit_id)
+            unit = _unit_by_id(state, unit_id)
+            permission_identity = _permission_failure_signature(
+                detail, unit.get("relevant_paths", []) if unit else (),
+            )
+            identity = _blocker_identity(code, permission_identity or detail, unit_id)
             rows = [row for row in rows if row.get("identity") != identity]
             rows.append({
                 "identity": identity, "work_unit_id": unit_id,
@@ -2363,6 +2564,59 @@ def _record_local_blocker(
         task_id, event="WORK_UNIT_BLOCKED_LOCAL",
         detail=f"units={','.join(unit_ids)};code={code};{detail[:500]}", mutate=mutate,
     )
+
+
+def _reconsider_dependency_deferred_units(state: dict[str, Any]) -> int:
+    by_id = {unit.get("id"): unit for unit in state.get("WORK_UNITS", [])}
+    reopened = 0
+    for unit in state.get("WORK_UNITS", []):
+        if unit.get("status") != "DEFERRED" or unit.get("blocker", {}).get("code") != "DEPENDENCY_UNAVAILABLE":
+            continue
+        dependencies = [by_id.get(value) for value in unit.get("dependencies", [])]
+        if dependencies and all(dependency and dependency.get("status") == "DONE" for dependency in dependencies):
+            unit["status"] = "READY"
+            unit["blocker"] = {}
+            unit["last_checkpoint"] = "DEPENDENCY_RESOLVED"
+            unit["next_action"] = "Dependency correction validated; unit is runnable again"
+            reopened += 1
+    return reopened
+
+
+def _reconcile_correction_parents(state: dict[str, Any], correction: dict[str, Any]) -> int:
+    resolved = 0
+    correction_id = str(correction.get("id", ""))
+    parent_ids = list(dict.fromkeys([
+        *correction.get("resolves_unit_ids", []),
+        *([correction.get("parent_id")] if correction.get("parent_id") else []),
+    ]))
+    for parent_id in parent_ids:
+        parent = _unit_by_id(state, str(parent_id))
+        if parent is None or parent.get("status") == "DONE":
+            continue
+        parent.update({
+            "status": "DONE",
+            "validation_state": "PASS",
+            "blocker": {},
+            "resolved_by": correction_id,
+            "last_checkpoint": "RESOLVED_BY_VALIDATED_CORRECTION",
+            "next_action": "No further action; objective satisfied by validated correction",
+        })
+        state["LOCAL_BLOCKED_WORK"] = [
+            row for row in state.get("LOCAL_BLOCKED_WORK", [])
+            if row.get("work_unit_id") != parent_id
+        ]
+        state["RESOLVED_FINDINGS"] = [
+            *state.get("RESOLVED_FINDINGS", []),
+            {
+                "code": "WORK_UNIT_RESOLVED_BY_CORRECTION",
+                "work_unit_id": parent_id,
+                "resolved_by": correction_id,
+                "at": utc_now(),
+            },
+        ][-MAX_LIST_ITEMS:]
+        resolved += 1
+    _reconsider_dependency_deferred_units(state)
+    return resolved
 
 
 def _apply_validated_unit_results(state: dict[str, Any]) -> None:
@@ -2400,13 +2654,20 @@ def _apply_validated_unit_results(state: dict[str, Any]) -> None:
         ]))[:20]
         if prior_status != "DONE" and status == "DONE":
             completed += 1
+            if str(unit.get("id", "")).startswith("FIX-"):
+                completed += _reconcile_correction_parents(state, unit)
         if reuse_decision in {"REUSE", "EXTEND"}:
             reuse_hits += 1
         if status == "BLOCKED_LOCAL":
             newly_local_blocked += int(prior_status != "BLOCKED_LOCAL")
             blocker = unit.get("blocker", {})
             detail = str(blocker.get("detail", blocker))
-            identity = _blocker_identity(str(blocker.get("code", "LOCAL_BLOCKER")), detail, str(unit["id"]))
+            permission_identity = _permission_failure_signature(detail, unit.get("relevant_paths", []))
+            identity = _blocker_identity(
+                str(blocker.get("code", "LOCAL_BLOCKER")),
+                permission_identity or detail,
+                str(unit["id"]),
+            )
             local_rows = [row for row in local_rows if row.get("identity") != identity]
             local_rows.append({
                 "identity": identity, "work_unit_id": unit["id"],
@@ -2433,42 +2694,121 @@ def _queue_correction_work_unit(
     state: dict[str, Any], source: str, detail: str, progress_hash: str,
     relevant_paths: Sequence[str] = (),
 ) -> bool:
-    signature = _failure_signature(source, detail)
+    analysis = _review_finding_analysis(state, detail, relevant_paths) if source == "FINAL_REVIEW" else {
+        "identities": [], "paths": list(relevant_paths), "baseline_residue": False,
+        "incomplete": False, "no_output": False,
+    }
+    if analysis["baseline_residue"]:
+        identity = "PREEXISTING_BASELINE_RESIDUE"
+        if not any(row.get("identity") == identity for row in state.get("HISTORICAL_FINDINGS", [])):
+            state["HISTORICAL_FINDINGS"] = [
+                *state.get("HISTORICAL_FINDINGS", []),
+                {
+                    "identity": identity,
+                    "code": identity,
+                    "detail": "Reviewer evidence was authoritative pre-existing unchanged residue; task delta remained clean",
+                    "at": utc_now(),
+                },
+            ][-MAX_LIST_ITEMS:]
+    if source == "FINAL_REVIEW" and not analysis["identities"]:
+        if analysis["no_output"] and all(
+            unit.get("status") == "DONE" for unit in state.get("WORK_UNITS", [])
+            if not unit.get("optional")
+        ):
+            state["REVIEW_CORRECTION_DISPOSITION"] = "VALID_ZERO_DIFF_COMPLETION"
+        elif analysis["incomplete"]:
+            state["REVIEW_CORRECTION_DISPOSITION"] = "INCOMPLETE_NO_RUNNABLE_REMEDY"
+        else:
+            state["REVIEW_CORRECTION_DISPOSITION"] = "PREEXISTING_BASELINE_RESIDUE"
+        _telemetry_add(state, repeated_work_prevented=1)
+        return False
+    semantic = "+".join(analysis["identities"])
+    signature = (
+        f"FINAL_REVIEW:{hashlib.sha256(semantic.encode('utf-8')).hexdigest()[:16]}"
+        if source == "FINAL_REVIEW" else _failure_signature(source, detail)
+    )
+    state["LAST_REVIEW_FINDING_IDENTITY"] = semantic if source == "FINAL_REVIEW" else signature
     existing = next(
         (
             unit for unit in state.get("WORK_UNITS", [])
             if unit.get("failure_signature") == signature
-            and unit.get("status") in {"READY", "RETRY", "RUNNING"}
         ),
         None,
     )
-    if existing is not None:
-        _telemetry_add(state, repeated_work_prevented=1)
-        return True
     key = f"FINAL:{signature}"
     prior = state.setdefault("RETRY_LEDGER", {}).get(key, {})
-    count = int(prior.get("count", 0)) + 1 if prior.get("progress_hash") == progress_hash else 1
+    same_progress = prior.get("progress_hash") == progress_hash
+    count = int(prior.get("count", 0)) + 1
+    no_progress_count = int(prior.get("no_progress_count", 0)) + 1 if same_progress else 0
     state["RETRY_LEDGER"][key] = {
-        "count": count, "progress_hash": progress_hash,
+        "count": count, "no_progress_count": no_progress_count, "progress_hash": progress_hash,
         "last_attempted_remedy": source[:200], "last_detail": detail[:1_000],
         "updated_at": utc_now(),
     }
     state["CURRENT_RETRY_SIGNATURE"] = signature
     state["CURRENT_RETRY_COUNT"] = count
-    if count > DEFAULT_FAILURE_RETRY_LIMIT:
+    finding_ledger = state.setdefault("REVIEW_FINDING_LEDGER", {})
+    finding_ledger[signature] = {
+        "identity": semantic or signature,
+        "count": count,
+        "no_progress_count": no_progress_count,
+        "progress_hash": progress_hash,
+        "correction_id": existing.get("id", "") if existing else "",
+        "status": existing.get("status", "NEW") if existing else "NEW",
+        "updated_at": utc_now(),
+    }
+    if existing is not None and existing.get("status") == "DONE" and not same_progress:
+        existing = None
+    if existing is not None:
+        _telemetry_add(state, repeated_work_prevented=1, duplicate_planned_work_rejected=1)
+        state["REVIEW_CORRECTION_DISPOSITION"] = (
+            "EXISTING_CORRECTION_RUNNABLE"
+            if existing.get("status") in {"READY", "RETRY", "RUNNING"}
+            else "DUPLICATE_CORRECTION_SUPPRESSED"
+        )
+        return existing.get("status") in {"READY", "RETRY", "RUNNING"}
+    if no_progress_count > DEFAULT_FAILURE_RETRY_LIMIT:
+        state["REVIEW_CORRECTION_DISPOSITION"] = "NO_PROGRESS_RETRY_EXHAUSTED"
         return False
     next_number = 1 + sum(str(unit.get("id", "")).startswith("FIX-") for unit in state.get("WORK_UNITS", []))
+    affected_paths = list(dict.fromkeys([*analysis["paths"], *(str(path).replace("\\", "/") for path in relevant_paths)]))
+    affected = {path.casefold() for path in affected_paths}
+    def parent_matches(unit: dict[str, Any]) -> bool:
+        unit_paths = {
+            str(path).replace("\\", "/").casefold()
+            for path in unit.get("relevant_paths", [])
+        }
+        if not affected.intersection(unit_paths):
+            return False
+        objective = f"{unit.get('objective', '')} {unit.get('subsystem', '')}".casefold()
+        if "STORAGE_CONTAINMENT_PARITY|" in semantic:
+            return bool(re.search(r"storage|containment|resolver|reporoot|external root", objective))
+        return bool(unit.get("failure_signature") == signature)
+
+    parent_ids = [
+        str(unit["id"])
+        for unit in state.get("WORK_UNITS", [])
+        if not str(unit.get("id", "")).startswith("FIX-")
+        and unit.get("status") in {"BLOCKED_LOCAL", "DEFERRED", "RETRY"}
+        and parent_matches(unit)
+    ][:10]
     unit = _new_work_unit(
         f"FIX-{next_number:03d}",
-        f"Correct the in-scope {source.lower()} finding: {detail[:700]}",
+        f"Correct the in-scope {source.lower()} finding [{semantic or signature}]: {detail[:360]}",
+        parent_id=parent_ids[0] if parent_ids else "",
         subsystem="correction",
-        relevant_paths=relevant_paths,
+        relevant_paths=affected_paths,
         reuse_decision="EXTEND",
         reuse_evidence=[f"Correction extends the existing task diff; signature={signature}"],
     )
     unit["failure_signature"] = signature
+    unit["review_finding_identity"] = semantic or signature
+    unit["resolves_unit_ids"] = parent_ids
     unit["last_checkpoint"] = "CORRECTION_GENERATED"
     state.setdefault("WORK_UNITS", []).append(unit)
+    finding_ledger[signature]["correction_id"] = unit["id"]
+    finding_ledger[signature]["status"] = "READY"
+    state["REVIEW_CORRECTION_DISPOSITION"] = "QUEUED"
     state["FINAL_REVIEW_ATTEMPTS"] = int(state.get("FINAL_REVIEW_ATTEMPTS", 0)) + int(source == "FINAL_REVIEW")
     _meaningful_progress(state, f"CORRECTION_WORK_UNIT:{unit['id']}")
     return True
@@ -2578,6 +2918,8 @@ def _perform_review(task_id: str) -> str:
         why_next = "The review could not safely authorize correction or completion autonomously."
         next_code = "FINAL_REVIEW"
 
+    progress_hash = _review_progress_hash(load_state(task_id), _worktree_progress_hash(worktree))
+
     def mark_review_completed(value: dict[str, Any]) -> None:
         _plan_update(value, "FINAL_INDEPENDENT_REVIEW", "COMPLETED")
 
@@ -2587,6 +2929,7 @@ def _perform_review(task_id: str) -> str:
         "CURRENT_ACTION": f"Independent review completed with {classification}",
         "WHY_CURRENT_ACTION": "The read-only review turn ended and its explicit classification was recorded.",
         "LAST_REVIEW_STATUS": classification,
+        "LAST_REVIEW_PROGRESS_HASH": progress_hash,
         "REVIEW_REQUESTED": False,
         "LAST_COMPLETED": "INDEPENDENT_REVIEW_COMPLETED",
         "NEXT_ACTION": next_action,
@@ -2789,13 +3132,52 @@ def _run_final_validation(task_id: str) -> tuple[bool, str]:
 def _defer_for_expired_budget(state: dict[str, Any]) -> int:
     deferred = 0
     for unit in state.get("WORK_UNITS", []):
-        if unit.get("status") in {"READY", "RETRY"}:
+        if unit.get("status") in {"READY", "RETRY", "RUNNING"}:
             unit["status"] = "DEFERRED"
             unit["blocker"] = {"code": "TIME_BUDGET_EXPIRED", "detail": "Task converged at its wall-clock boundary"}
             unit["last_checkpoint"] = "TIME_BUDGET_EXPIRED"
             unit["next_action"] = "Continuation plan preserved for a future authorized task"
             deferred += 1
     return deferred
+
+
+def _activate_convergence(state: dict[str, Any]) -> int:
+    if not state.get("CONVERGENCE_MODE"):
+        state["CONVERGENCE_MODE"] = True
+        state["CONVERGENCE_STARTED_AT"] = utc_now()
+    deferred = 0
+    for unit in state.get("WORK_UNITS", []):
+        if unit.get("status") in {"READY", "RETRY", "RUNNING"}:
+            unit["status"] = "DEFERRED"
+            unit["blocker"] = {
+                "code": "TIME_BUDGET_CONVERGENCE",
+                "detail": "Final ten-percent convergence window reserved for validation and terminalization",
+            }
+            unit["last_checkpoint"] = "DEFERRED_FOR_CONVERGENCE"
+            unit["next_action"] = "Compact continuation plan preserved; no late Codex branch is opened"
+            deferred += 1
+    state["ACTIVE_WORK_UNIT_IDS"] = []
+    state["ACTIVE_WORK_UNIT_ID"] = ""
+    state["CURRENT_WORK_UNIT"] = ""
+    return deferred
+
+
+def _prepare_deadline_terminalization(state: dict[str, Any]) -> None:
+    deferred = _defer_for_expired_budget(state)
+    state["CONVERGENCE_MODE"] = True
+    state["CONVERGENCE_STARTED_AT"] = state.get("CONVERGENCE_STARTED_AT") or utc_now()
+    state["HARD_DEADLINE_REACHED_AT"] = state.get("HARD_DEADLINE_REACHED_AT") or utc_now()
+    state["NEXT_ACTION_CODE"] = "FINALIZE"
+    state["CURRENT_PHASE"] = "FINALIZE"
+    state["CURRENT_ACTION"] = "Hard deadline reached; only lightweight persisted terminal classification remains"
+    state["WHY_CURRENT_ACTION"] = "No planner, worker, reviewer, or correction may start after the deadline."
+    state["NEXT_ACTION"] = "Classify completed, blocked, and deferred work and preserve the worktree"
+    state["REVIEW_CORRECTION_DISPOSITION"] = "HARD_DEADLINE_NO_NEW_LLM_WORK"
+    if deferred:
+        state["HISTORICAL_FINDINGS"] = [
+            *state.get("HISTORICAL_FINDINGS", []),
+            {"code": "TIME_BUDGET_EXPIRED", "detail": f"deferred={deferred}", "at": utc_now()},
+        ][-MAX_LIST_ITEMS:]
 
 
 def _dispatch_r2_compat(task_id: str) -> None:
@@ -3047,6 +3429,30 @@ def _dispatch_r3(task_id: str) -> None:
     while True:
         if _control_checkpoint(task_id):
             return
+        state = load_state(task_id)
+        action = str(state.get("NEXT_ACTION_CODE", "HARD_PREFLIGHT"))
+        if _deadline_expired(state) and action not in {"FINALIZE", "DONE"}:
+            update_task(
+                task_id, event="HARD_DEADLINE_TERMINALIZATION",
+                detail=f"action={action};grace={POST_DEADLINE_MACHINE_GRACE_SECONDS:.0f}s;no_new_llm=true",
+                mutate=_prepare_deadline_terminalization,
+            )
+            continue
+        if (
+            _in_convergence_window(state)
+            and action in {"PLAN", "SELECT_WORK", "WORKER"}
+        ):
+            def converge(value: dict[str, Any]) -> None:
+                deferred = _activate_convergence(value)
+                value["NEXT_ACTION_CODE"] = "FINAL_VALIDATION"
+                value["CURRENT_PHASE"] = "FINAL_VALIDATION"
+                value["CURRENT_ACTION"] = "Time-budget convergence window reached"
+                value["WHY_CURRENT_ACTION"] = "Late work is deferred so validation and terminalization remain bounded."
+                value["NEXT_ACTION"] = "Run one final Controller-owned machine validation"
+                value["LAST_CHECKPOINT"] = f"CONVERGENCE_MODE:deferred={deferred}"
+
+            update_task(task_id, event="CONVERGENCE_MODE_STARTED", detail=f"prior_action={action}", mutate=converge)
+            continue
         update_task(task_id, {"CONTROLLER_HEARTBEAT_AT": utc_now()})
         state = load_state(task_id)
         action = str(state.get("NEXT_ACTION_CODE", "HARD_PREFLIGHT"))
@@ -3369,17 +3775,23 @@ def _dispatch_r3(task_id: str) -> None:
                 progress_hash = _worktree_progress_hash(Path(state["WORKTREE"]))
                 queued = {"value": False}
                 def correction(value: dict[str, Any]) -> None:
-                    queued["value"] = _queue_correction_work_unit(
-                        value, "FINAL_VALIDATION", detail, progress_hash,
-                        value.get("FILES_CHANGED", []),
-                    )
+                    if value.get("CONVERGENCE_MODE"):
+                        value["REVIEW_CORRECTION_DISPOSITION"] = "VALIDATION_DEFECT_DEFERRED_DURING_CONVERGENCE"
+                        value["HISTORICAL_FINDINGS"] = [
+                            *value.get("HISTORICAL_FINDINGS", []),
+                            {"code": "CONVERGENCE_VALIDATION_FAILURE", "detail": detail[:1_000], "at": utc_now()},
+                        ][-MAX_LIST_ITEMS:]
+                    else:
+                        queued["value"] = _queue_correction_work_unit(
+                            value, "FINAL_VALIDATION", detail, progress_hash,
+                            value.get("FILES_CHANGED", []),
+                        )
                     if queued["value"]:
                         value["NEXT_ACTION_CODE"] = "SELECT_WORK"
                         _plan_update(value, "AUTONOMOUS_EXECUTION_LOOP", "IN_PROGRESS")
+                    else:
+                        value["NEXT_ACTION_CODE"] = "FINALIZE"
                 update_task(task_id, event="FINAL_VALIDATION_CORRECTION_DECISION", detail=detail[:1_000], mutate=correction)
-                if not queued["value"]:
-                    _wait_human(task_id, "FINAL_VALIDATION_NO_PROGRESS", detail, boundary_kind="EXHAUSTED")
-                    return
                 continue
             update_task(task_id, {
                 "NEXT_ACTION_CODE": "FINAL_REVIEW",
@@ -3390,6 +3802,38 @@ def _dispatch_r3(task_id: str) -> None:
             state = load_state(task_id)
             worktree = Path(state["WORKTREE"])
             progress_hash = _worktree_progress_hash(worktree)
+            review_progress = _review_progress_hash(state, progress_hash)
+            if state.get("LAST_REVIEW_PROGRESS_HASH") == review_progress:
+                def skip_unchanged(value: dict[str, Any]) -> None:
+                    value["NEXT_ACTION_CODE"] = "FINALIZE"
+                    value["REVIEW_CORRECTION_DISPOSITION"] = "REVIEW_SKIPPED_NO_MATERIAL_PROGRESS"
+                    _telemetry_add(value, repeated_work_prevented=1)
+
+                update_task(
+                    task_id, event="FINAL_REVIEW_SKIPPED_NO_MATERIAL_PROGRESS",
+                    detail=f"progress={review_progress[:16]}", mutate=skip_unchanged,
+                )
+                continue
+            remaining = _remaining_budget_seconds(state)
+            if (
+                remaining is not None
+                and remaining < MIN_FINAL_REVIEW_START_SECONDS
+            ):
+                def skip_late_review(value: dict[str, Any]) -> None:
+                    _activate_convergence(value)
+                    value["NEXT_ACTION_CODE"] = "FINALIZE"
+                    value["REVIEW_CORRECTION_DISPOSITION"] = "REVIEW_DEFERRED_INSUFFICIENT_CONVERGENCE_BUDGET"
+                    value["HISTORICAL_FINDINGS"] = [
+                        *value.get("HISTORICAL_FINDINGS", []),
+                        {
+                            "code": "FINAL_REVIEW_DEFERRED_BY_BUDGET",
+                            "detail": f"remaining_seconds={max(0.0, remaining):.1f}",
+                            "at": utc_now(),
+                        },
+                    ][-MAX_LIST_ITEMS:]
+
+                update_task(task_id, event="FINAL_REVIEW_NOT_STARTED_NEAR_DEADLINE", detail=f"remaining={remaining:.1f}", mutate=skip_late_review)
+                continue
             try:
                 classification = _perform_review(task_id)
             except HarnessError as exc:
@@ -3404,6 +3848,7 @@ def _dispatch_r3(task_id: str) -> None:
                     _wait_human(task_id, "FINAL_REVIEW_INTERFACE_EXHAUSTED", detail, boundary_kind="EXHAUSTED")
                     return
                 continue
+            update_task(task_id, {"LAST_REVIEW_PROGRESS_HASH": review_progress})
             if _control_checkpoint(task_id):
                 return
             if classification == "FIX_REQUIRED":
@@ -3411,18 +3856,42 @@ def _dispatch_r3(task_id: str) -> None:
                 findings = state.get("REVIEW_FINDINGS", "")
                 queued = {"value": False}
                 def review_correction(value: dict[str, Any]) -> None:
-                    queued["value"] = _queue_correction_work_unit(
-                        value, "FINAL_REVIEW", findings, progress_hash,
-                        value.get("FILES_CHANGED", []),
-                    )
+                    if value.get("CONVERGENCE_MODE"):
+                        analysis = _review_finding_analysis(value, findings, value.get("FILES_CHANGED", []))
+                        semantic = "+".join(analysis["identities"])
+                        value["LAST_REVIEW_FINDING_IDENTITY"] = semantic
+                        signature = f"FINAL_REVIEW:{hashlib.sha256(semantic.encode('utf-8')).hexdigest()[:16]}"
+                        duplicate = any(
+                            unit.get("failure_signature") == signature
+                            for unit in value.get("WORK_UNITS", [])
+                        )
+                        if duplicate:
+                            _telemetry_add(value, repeated_work_prevented=1, duplicate_planned_work_rejected=1)
+                        value["REVIEW_CORRECTION_DISPOSITION"] = (
+                            "DUPLICATE_REVIEW_FINDING_DEFERRED_DURING_CONVERGENCE"
+                            if duplicate else "REVIEW_FINDING_DEFERRED_DURING_CONVERGENCE"
+                        )
+                        value["HISTORICAL_FINDINGS"] = [
+                            *value.get("HISTORICAL_FINDINGS", []),
+                            {"code": "CONVERGENCE_REVIEW_FINDING", "detail": findings[:1_000], "at": utc_now()},
+                        ][-MAX_LIST_ITEMS:]
+                    else:
+                        queued["value"] = _queue_correction_work_unit(
+                            value, "FINAL_REVIEW", findings, progress_hash,
+                            value.get("FILES_CHANGED", []),
+                        )
                     if queued["value"]:
                         value["NEXT_ACTION_CODE"] = "SELECT_WORK"
                         value["HARNESS_STATE"] = transition_value(value["HARNESS_STATE"], "RUNNING")
                         _plan_update(value, "FINAL_INDEPENDENT_REVIEW", "PENDING")
-                update_task(task_id, event="FINAL_REVIEW_CORRECTION_GENERATED", detail=findings[:1_000], mutate=review_correction)
-                if not queued["value"]:
-                    _wait_human(task_id, "FINAL_REVIEW_DEFECT_NO_PROGRESS", findings, boundary_kind="EXHAUSTED")
-                    return
+                    else:
+                        value["NEXT_ACTION_CODE"] = "FINALIZE"
+                update_task(task_id, event="FINAL_REVIEW_CORRECTION_DECISION", detail=findings[:1_000], mutate=review_correction)
+                if queued["value"]:
+                    update_task(
+                        task_id, event="FINAL_REVIEW_CORRECTION_GENERATED",
+                        detail=str(load_state(task_id).get("CURRENT_RETRY_SIGNATURE", "")),
+                    )
                 continue
             if classification == "HUMAN_DECISION_REQUIRED":
                 findings = load_state(task_id).get("REVIEW_FINDINGS", "")
@@ -3462,7 +3931,28 @@ def _dispatch_r3(task_id: str) -> None:
                 unit for unit in state.get("WORK_UNITS", [])
                 if unit.get("status") in {"BLOCKED_LOCAL", "DEFERRED"}
             ]
-            terminal = "COMPLETED_WITH_DEFERRED_WORK" if deferred or cleanup_warning else "COMPLETED"
+            mandatory_unresolved = [unit for unit in deferred if not unit.get("optional")]
+            done = [unit for unit in state.get("WORK_UNITS", []) if unit.get("status") == "DONE"]
+            review_accepted = state.get("LAST_REVIEW_STATUS") in {"PASS", "PASS_WITH_WARNINGS"}
+            valid_zero_diff = state.get("REVIEW_CORRECTION_DISPOSITION") == "VALID_ZERO_DIFF_COMPLETION"
+            if valid_zero_diff:
+                review_accepted = True
+            if mandatory_unresolved:
+                terminal = "FAILED"
+            elif deferred or cleanup_warning:
+                terminal = "COMPLETED_WITH_DEFERRED_WORK" if done else "FAILED"
+            elif review_accepted:
+                terminal = "COMPLETED"
+            elif state.get("HARD_DEADLINE_REACHED_AT") and done:
+                terminal = "COMPLETED_WITH_DEFERRED_WORK"
+            else:
+                terminal = "FAILED"
+            completion_reason = (
+                "Final machine validation and independent review accepted the bounded task."
+                if review_accepted and not deferred
+                else "The time-bounded task converged with unresolved work or an incomplete final gate explicitly preserved."
+            )
+            terminal_success = terminal in {"COMPLETED", "COMPLETED_WITH_DEFERRED_WORK"}
 
             def complete_all(value: dict[str, Any]) -> None:
                 if cleanup_warning:
@@ -3477,8 +3967,11 @@ def _dispatch_r3(task_id: str) -> None:
 
             update_task(task_id, {
                 "CURRENT_PHASE": terminal,
-                "CURRENT_ACTION": "Autonomous task complete; isolated worktree preserved",
-                "WHY_CURRENT_ACTION": "Final machine validation and independent review passed; unresolved local work is explicitly deferred.",
+                "CURRENT_ACTION": (
+                    "Autonomous task complete; isolated worktree preserved"
+                    if terminal_success else "Autonomous task terminalized incomplete; isolated worktree preserved"
+                ),
+                "WHY_CURRENT_ACTION": completion_reason,
                 "LAST_COMPLETED": terminal,
                 "NEXT_ACTION": "Human may inspect and optionally integrate the preserved worktree",
                 "WHY_NEXT_ACTION": "Harness never auto-merges or deletes useful work.",
@@ -3492,6 +3985,7 @@ def _dispatch_r3(task_id: str) -> None:
                 "FILES_CREATED": changes["created"],
                 "DEPENDENCIES_ADDED": changes["dependencies"],
                 "TERMINAL_OUTCOME": terminal,
+                "TERMINAL_SUCCESS": terminal_success,
             }, new_state=terminal, event="TASK_COMPLETED", detail=f"outcome={terminal};worktree_preserved={state['WORKTREE']};deferred={len(deferred)}", mutate=complete_all)
             return
         elif action == "DONE":
@@ -4059,13 +4553,30 @@ def run_supervisor(
         initialized = True
         exit_code = 0
         last_heartbeat = time.monotonic()
+        transient_heartbeat_failures = 0
         while True:
             state = load_state(task_id)
-            if state["HARNESS_STATE"] in TERMINAL_STATES | {"PAUSED", "WAITING_HUMAN", "BLOCKED"}:
+            if state["HARNESS_STATE"] in TERMINAL_STATES:
                 break
             now = time.monotonic()
             if now - last_heartbeat >= 30:
-                update_task(task_id, {"SUPERVISOR_HEARTBEAT_AT": utc_now()})
+                try:
+                    update_task(task_id, {
+                        "SUPERVISOR_HEARTBEAT_AT": utc_now(),
+                        "SUPERVISOR_TRANSIENT_STATE_WRITE_FAILURES": transient_heartbeat_failures,
+                        "SUPERVISOR_LAST_TRANSIENT_EXCEPTION": "",
+                    })
+                    transient_heartbeat_failures = 0
+                except PermissionError as exc:
+                    transient_heartbeat_failures += 1
+                    print(
+                        f"Transient Supervisor heartbeat state write failure "
+                        f"{transient_heartbeat_failures}: {type(exc).__name__}:{exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    if transient_heartbeat_failures >= 3:
+                        raise
                 last_heartbeat = now
                 state = load_state(task_id)
             controller_alive = _pid_alive(state.get("CONTROLLER_PID"))
@@ -4078,15 +4589,18 @@ def run_supervisor(
                 # the recorded mutating/reviewer process may still be alive.
                 time.sleep(poll_seconds)
                 continue
+            if state["HARNESS_STATE"] not in ACTIVE_STATES:
+                # Paused, blocked, and human-boundary states remain supervised
+                # and heartbeating, but never dispatch autonomous work.
+                time.sleep(poll_seconds)
+                continue
             if state.get("CONTROLLER_PID") or state.get("WORKER_PID"):
                 try:
                     recover_if_interrupted(task_id)
                 except HarnessError:
                     # A cooperative stop may become authoritative between this
                     # loop's liveness read and recovery's state transition.
-                    if load_state(task_id)["HARNESS_STATE"] in TERMINAL_STATES | {
-                        "PAUSED", "WAITING_HUMAN", "BLOCKED",
-                    }:
+                    if load_state(task_id)["HARNESS_STATE"] in TERMINAL_STATES:
                         break
                     raise
                 state = load_state(task_id)
