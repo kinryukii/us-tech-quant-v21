@@ -2927,6 +2927,174 @@ def test_ambiguous_real_training_request_fails_closed() -> None:
     assert module.hard_guard_conflicts("Train a model.") == ["AMBIGUOUS_TRAINING_TEMPORAL_SCOPE"]
 
 
+def _explicit_legal_temporal_contract(action: str = "Train and select the model.") -> str:
+    return f"""{action}
+TRAINING_SELECTION_OUTCOME_CUTOFF=2025-12-31.
+All features and observations must be PIT-safe with no lookahead at each decision timestamp.
+A training observation is legal only when its complete forward label has matured by the cutoff.
+Post-cutoff outcomes and performance are forbidden for fitting, tuning, feature selection,
+model selection, finalist selection, and strategy selection.
+"""
+
+
+def test_explicit_legal_iso_training_cutoff_contract_is_unambiguous() -> None:
+    assert module.hard_guard_conflicts(_explicit_legal_temporal_contract()) == []
+
+
+def test_forward_label_maturity_by_explicit_cutoff_is_legal() -> None:
+    goal = _explicit_legal_temporal_contract("Fit the model and choose finalists.")
+    assert "complete forward label has matured by the cutoff" in goal
+    assert module.hard_guard_conflicts(goal) == []
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Train a model. TRAINING_SELECTION_CUTOFF=2025-12-31.",
+        "Train a model. Do not train on later data.",
+        _explicit_legal_temporal_contract().replace(
+            "Post-cutoff outcomes and performance are forbidden for fitting, tuning, feature selection,\n"
+            "model selection, finalist selection, and strategy selection.",
+            "Post-cutoff outcomes are forbidden for reporting.",
+        ),
+    ],
+)
+def test_incomplete_or_negated_later_data_language_does_not_authorize_training(goal: str) -> None:
+    assert "AMBIGUOUS_TRAINING_TEMPORAL_SCOPE" in module.hard_guard_conflicts(goal)
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        _explicit_legal_temporal_contract().replace("2025-12-31", "2026-01-15", 1),
+        _explicit_legal_temporal_contract()
+        + " Training may also use outcomes through 2026-01-15.",
+        _explicit_legal_temporal_contract()
+        + " Post-cutoff outcomes may be used to tune model selection.",
+        _explicit_legal_temporal_contract()
+        + " PIT-safe and no-lookahead constraints are not required.",
+        _explicit_legal_temporal_contract()
+        + " Forward labels may mature after the cutoff.",
+        "Use the exposed 2026 holdout performance to select model hyperparameters.",
+        "Inspect the 2026 holdout, then tune the model threshold.",
+    ],
+)
+def test_post_cutoff_or_holdout_informed_optimization_remains_blocked(goal: str) -> None:
+    assert module.hard_guard_conflicts(goal)
+
+
+def test_contradictory_training_cutoffs_remain_blocked() -> None:
+    goal = _explicit_legal_temporal_contract() + " OUTCOME_CUTOFF=2026-02-01 for model selection."
+    assert module.hard_guard_conflicts(goal)
+
+
+def _temporally_incomplete_training_goal() -> str:
+    return """Train and select the model.
+TRAINING_SELECTION_OUTCOME_CUTOFF=2025-12-31.
+All features and observations must be PIT-safe with no lookahead at each decision timestamp.
+Post-cutoff outcomes and performance are forbidden for fitting, tuning, feature selection,
+model selection, finalist selection, and strategy selection.
+"""
+
+
+def _safe_label_maturity_steering() -> str:
+    return """FEATURE_ASOF_CUTOFF=2025-12-31.
+LABEL_REALIZATION_CUTOFF=2025-12-31.
+OUTCOME_CUTOFF=2025-12-31.
+A training observation is legal only when its complete forward label has matured by the cutoff.
+""".strip()
+
+
+def _create_temporally_blocked_state(goal: str | None = None) -> dict:
+    goal = goal or _temporally_incomplete_training_goal()
+    assert module.hard_guard_conflicts(goal) == ["AMBIGUOUS_TRAINING_TEMPORAL_SCOPE"]
+    contract = module._task_contract(goal, "pre2026-research", "pre2026-research")
+    state = module._new_state("test-task", goal, contract["TASK_SCOPE"], 2, contract)
+    module.task_dir("test-task").mkdir(parents=True)
+    module._write_state_unlocked("test-task", state)
+    module._append_event_unlocked("test-task", "TASK_ACCEPTED", "test")
+    module._set_current_task("test-task")
+    module._block(
+        "test-task", "HARD_GUARD_CONFLICT", "AMBIGUOUS_TRAINING_TEMPORAL_SCOPE",
+    )
+    return module.load_state("test-task")
+
+
+def test_blocked_safe_temporal_steer_revalidates_before_resume(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_temporally_blocked_state()
+    monkeypatch.setattr(module, "_queue_control", lambda state, message: (False, "retained"))
+    steering = _safe_label_maturity_steering()
+    assert module.command_steer(
+        argparse.Namespace(task_id="test-task", instruction=steering),
+    ) == 0
+    monkeypatch.setattr(module, "recover_if_interrupted", lambda task_id: module.load_state(task_id))
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda task_id: 4242)
+
+    assert module.command_resume(argparse.Namespace(task_id="test-task", foreground=False)) == 0
+
+    resumed = module.load_state("test-task")
+    assert resumed["HARNESS_STATE"] == "PLANNING"
+    assert resumed["NEXT_ACTION_CODE"] == "HARD_PREFLIGHT"
+    assert resumed["PENDING_STEER"] == [steering]
+    assert resumed["STEERING_HISTORY"][-1]["accepted"] is True
+    assert resumed["STEERING_HISTORY"][-1].get("applied") is not True
+    assert not any(
+        row["code"] == "HARD_GUARD_CONFLICT" for row in resumed["ACTIVE_BLOCKERS"]
+    )
+    assert any(
+        row["code"] == "HARD_GUARD_CONFLICT" for row in resumed["BLOCKERS"]
+    )
+
+
+def test_blocked_unsafe_temporal_steer_keeps_resume_fail_closed(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _create_temporally_blocked_state()
+    monkeypatch.setattr(module, "_queue_control", lambda state, message: (False, "retained"))
+    steering = "Clarification: OUTCOME_CUTOFF=2026-01-15."
+    assert module.command_steer(
+        argparse.Namespace(task_id="test-task", instruction=steering),
+    ) == 0
+    monkeypatch.setattr(module, "recover_if_interrupted", lambda task_id: module.load_state(task_id))
+
+    with pytest.raises(module.HarnessError, match="RESUME_REJECTED_UNRESOLVED_HARD_INVARIANT"):
+        module.command_resume(argparse.Namespace(task_id="test-task", foreground=False))
+
+    blocked = module.load_state("test-task")
+    assert blocked["HARNESS_STATE"] == "BLOCKED"
+    assert blocked["PENDING_STEER"] == [steering]
+    assert any(
+        row["code"] == "HARD_GUARD_CONFLICT" for row in blocked["ACTIVE_BLOCKERS"]
+    )
+
+
+def test_temporal_revalidation_does_not_clear_unrelated_hard_blocker(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _create_temporally_blocked_state()
+    module._append_active_blocker(
+        state, "R1_PREFLIGHT_APPLICABLE_HARD_BLOCKER", "FROZEN_ASSET_UNAVAILABLE", "SAFETY",
+    )
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_queue_control", lambda value, message: (False, "retained"))
+    steering = _safe_label_maturity_steering()
+    assert module.command_steer(
+        argparse.Namespace(task_id="test-task", instruction=steering),
+    ) == 0
+    monkeypatch.setattr(module, "recover_if_interrupted", lambda task_id: module.load_state(task_id))
+
+    with pytest.raises(module.HarnessError, match="RESUME_REJECTED_UNRESOLVED_HARD_INVARIANT"):
+        module.command_resume(argparse.Namespace(task_id="test-task", foreground=False))
+
+    blocked = module.load_state("test-task")
+    assert any(
+        row["code"] == "R1_PREFLIGHT_APPLICABLE_HARD_BLOCKER"
+        for row in blocked["ACTIVE_BLOCKERS"]
+    )
+
+
 def test_worktree_isolation_rejects_primary_and_nested_paths(isolated_roots: tuple[Path, Path]) -> None:
     _, root = isolated_roots
     valid = root / "harness-task-test-task"

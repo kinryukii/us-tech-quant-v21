@@ -1788,6 +1788,116 @@ def _negated(text: str, start: int, end: int | None = None) -> bool:
     )
 
 
+def _explicit_temporal_contract_status(text: str) -> tuple[bool, bool]:
+    """Return (complete_safe_contract, unsafe_or_contradictory_cutoff)."""
+    legal_cutoff = "2025-12-31"
+    cutoff_rows: list[tuple[str, str]] = []
+    for context in re.split(r"[.;\n]+", text):
+        if not re.search(r"(?:^|[_\W])cutoff\b", context, re.I):
+            continue
+        for found in re.finditer(r"\b\d{4}-\d{2}-\d{2}\b", context):
+            try:
+                datetime.strptime(found.group(0), "%Y-%m-%d")
+            except ValueError:
+                continue
+            cutoff_rows.append((found.group(0), context))
+
+    training_scope = re.compile(
+        r"\b(?:train\w*|fit\w*|validat\w*|select\w*|model|factor|strategy|finalist)\b",
+        re.I,
+    )
+    maturity_scope = re.compile(
+        r"\b(?:labels?|targets?|outcomes?)[\w /_-]{0,40}(?:matur\w*|reali[sz]\w*|cutoff)\b|"
+        r"\b(?:matur\w*|reali[sz]\w*)[\w /_-]{0,40}(?:labels?|targets?|outcomes?)\b",
+        re.I,
+    )
+    training_cutoffs = [date for date, context in cutoff_rows if training_scope.search(context)]
+    maturity_cutoffs = [date for date, context in cutoff_rows if maturity_scope.search(context)]
+    relevant_cutoffs = [
+        date for date, context in cutoff_rows
+        if training_scope.search(context) or maturity_scope.search(context)
+    ]
+    contradictory = len(set(training_cutoffs)) > 1
+    after_legal_boundary = any(date > legal_cutoff for date in relevant_cutoffs)
+    maturity_after_training = bool(
+        maturity_cutoffs and training_cutoffs
+        and max(maturity_cutoffs) > min(training_cutoffs)
+    )
+    unsafe_contract = bool(re.search(
+        r"\b(?:PIT[- ]safe|point[- ]in[- ]time|no[- ]lookahead)\b[^.;]{0,50}"
+        r"\b(?:is|are)?\s*not\s+required\b|"
+        r"\blookahead\b[^.;]{0,30}\b(?:is\s+)?(?:allowed|permitted|authorized)\b|"
+        r"\b(?:labels?|targets?|outcomes?)\b[^.;]{0,60}\b(?:may|can)\b[^.;]{0,30}"
+        r"\b(?:mature|realize)\w*\b[^.;]{0,30}\bafter\b[^.;]{0,20}\bcutoff\b|"
+        r"\b(?:post[- ]cutoff|after\s+(?:the\s+)?cutoff|later)\b[^.;]{0,80}"
+        r"\b(?:labels?|outcomes?|performance|results?)\b[^.;]{0,80}"
+        r"\b(?:may|can|allowed|permitted|authorized|use\w*)\b[^.;]{0,80}"
+        r"\b(?:train\w*|fit\w*|tun\w*|optim\w*|feature\s+selection|model\s+selection|strategy\s+selection)\b",
+        text,
+        re.I,
+    ))
+    unsafe_cutoff = (
+        contradictory or after_legal_boundary or maturity_after_training or unsafe_contract
+    )
+
+    pit_required = any(
+        not _negated(text, found.start(), found.end())
+        for found in re.finditer(
+            r"\bPIT[- ]safe\b|\bpoint[- ]in[- ]time\b|\bno[- ]lookahead\b|"
+            r"\bwithout\s+(?:any\s+)?lookahead\b|"
+            r"\binformation\s+availability\b[^.;]{0,80}\bno\s+later\s+than\b"
+            r"[^.;]{0,40}\bdecision\s+timestamp\b",
+            text,
+            re.I,
+        )
+    )
+    maturity_by_cutoff = bool(maturity_cutoffs) or bool(re.search(
+        r"\b(?:complete\s+)?(?:forward\s+)?(?:labels?|targets?|outcomes?)\b"
+        r"[^.;]{0,100}\b(?:matur\w*|reali[sz]\w*)\b[^.;]{0,60}"
+        r"\b(?:by|before|no\s+later\s+than)\b[^.;]{0,30}\bcutoff\b",
+        text,
+        re.I,
+    ))
+    post_cutoff_prohibited = False
+    for clause in re.split(r"[.;\n]+", text):
+        if not (
+            re.search(r"\b(?:post[- ]cutoff|after\s+(?:the\s+)?cutoff|later|post[- ]?2025|2026\+?)\b", clause, re.I)
+            and re.search(r"\b(?:labels?|outcomes?|performance|results?)\b", clause, re.I)
+            and re.search(r"\b(?:forbid\w*|prohibit\w*|disallow\w*|exclude\w*|must\s+not|may\s+not|shall\s+not|do\s+not|never)\b", clause, re.I)
+        ):
+            continue
+        if re.search(r"\b(?:do\s+not|not)\s+(?:forbid\w*|prohibit\w*|disallow\w*|exclude\w*)\b", clause, re.I):
+            continue
+        broad_prohibition = bool(re.search(
+            r"\b(?:outcomes?|performance|results?)\s+use\s+(?:is|remains)\s+"
+            r"(?:strictly\s+)?(?:forbidden|prohibited|disallowed)\b|"
+            r"\b(?:must|shall|may)\s+not\s+be\s+used\b|\bdo\s+not\s+use\b|"
+            r"\bnever\s+(?:be\s+)?used\b",
+            clause,
+            re.I,
+        ))
+        action_scope = all(re.search(pattern, clause, re.I) for pattern in (
+            r"\b(?:train\w*|fit\w*)\b",
+            r"\b(?:tun\w*|optim\w*|search\w*)\b",
+            r"\bfeature\s+selection\b",
+            r"\b(?:model|finalist)\s+selection\b",
+            r"\bstrategy\s+selection\b",
+        ))
+        post_cutoff_prohibited = broad_prohibition or action_scope
+        if not post_cutoff_prohibited:
+            continue
+        break
+
+    return (
+        bool(training_cutoffs)
+        and not unsafe_cutoff
+        and pit_required
+        and maturity_by_cutoff
+        and post_cutoff_prohibited,
+        unsafe_cutoff,
+    )
+
+
 def hard_guard_conflicts(instruction: str) -> list[str]:
     text = " ".join(instruction.split())
     conflicts: list[str] = []
@@ -1810,6 +1920,13 @@ def hard_guard_conflicts(instruction: str) -> list[str]:
         r"\b(?:perform|run|start|continue)\s+(?:a\s+)?(?:model\s+)?training\b",
         re.I,
     )
+    requested_training = any(
+        ambiguous_request.search(clause)
+        for clause in re.split(r"[.;\n]+|\b(?:and|but)\b", text, flags=re.I)
+    )
+    explicit_temporal_contract, unsafe_temporal_cutoff = _explicit_temporal_contract_status(text)
+    if requested_training and unsafe_temporal_cutoff:
+        conflicts.append("EXPOSED_2026_OPTIMIZATION")
     for clause in re.split(r"[.;\n]+|\b(?:and|but)\b", text, flags=re.I):
         has_safe_pre2026 = bool(safe_pre2026.search(clause))
         scoped = safe_pre2026.sub("PRE2026", clause)
@@ -1822,6 +1939,28 @@ def hard_guard_conflicts(instruction: str) -> list[str]:
         unsafe = False
         for action in actions:
             tail = scoped[action.end():action.end() + 120]
+            for source in re.finditer(
+                rf"\b(?:use|include)\w*\b[^.;]{{0,70}}{unsafe_year}",
+                tail,
+                re.I,
+            ):
+                source_start = action.end() + source.start()
+                if not _negated(scoped, source_start, action.end() + source.end()):
+                    unsafe = True
+                    break
+            if unsafe:
+                break
+            for source in re.finditer(
+                r"\b(?:use|using|inspect\w*|review\w*|examin\w*|after\s+(?:inspect\w*|review\w*|examin\w*))\b"
+                r"[^.;]{0,90}\bholdout\b",
+                scoped[:action.start()],
+                re.I,
+            ):
+                if not _negated(scoped, source.start(), source.end()):
+                    unsafe = True
+                    break
+            if unsafe:
+                break
             if re.search(
                 rf"[^.;]{{0,70}}\b(?:on|using|with|from|against|based\s+on)\b"
                 rf"[^.;]{{0,35}}{unsafe_year}",
@@ -1845,9 +1984,10 @@ def hard_guard_conflicts(instruction: str) -> list[str]:
             if unsafe:
                 break
         if unsafe:
-            conflicts.append("EXPOSED_2026_OPTIMIZATION")
+            if "EXPOSED_2026_OPTIMIZATION" not in conflicts:
+                conflicts.append("EXPOSED_2026_OPTIMIZATION")
             break
-        if not has_safe_pre2026 and ambiguous_request.search(scoped):
+        if not (has_safe_pre2026 or explicit_temporal_contract) and ambiguous_request.search(scoped):
             conflicts.append("AMBIGUOUS_TRAINING_TEMPORAL_SCOPE")
             break
     patterns = (
@@ -3136,11 +3276,16 @@ def _append_active_blocker(
     _append_unique_blocker(state, code, detail)
 
 
-def _resolve_active_blockers(state: dict[str, Any], *, code: str | None = None) -> None:
+def _resolve_active_blockers(
+    state: dict[str, Any], *, code: str | None = None,
+    identities: set[str] | None = None,
+) -> None:
     resolved: list[dict[str, Any]] = []
     active: list[dict[str, Any]] = []
     for row in state.get("ACTIVE_BLOCKERS", []):
-        if code is None or row.get("code") == code:
+        matches_code = code is None or row.get("code") == code
+        matches_identity = identities is None or row.get("identity") in identities
+        if matches_code and matches_identity:
             resolved.append({**row, "resolved_at": utc_now()})
         else:
             active.append(row)
@@ -5618,8 +5763,44 @@ def command_resume(args: argparse.Namespace) -> int:
     state = recover_if_interrupted(task_id)
     if state["HARNESS_STATE"] not in {"PAUSED", "WAITING_HUMAN", "BLOCKED"}:
         raise HarnessError(f"RESUME_NOT_ALLOWED_FROM:{state['HARNESS_STATE']}")
-    if state["HARNESS_STATE"] == "BLOCKED" and any(row.get("code") in {"HARD_GUARD_CONFLICT", "R1_PREFLIGHT_APPLICABLE_HARD_BLOCKER", "POST_CHANGE_R1_HARD_BLOCKER"} for row in state.get("BLOCKERS", [])):
-        raise HarnessError("RESUME_REJECTED_UNRESOLVED_HARD_INVARIANT")
+    hard_blocker_codes = {
+        "HARD_GUARD_CONFLICT", "R1_PREFLIGHT_APPLICABLE_HARD_BLOCKER",
+        "POST_CHANGE_R1_HARD_BLOCKER",
+    }
+    if state["HARNESS_STATE"] == "BLOCKED":
+        semantic = [
+            row for row in state.get("ACTIVE_BLOCKERS", [])
+            if row.get("code") == "HARD_GUARD_CONFLICT"
+            and {
+                value.strip() for value in str(row.get("detail", "")).split(",")
+                if value.strip()
+            } == {"AMBIGUOUS_TRAINING_TEMPORAL_SCOPE"}
+        ]
+        accepted_pending = [
+            str(instruction) for instruction in state.get("PENDING_STEER", [])
+            if any(
+                row.get("instruction") == instruction and row.get("accepted") is True
+                for row in state.get("STEERING_HISTORY", [])
+            )
+        ]
+        if semantic and accepted_pending:
+            effective_goal = "\n".join([str(state.get("GOAL", "")), *accepted_pending])
+            if not hard_guard_conflicts(effective_goal):
+                stale_identities = {str(row.get("identity", "")) for row in semantic}
+
+                def resolve_semantic(value: dict[str, Any]) -> None:
+                    _resolve_active_blockers(value, identities=stale_identities)
+
+                state = update_task(
+                    task_id, event="SEMANTIC_HARD_GUARD_REVALIDATED",
+                    detail="AMBIGUOUS_TRAINING_TEMPORAL_SCOPE resolved by accepted pending steer",
+                    mutate=resolve_semantic,
+                )
+        if any(
+            row.get("code") in hard_blocker_codes
+            for row in state.get("ACTIVE_BLOCKERS", [])
+        ):
+            raise HarnessError("RESUME_REJECTED_UNRESOLVED_HARD_INVARIANT")
     worktree = Path(state["WORKTREE"]) if state.get("WORKTREE") else None
     if state["WORKER_STATUS"] == "INTERRUPTED_PROCESS_NOT_RUNNING" and worktree and worktree.is_dir() and _git_changes(worktree)["changed"]:
         next_code = "VALIDATE"
