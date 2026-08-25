@@ -1404,6 +1404,93 @@ def _work_unit_counts(state: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _unit_blocker_text(unit: dict[str, Any]) -> str:
+    return json.dumps(unit.get("blocker", {}), sort_keys=True, default=str).casefold()
+
+
+def _local_environment_only(unit: dict[str, Any]) -> bool:
+    blocker = unit.get("blocker", {})
+    if not isinstance(blocker, dict) or not blocker:
+        return False
+    kind = str(blocker.get("kind", "")).upper()
+    code = str(blocker.get("code", "")).upper()
+    explicit_local = kind in {"LOCAL", "PREEXISTING"} or code in {
+        "LOCAL", "LOCAL_BLOCKER", "WORKER_LOCAL_BLOCKER", "PATH_NOT_WRITABLE",
+        "SOURCE_QUOTA_EXHAUSTED", "ENVIRONMENT_LIMITED", "ACCESS_DENIED",
+    }
+    text = _unit_blocker_text(unit)
+    environmental = re.search(
+        r"pre[- ]?existing|inherited|outside (?:this|the) diff|unchanged|environment|"
+        r"sandbox|access (?:is )?denied|inaccessible|permission|pytest[-_ ]?(?:temp|created)|"
+        r"temp(?:orary)? (?:path|director|residue)|global guard|quota|source outage|path not writable",
+        text,
+    )
+    task_caused = re.search(
+        r"task[- ]caused|introduced by (?:this|the) task|regression|"
+        r"(?:implementation|authorized work) (?:is |remains )?incomplete|"
+        r"defect (?:is |still |remains )|invalid required output|"
+        r"missing required output|required output (?:is )?(?:invalid|missing)|"
+        r"targeted test failure|software failure|syntaxerror|assertionerror",
+        text,
+    )
+    return bool(explicit_local and environmental and not task_caused)
+
+
+def _invalid_required_output(unit: dict[str, Any]) -> bool:
+    evidence = re.sub(r"[_-]+", " ", " ".join([
+        str(unit.get("validation_state", "")),
+        str(unit.get("last_checkpoint", "")),
+        _unit_blocker_text(unit),
+    ]).casefold())
+    return bool(re.search(
+        r"invalid required output|missing required output|"
+        r"required output (?:is )?(?:invalid|missing)",
+        evidence,
+    ))
+
+
+def _substantive_output_completed(unit: dict[str, Any]) -> bool:
+    if _invalid_required_output(unit) or not any(str(value).strip() for value in unit.get("produced_outputs", [])):
+        return False
+    evidence = re.sub(
+        r"[_-]+", " ",
+        f"{unit.get('validation_state', '')} {unit.get('last_checkpoint', '')}".casefold(),
+    )
+    return bool(re.search(r"\bpass(?:ed)?\b|\bimplemented\b|\bcompleted\b|\bvalidated\b", evidence))
+
+
+def _accepted_nonblocking_review(state: dict[str, Any]) -> bool:
+    if state.get("REVIEW_CORRECTION_DISPOSITION") == "VALID_ZERO_DIFF_COMPLETION":
+        return True
+    if state.get("LAST_REVIEW_STATUS") not in {"PASS", "PASS_WITH_WARNINGS"}:
+        return False
+    findings = re.sub(
+        r"\bno blocking (?:finding|findings|issue|issues|defect|defects)\b",
+        "",
+        str(state.get("REVIEW_FINDINGS", "")).casefold(),
+    )
+    return not bool(re.search(r"\bblocking (?:finding|findings|issue|issues|defect|defects)\b", findings))
+
+
+def _reconcile_terminal_local_environment_units(state: dict[str, Any]) -> tuple[int, int]:
+    if state.get("CONTROLLER_VALIDATION_STATUS") != "PASS" or not _accepted_nonblocking_review(state):
+        return 0, 0
+    completed = 0
+    deferred = 0
+    for unit in state.get("WORK_UNITS", []):
+        if unit.get("status") != "BLOCKED_LOCAL" or not _local_environment_only(unit):
+            continue
+        if _invalid_required_output(unit):
+            continue
+        if _substantive_output_completed(unit):
+            unit["status"] = "DONE"
+            completed += 1
+        else:
+            unit["status"] = "DEFERRED"
+            deferred += 1
+    return completed, deferred
+
+
 def _runnable_work_units(state: dict[str, Any]) -> list[dict[str, Any]]:
     units = state.get("WORK_UNITS", [])
     by_id = {unit.get("id"): unit for unit in units}
@@ -4486,20 +4573,42 @@ def _dispatch_r3(task_id: str) -> None:
             except HarnessError as exc:
                 cleanup_warning = str(exc)
             state = load_state(task_id)
+            reconciled_done, reconciled_deferred = _reconcile_terminal_local_environment_units(state)
+            review_accepted = _accepted_nonblocking_review(state)
+            local_deferral_accepted = (
+                state.get("CONTROLLER_VALIDATION_STATUS") == "PASS" and review_accepted
+            )
             deferred = [
                 unit for unit in state.get("WORK_UNITS", [])
                 if unit.get("status") in {"BLOCKED_LOCAL", "DEFERRED"}
             ]
-            mandatory_unresolved = [unit for unit in deferred if not unit.get("optional")]
+            deferable_local = [
+                unit for unit in deferred
+                if local_deferral_accepted
+                and unit.get("status") == "DEFERRED"
+                and _local_environment_only(unit)
+            ]
+            mandatory_unresolved = [
+                unit for unit in deferred
+                if not unit.get("optional") and unit not in deferable_local
+            ]
+            unresolved_failures = [
+                unit for unit in deferred if unit.get("status") == "BLOCKED_LOCAL"
+            ]
+            invalid_required_outputs = [
+                unit for unit in state.get("WORK_UNITS", [])
+                if not unit.get("optional") and _invalid_required_output(unit)
+            ]
             done = [unit for unit in state.get("WORK_UNITS", []) if unit.get("status") == "DONE"]
-            review_accepted = state.get("LAST_REVIEW_STATUS") in {"PASS", "PASS_WITH_WARNINGS"}
             valid_zero_diff = state.get("REVIEW_CORRECTION_DISPOSITION") == "VALID_ZERO_DIFF_COMPLETION"
             if valid_zero_diff:
                 review_accepted = True
-            if mandatory_unresolved:
+            controller_failed = state.get("CONTROLLER_VALIDATION_STATUS") == "FAIL"
+            blocking_review = state.get("LAST_REVIEW_STATUS") in {"FIX_REQUIRED", "HUMAN_DECISION_REQUIRED"}
+            if controller_failed or blocking_review or invalid_required_outputs or unresolved_failures or mandatory_unresolved:
                 terminal = "FAILED"
             elif deferred or cleanup_warning:
-                terminal = "COMPLETED_WITH_DEFERRED_WORK" if done else "FAILED"
+                terminal = "COMPLETED_WITH_DEFERRED_WORK" if done or deferable_local else "FAILED"
             elif review_accepted:
                 terminal = "COMPLETED"
             elif state.get("HARD_DEADLINE_REACHED_AT") and done:
@@ -4514,6 +4623,9 @@ def _dispatch_r3(task_id: str) -> None:
             terminal_success = terminal in {"COMPLETED", "COMPLETED_WITH_DEFERRED_WORK"}
 
             def complete_all(value: dict[str, Any]) -> None:
+                persisted_done, _ = _reconcile_terminal_local_environment_units(value)
+                if persisted_done:
+                    _telemetry_add(value, local_blockers_bypassed=persisted_done)
                 if cleanup_warning:
                     value["HISTORICAL_FINDINGS"] = [
                         *value.get("HISTORICAL_FINDINGS", []),
@@ -4545,7 +4657,10 @@ def _dispatch_r3(task_id: str) -> None:
                 "DEPENDENCIES_ADDED": changes["dependencies"],
                 "TERMINAL_OUTCOME": terminal,
                 "TERMINAL_SUCCESS": terminal_success,
-            }, new_state=terminal, event="TASK_COMPLETED", detail=f"outcome={terminal};worktree_preserved={state['WORKTREE']};deferred={len(deferred)}", mutate=complete_all)
+            }, new_state=terminal, event="TASK_COMPLETED", detail=(
+                f"outcome={terminal};worktree_preserved={state['WORKTREE']};deferred={len(deferred)};"
+                f"local_reconciled_done={reconciled_done};local_reconciled_deferred={reconciled_deferred}"
+            ), mutate=complete_all)
             return
         elif action == "DONE":
             return
@@ -5465,7 +5580,13 @@ def command_timeline(args: argparse.Namespace) -> int:
         raise HarnessError(f"TIMELINE_NOT_FOUND:{task_id}")
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     for row in rows[-args.limit:]:
-        print(f"{row['at']} | {row['event']} | {row['detail']}")
+        rendered = f"{row['at']} | {row['event']} | {row['detail']}"
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            rendered.encode(encoding)
+        except (LookupError, UnicodeEncodeError):
+            rendered = rendered.encode(encoding, errors="backslashreplace").decode(encoding)
+        print(rendered)
     return 0
 
 

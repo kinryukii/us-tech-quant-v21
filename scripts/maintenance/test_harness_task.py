@@ -133,6 +133,36 @@ def test_state_schema_atomic_persistence_and_compact_timeline(isolated_roots: tu
     assert not list(module.task_dir("test-task").glob("*.tmp"))
 
 
+def test_timeline_renders_unrepresentable_unicode_under_strict_gbk(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_state()
+    module._append_event_unlocked("test-task", "UNICODE", "replacement=\ufffd; emoji=\U0001f642")
+
+    class StrictGbkWriter:
+        encoding = "gbk"
+
+        def __init__(self) -> None:
+            self.parts: list[str] = []
+
+        def write(self, value: str) -> int:
+            value.encode(self.encoding, errors="strict")
+            self.parts.append(value)
+            return len(value)
+
+        def flush(self) -> None:
+            pass
+
+    output = StrictGbkWriter()
+    monkeypatch.setattr(module.sys, "stdout", output)
+
+    assert module.command_timeline(argparse.Namespace(task_id="test-task", limit=1)) == 0
+    rendered = "".join(output.parts)
+    assert "UNICODE" in rendered
+    assert "\\ufffd" in rendered
+    assert "\\U0001f642" in rendered
+
+
 def test_state_compaction_deduplicates_hundreds_of_review_corrections(
     isolated_roots: tuple[Path, Path],
 ) -> None:
@@ -2015,6 +2045,133 @@ def test_normal_finalization_cleans_controller_owned_task_temp_runtime(
     assert completed["TASK_TEMP_RUNTIME_STATUS"] == "CLEANED"
     assert completed["TASK_TEMP_RUNTIME_OWNED"] is False
     assert not runtime.exists()
+
+
+def test_r31_historical_pilot_semantic_replay_reconciles_local_residue(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    blocker = {
+        "kind": "LOCAL",
+        "conditions": [
+            "FAST3 guard reports inherited frozen-baseline identity failures outside this diff",
+            "pytest-created task cache is inaccessible and cleanup was rejected before execution",
+        ],
+    }
+    unit = module._new_work_unit("FIX-002", "Complete the reviewed maintenance correction")
+    unit.update({
+        "status": "BLOCKED_LOCAL",
+        "produced_outputs": ["scripts/maintenance/existing.py"],
+        "validation_state": "TASK_TESTS_PASS_GLOBAL_GUARD_FAIL",
+        "blocker": blocker,
+        "last_checkpoint": "CORRECTION_IMPLEMENTED_AND_FOCUSED_TESTS_PASS",
+    })
+    local_evidence = {
+        "identity": "historical-local-residue", "work_unit_id": "FIX-002",
+        "code": "LOCAL_BLOCKER", "detail": str(blocker), "at": module.utc_now(),
+    }
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
+        "LAST_REVIEW_STATUS": "PASS_WITH_WARNINGS",
+        "REVIEW_FINDINGS": "No blocking findings. The residue is local/pre-existing and outputs are complete.",
+        "LOCAL_BLOCKED_WORK": [local_evidence],
+    })
+    module._write_state_unlocked("test-task", state)
+    changes = {
+        "changed": ["scripts/maintenance/existing.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    }
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: changes)
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    reconciled = final["WORK_UNITS"][0]
+    assert final["HARNESS_STATE"] == "COMPLETED"
+    assert final["TERMINAL_OUTCOME"] == "COMPLETED"
+    assert final["TERMINAL_SUCCESS"] is True
+    assert reconciled["status"] == "DONE"
+    assert reconciled["blocker"] == blocker
+    assert final["LOCAL_BLOCKED_WORK"] == [local_evidence]
+    assert final["TELEMETRY"]["local_blockers_bypassed"] == 1
+
+
+def test_r31_incomplete_local_environment_work_is_deferred(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete work requiring a locally unavailable source")
+    unit.update({
+        "status": "BLOCKED_LOCAL", "blocker": {
+            "kind": "LOCAL", "conditions": ["Local source outage in the sandbox environment"],
+        },
+    })
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
+        "CONTROLLER_VALIDATION_STATUS": "PASS", "LAST_REVIEW_STATUS": "PASS_WITH_WARNINGS",
+        "REVIEW_FINDINGS": "No blocking findings; the incomplete unit is safely deferable.",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "COMPLETED_WITH_DEFERRED_WORK"
+    assert final["WORK_UNITS"][0]["status"] == "DEFERRED"
+    assert final["TELEMETRY"]["local_blockers_bypassed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("controller", "review", "validation_state", "blocker"),
+    [
+        ("FAIL", "PASS_WITH_WARNINGS", "TASK_TESTS_PASS", {"kind": "LOCAL", "conditions": ["sandbox access denied"]}),
+        ("PASS", "FIX_REQUIRED", "TASK_TESTS_PASS", {"kind": "LOCAL", "conditions": ["sandbox access denied"]}),
+        ("PASS", "PASS", "INVALID_REQUIRED_OUTPUT", {"kind": "LOCAL", "conditions": ["sandbox access denied"]}),
+        ("PASS", "PASS", "NOT_RUN", {"code": "FIXABLE_LOCAL_DEFECT", "detail": "task-caused defect remains incomplete"}),
+    ],
+)
+def test_r31_terminal_reconciliation_keeps_real_failures_failed(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    controller: str, review: str, validation_state: str, blocker: dict,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Required output must be valid")
+    unit.update({
+        "status": "BLOCKED_LOCAL", "produced_outputs": ["scripts/maintenance/existing.py"],
+        "validation_state": validation_state, "blocker": blocker,
+    })
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
+        "CONTROLLER_VALIDATION_STATUS": controller, "LAST_REVIEW_STATUS": review,
+        "REVIEW_FINDINGS": "Blocking finding remains." if review == "FIX_REQUIRED" else "No blocking findings.",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/maintenance/existing.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["WORK_UNITS"][0]["status"] == "BLOCKED_LOCAL"
 
 
 def test_unwritable_task_temp_runtime_is_scoped_blocker_before_worker_launch(
