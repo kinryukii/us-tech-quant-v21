@@ -2283,6 +2283,24 @@ def test_scope_inference_distinguishes_requested_actions_from_constraints(goal: 
 
 
 @pytest.mark.parametrize(
+    "goal",
+    [
+        "No later-dated outcome, return, label, forward/shadow ledger, evaluation result or strategy performance may be read or used.",
+        "No 2026 outcomes may be used.",
+        "Do not evaluate later-period performance.",
+        "Later-period evaluation is a separate future task.",
+        "Post-2025 outcomes are forbidden.",
+        "pre2026-research",
+        "evaluation",
+    ],
+)
+def test_negated_or_deferred_future_language_is_not_positive_evaluation_evidence(goal: str) -> None:
+    evidence = module._task_scope_evidence(goal)
+    assert evidence["EVALUATES_2026_OR_HOLDOUT"] is False
+    assert module.infer_scope(goal, "independent-code") != "2026-evaluation"
+
+
+@pytest.mark.parametrize(
     ("task_kind", "goal", "expected_kind", "expected_scope"),
     [
         ("pre2026-research", "Train a model on pre-2026 data.", "pre2026-research", "pre2026-research"),
@@ -2912,6 +2930,7 @@ def test_hard_guard_targets_unsafe_feedback_not_benign_2026_text() -> None:
         "Fit the model based on 2026 holdout performance.",
         "Refit using 2026 evaluation results.",
         "Use 2026 outcomes to tune the threshold.",
+        "Use 2026 returns\nto select the best model.",
         'The instruction is "use 2026 outcomes to train a model".',
     ],
 )
@@ -2937,8 +2956,122 @@ model selection, finalist selection, and strategy selection.
 """
 
 
-def test_explicit_legal_iso_training_cutoff_contract_is_unambiguous() -> None:
-    assert module.hard_guard_conflicts(_explicit_legal_temporal_contract()) == []
+REAL_PRE2026_DISCOVERY_GOAL = """TASK=A2_OPEN_ML_DISCOVERY_R1
+
+Train and select candidate models using only the legal pre-cutoff inputs.
+
+TRAINING_SELECTION_OUTCOME_CUTOFF=2025-12-31
+FEATURE_ASOF_CUTOFF=2025-12-31
+LABEL_REALIZATION_CUTOFF=2025-12-31
+OUTCOME_CUTOFF=2025-12-31
+
+Every input must be PIT-available at decision time.
+Every complete forward label must be realized by 2025-12-31.
+Late-2025 samples whose label matures later or crosses the cutoff are excluded.
+No later-dated outcome, return, label, forward/shadow ledger, evaluation result or strategy performance may be read or used, even diagnostically.
+
+This task ends after finalists are frozen.
+Any later-period evaluation is a separate future task.
+Do not evaluate later-period performance in this task.
+Use chronological expanding/rolling validation.
+Algorithm family is unrestricted.
+FINAL TRAINING / FREEZE
+"""
+
+
+@pytest.fixture
+def local_persisted_start_roots(monkeypatch: pytest.MonkeyPatch):
+    token = hashlib.sha256(str(id(monkeypatch)).encode("ascii")).hexdigest()[:12]
+    root = (REPOSITORY_ROOT / f".harness-real-goal-test-{token}").resolve()
+    assert root.parent == REPOSITORY_ROOT
+    root.mkdir()
+    try:
+        repository = root / "primary-repository"
+        repository.mkdir()
+        monkeypatch.setattr(module, "REPO", repository)
+        monkeypatch.setenv("USTQ_HARNESS_STATE_ROOT", str(root / "daily" / "harness_r2"))
+        monkeypatch.setenv("USTQ_HARNESS_WORKTREE_ROOT", str(root / "worktrees"))
+        yield root
+    finally:
+        assert root.parent == REPOSITORY_ROOT
+        shutil.rmtree(root)
+
+
+def test_real_goal_start_and_preflight_persist_legal_pre2026_contract(
+    local_persisted_start_roots: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = module.build_parser().parse_args([
+        "start", "--task-id", "real-goal", "--goal", REAL_PRE2026_DISCOVERY_GOAL,
+        "--task-kind", "pre2026-research", "--max-hours", "8",
+    ])
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda task_id: 4242)
+
+    assert module.command_start(args) == 0
+    stored = module.load_state("real-goal")
+    assert stored["TASK_KIND"] == "pre2026-research"
+    assert stored["TASK_KIND_SOURCE"] == "EXPLICIT"
+    assert stored["AUTO_SCOPE_SUGGESTION"] == "pre2026-research"
+    assert stored["TASK_SCOPE"] == "pre2026-research"
+    assert stored["SAFETY_FLAGS"]["EVALUATES_2026_OR_HOLDOUT"] is False
+    assert stored["SAFETY_FLAGS"]["EXPOSED_2026_OR_HOLDOUT_OPTIMIZATION"] is False
+    assert "AMBIGUOUS_TRAINING_TEMPORAL_SCOPE" not in module.hard_guard_conflicts(
+        REAL_PRE2026_DISCOVERY_GOAL,
+    )
+
+    observed_scopes: list[str] = []
+
+    class PassingR1:
+        @staticmethod
+        def run_preflight(repo: Path, task_scope: str) -> dict:
+            observed_scopes.append(task_scope)
+            return {
+                "task_scope": task_scope,
+                "applicable_hard_blocker_count": 0,
+                "preflight_status": "PASS",
+                "findings": [
+                    {
+                        "level": "PASS",
+                        "code": "ANTI_BLOAT_BUDGET",
+                        "detail": "worktree_bytes=100;preferred=PASS;local_venv=False",
+                        "blocks": (),
+                    },
+                ],
+            }
+
+    monkeypatch.setattr(module, "_load_r1", lambda: PassingR1)
+    preflight = module._run_preflight_for("real-goal", module.REPO)
+    assert observed_scopes == ["pre2026-research"]
+    assert preflight["task_blocker_count"] == 0
+
+
+def test_real_goal_start_still_blocks_explicit_2026_model_selection(
+    local_persisted_start_roots: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    unsafe_goal = REAL_PRE2026_DISCOVERY_GOAL + "\nUse 2026 returns to select the best model."
+    args = module.build_parser().parse_args([
+        "start", "--task-id", "unsafe-real-goal", "--goal", unsafe_goal,
+        "--task-kind", "pre2026-research", "--max-hours", "8",
+    ])
+    monkeypatch.setattr(
+        module,
+        "_spawn_supervisor",
+        lambda task_id: pytest.fail("unsafe task must block before supervisor dispatch"),
+    )
+
+    assert module.command_start(args) == 2
+    stored = module.load_state("unsafe-real-goal")
+    assert stored["HARNESS_STATE"] == "BLOCKED"
+    assert stored["AUTO_SCOPE_SUGGESTION"] == "2026-evaluation"
+    assert stored["TASK_SCOPE"] == "2026-optimization"
+    assert stored["SAFETY_FLAGS"]["EVALUATES_2026_OR_HOLDOUT"] is True
+    assert stored["SAFETY_FLAGS"]["EXPOSED_2026_OR_HOLDOUT_OPTIMIZATION"] is True
+    assert "EXPOSED_2026_OPTIMIZATION" in module.hard_guard_conflicts(unsafe_goal)
+
+
+@pytest.mark.parametrize("cutoff", ["2025-12-31", "2024-06-30"])
+def test_explicit_legal_iso_training_cutoff_contract_is_unambiguous(cutoff: str) -> None:
+    goal = _explicit_legal_temporal_contract().replace("2025-12-31", cutoff)
+    assert module.hard_guard_conflicts(goal) == []
 
 
 def test_forward_label_maturity_by_explicit_cutoff_is_legal() -> None:
@@ -3021,7 +3154,7 @@ def _create_temporally_blocked_state(goal: str | None = None) -> dict:
 
 
 def test_blocked_safe_temporal_steer_revalidates_before_resume(
-    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    local_persisted_start_roots: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _create_temporally_blocked_state()
     monkeypatch.setattr(module, "_queue_control", lambda state, message: (False, "retained"))
@@ -3049,7 +3182,7 @@ def test_blocked_safe_temporal_steer_revalidates_before_resume(
 
 
 def test_blocked_unsafe_temporal_steer_keeps_resume_fail_closed(
-    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    local_persisted_start_roots: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _create_temporally_blocked_state()
     monkeypatch.setattr(module, "_queue_control", lambda state, message: (False, "retained"))
@@ -3071,7 +3204,7 @@ def test_blocked_unsafe_temporal_steer_keeps_resume_fail_closed(
 
 
 def test_temporal_revalidation_does_not_clear_unrelated_hard_blocker(
-    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    local_persisted_start_roots: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = _create_temporally_blocked_state()
     module._append_active_blocker(

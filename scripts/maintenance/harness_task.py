@@ -1776,6 +1776,17 @@ def _set_current_task(task_id: str) -> None:
 def _negated(text: str, start: int, end: int | None = None) -> bool:
     prefix = text[max(0, start - 48):start].lower()
     suffix = text[end if end is not None else start:min(len(text), (end or start) + 40)].lower()
+    clause_prefix = re.split(
+        r"[.;\n]+|\b(?:but|however|though|yet)\b", text[:start], flags=re.I,
+    )[-1].lower()
+    leading_no_governs = bool(
+        re.match(r"\s*(?:[-*]\s*)?no\b", clause_prefix)
+        and re.search(
+            r"\b(?:may|might|can|could|must|shall|should|will|would)\s+"
+            r"(?:not\s+)?(?:be\s+)?",
+            clause_prefix,
+        )
+    )
     return bool(
         re.search(
             r"(?:(?:do(?:es|ne)?|did|must|should|will|can(?:not)?|is|are|was|were)\s+not(?:\s+be)?|"
@@ -1785,6 +1796,7 @@ def _negated(text: str, start: int, end: int | None = None) -> bool:
             prefix,
         )
         or re.match(r"\s+(?:is|are|was|were)\s+(?:not\s+required|prohibited|forbidden|disallowed|out\s+of\s+scope)\b", suffix)
+        or leading_no_governs
     )
 
 
@@ -1806,25 +1818,50 @@ def _explicit_temporal_contract_status(text: str) -> tuple[bool, bool]:
         r"\b(?:train\w*|fit\w*|validat\w*|select\w*|model|factor|strategy|finalist)\b",
         re.I,
     )
+    feature_scope = re.compile(
+        r"\b(?:feature\w*|input\w*|observation\w*|information\w*|PIT\w*|as[-_ ]?of\w*)\b",
+        re.I,
+    )
     maturity_scope = re.compile(
-        r"\b(?:labels?|targets?|outcomes?)[\w /_-]{0,40}(?:matur\w*|reali[sz]\w*|cutoff)\b|"
+        r"\b(?:labels?|targets?|outcomes?)[\w /_-]{0,40}(?:matur\w*|reali[sz]\w*)\b|"
         r"\b(?:matur\w*|reali[sz]\w*)[\w /_-]{0,40}(?:labels?|targets?|outcomes?)\b",
         re.I,
     )
+    outcome_scope = re.compile(
+        r"(?:^|[_\W])(?:outcomes?|returns?|performance|results?)[\w /_-]{0,40}cutoff\b|"
+        r"\bcutoff[\w /_-]{0,40}(?:outcomes?|returns?|performance|results?)\b",
+        re.I,
+    )
     training_cutoffs = [date for date, context in cutoff_rows if training_scope.search(context)]
+    feature_cutoffs = [date for date, context in cutoff_rows if feature_scope.search(context)]
     maturity_cutoffs = [date for date, context in cutoff_rows if maturity_scope.search(context)]
+    outcome_cutoffs = [date for date, context in cutoff_rows if outcome_scope.search(context)]
     relevant_cutoffs = [
         date for date, context in cutoff_rows
-        if training_scope.search(context) or maturity_scope.search(context)
+        if (
+            training_scope.search(context) or feature_scope.search(context)
+            or maturity_scope.search(context) or outcome_scope.search(context)
+        )
     ]
-    contradictory = len(set(training_cutoffs)) > 1
+    contradictory = any(
+        len(set(values)) > 1
+        for values in (training_cutoffs, feature_cutoffs, maturity_cutoffs, outcome_cutoffs)
+    )
     after_legal_boundary = any(date > legal_cutoff for date in relevant_cutoffs)
     maturity_after_training = bool(
         maturity_cutoffs and training_cutoffs
         and max(maturity_cutoffs) > min(training_cutoffs)
     )
+    feature_after_training = bool(
+        feature_cutoffs and training_cutoffs
+        and max(feature_cutoffs) > min(training_cutoffs)
+    )
+    outcome_after_training = bool(
+        outcome_cutoffs and training_cutoffs
+        and max(outcome_cutoffs) > min(training_cutoffs)
+    )
     unsafe_contract = bool(re.search(
-        r"\b(?:PIT[- ]safe|point[- ]in[- ]time|no[- ]lookahead)\b[^.;]{0,50}"
+        r"\b(?:PIT(?:[- ](?:safe|available))?|point[- ]in[- ]time|no[- ]lookahead)\b[^.;]{0,60}"
         r"\b(?:is|are)?\s*not\s+required\b|"
         r"\blookahead\b[^.;]{0,30}\b(?:is\s+)?(?:allowed|permitted|authorized)\b|"
         r"\b(?:labels?|targets?|outcomes?)\b[^.;]{0,60}\b(?:may|can)\b[^.;]{0,30}"
@@ -1837,13 +1874,17 @@ def _explicit_temporal_contract_status(text: str) -> tuple[bool, bool]:
         re.I,
     ))
     unsafe_cutoff = (
-        contradictory or after_legal_boundary or maturity_after_training or unsafe_contract
+        contradictory or after_legal_boundary or maturity_after_training
+        or feature_after_training or outcome_after_training or unsafe_contract
     )
 
     pit_required = any(
         not _negated(text, found.start(), found.end())
         for found in re.finditer(
-            r"\bPIT[- ]safe\b|\bpoint[- ]in[- ]time\b|\bno[- ]lookahead\b|"
+            r"\bPIT[- ](?:safe|available)\b|"
+            r"\bPIT\b(?=[^.;]{0,80}\b(?:available|availability)\b)"
+            r"(?=[^.;]{0,80}\bdecision[- ]time\b)|"
+            r"\bpoint[- ]in[- ]time\b|\bno[- ]lookahead\b|"
             r"\bwithout\s+(?:any\s+)?lookahead\b|"
             r"\binformation\s+availability\b[^.;]{0,80}\bno\s+later\s+than\b"
             r"[^.;]{0,40}\bdecision\s+timestamp\b",
@@ -1858,24 +1899,66 @@ def _explicit_temporal_contract_status(text: str) -> tuple[bool, bool]:
         text,
         re.I,
     ))
+    maturity_exclusion = bool(re.search(
+        r"\b(?:legal|eligible|included|used)\s+only\s+(?:if|when)\b"
+        r"[^.;]{0,120}\b(?:labels?|targets?|outcomes?)\b[^.;]{0,80}"
+        r"\b(?:matur\w*|reali[sz]\w*)\b[^.;]{0,50}"
+        r"\b(?:by|before|no\s+later\s+than)\b[^.;]{0,30}\bcutoff\b",
+        text,
+        re.I,
+    ))
+    if not maturity_exclusion:
+        for clause in re.split(r"[.;]+", text):
+            maturity = re.search(
+                r"\b(?:matur\w*|reali[sz]\w*|cross\w*)\b", clause, re.I,
+            )
+            excluded = re.search(r"\bexclude\w*\b", clause, re.I)
+            if (
+                re.search(r"\b(?:samples?|observations?|labels?|targets?)\b", clause, re.I)
+                and maturity
+                and re.search(
+                    r"\b(?:after|later|beyond|late[- ]?\d{4}|cutoff)\b", clause, re.I,
+                )
+                and excluded
+                and not _negated(clause, excluded.start(), excluded.end())
+            ):
+                maturity_exclusion = True
+                break
     post_cutoff_prohibited = False
-    for clause in re.split(r"[.;\n]+", text):
+    for clause in re.split(r"[.;]+", text):
         if not (
-            re.search(r"\b(?:post[- ]cutoff|after\s+(?:the\s+)?cutoff|later|post[- ]?2025|2026\+?)\b", clause, re.I)
-            and re.search(r"\b(?:labels?|outcomes?|performance|results?)\b", clause, re.I)
-            and re.search(r"\b(?:forbid\w*|prohibit\w*|disallow\w*|exclude\w*|must\s+not|may\s+not|shall\s+not|do\s+not|never)\b", clause, re.I)
+            re.search(
+                r"\b(?:post[- ]cutoff|after\s+(?:the\s+)?cutoff|later(?:[- ]dated|[- ]period)?|"
+                r"post[- ]?2025|2026\+?)\b",
+                clause,
+                re.I,
+            )
+            and re.search(
+                r"\b(?:data|inputs?|samples?|labels?|targets?|outcomes?|returns?|performance|results?|ledgers?|evaluations?)\b",
+                clause,
+                re.I,
+            )
         ):
             continue
         if re.search(r"\b(?:do\s+not|not)\s+(?:forbid\w*|prohibit\w*|disallow\w*|exclude\w*)\b", clause, re.I):
             continue
-        broad_prohibition = bool(re.search(
-            r"\b(?:outcomes?|performance|results?)\s+use\s+(?:is|remains)\s+"
-            r"(?:strictly\s+)?(?:forbidden|prohibited|disallowed)\b|"
-            r"\b(?:must|shall|may)\s+not\s+be\s+used\b|\bdo\s+not\s+use\b|"
-            r"\bnever\s+(?:be\s+)?used\b",
+        direct_prohibition = any(
+            _negated(clause, action.start(), action.end())
+            for action in re.finditer(
+                r"\b(?:read|use|access|inspect|review|consult|consume|incorporate)\w*\b",
+                clause,
+                re.I,
+            )
+        )
+        status_prohibition = re.search(
+            r"\b(?:forbidden|prohibited|disallowed|out\s+of\s+scope)\b",
             clause,
             re.I,
-        ))
+        )
+        unqualified_status = bool(
+            status_prohibition
+            and not re.search(r"\bfor\b", clause[status_prohibition.end():], re.I)
+        )
         action_scope = all(re.search(pattern, clause, re.I) for pattern in (
             r"\b(?:train\w*|fit\w*)\b",
             r"\b(?:tun\w*|optim\w*|search\w*)\b",
@@ -1883,7 +1966,7 @@ def _explicit_temporal_contract_status(text: str) -> tuple[bool, bool]:
             r"\b(?:model|finalist)\s+selection\b",
             r"\bstrategy\s+selection\b",
         ))
-        post_cutoff_prohibited = broad_prohibition or action_scope
+        post_cutoff_prohibited = direct_prohibition or unqualified_status or action_scope
         if not post_cutoff_prohibited:
             continue
         break
@@ -1893,12 +1976,17 @@ def _explicit_temporal_contract_status(text: str) -> tuple[bool, bool]:
         and not unsafe_cutoff
         and pit_required
         and maturity_by_cutoff
+        and maturity_exclusion
+        and bool(outcome_cutoffs)
         and post_cutoff_prohibited,
         unsafe_cutoff,
     )
 
 
 def hard_guard_conflicts(instruction: str) -> list[str]:
+    temporal_text = "\n".join(
+        " ".join(line.split()) for line in instruction.splitlines() if line.split()
+    )
     text = " ".join(instruction.split())
     conflicts: list[str] = []
     action_pattern = (
@@ -1924,7 +2012,9 @@ def hard_guard_conflicts(instruction: str) -> list[str]:
         ambiguous_request.search(clause)
         for clause in re.split(r"[.;\n]+|\b(?:and|but)\b", text, flags=re.I)
     )
-    explicit_temporal_contract, unsafe_temporal_cutoff = _explicit_temporal_contract_status(text)
+    explicit_temporal_contract, unsafe_temporal_cutoff = _explicit_temporal_contract_status(
+        temporal_text,
+    )
     if requested_training and unsafe_temporal_cutoff:
         conflicts.append("EXPOSED_2026_OPTIMIZATION")
     for clause in re.split(r"[.;\n]+|\b(?:and|but)\b", text, flags=re.I):
@@ -2028,9 +2118,24 @@ def _task_scope_evidence(goal: str) -> dict[str, bool]:
         goal,
         flags=re.I,
     )
-    segments = [segment.strip() for segment in re.split(
-        r"[.,;\n]+|\b(?:and|but)\b", scope_text, flags=re.I,
-    ) if segment.strip()]
+    segments: list[str] = []
+    for clause in re.split(
+        r"[.;\n]+|\b(?:but|however|though|yet)\b", scope_text, flags=re.I,
+    ):
+        clause = clause.strip()
+        if not clause:
+            continue
+        leading_no_list = bool(
+            re.match(r"\s*(?:[-*]\s*)?no\b", clause, re.I)
+            and re.search(
+                r"\b(?:may|might|can|could|must|shall|should|will|would)\s+"
+                r"(?:not\s+)?(?:be\s+)?",
+                clause,
+                re.I,
+            )
+        )
+        parts = [clause] if leading_no_list else re.split(r",+|\band\b", clause, flags=re.I)
+        segments.extend(part.strip() for part in parts if part.strip())
     segments = [
         segment for segment in segments
         if not re.search(
