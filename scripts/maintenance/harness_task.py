@@ -1456,6 +1456,8 @@ def _substantive_output_completed(unit: dict[str, Any]) -> bool:
         r"[_-]+", " ",
         f"{unit.get('validation_state', '')} {unit.get('last_checkpoint', '')}".casefold(),
     )
+    if re.search(r"\b(?:not (?:completed|passed|implemented|validated)|incomplete|failed)\b", evidence):
+        return False
     return bool(re.search(r"\bpass(?:ed)?\b|\bimplemented\b|\bcompleted\b|\bvalidated\b", evidence))
 
 
@@ -4593,7 +4595,8 @@ def _dispatch_r3(task_id: str) -> None:
                 if not unit.get("optional") and unit not in deferable_local
             ]
             unresolved_failures = [
-                unit for unit in deferred if unit.get("status") == "BLOCKED_LOCAL"
+                unit for unit in deferred
+                if not unit.get("optional") and unit.get("status") == "BLOCKED_LOCAL"
             ]
             invalid_required_outputs = [
                 unit for unit in state.get("WORK_UNITS", [])

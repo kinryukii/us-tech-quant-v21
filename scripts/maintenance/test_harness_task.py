@@ -2101,6 +2101,22 @@ def test_r31_historical_pilot_semantic_replay_reconciles_local_residue(
     assert final["TELEMETRY"]["local_blockers_bypassed"] == 1
 
 
+@pytest.mark.parametrize(
+    "negative_evidence",
+    ["NOT_COMPLETED", "NOT_PASSED", "NOT_IMPLEMENTED", "NOT_VALIDATED", "INCOMPLETE", "FAILED"],
+)
+def test_r311_substantive_output_rejects_negative_completion_evidence(
+    negative_evidence: str,
+) -> None:
+    unit = module._new_work_unit("WU-001", "Produce one substantive output")
+    unit.update({
+        "produced_outputs": ["scripts/maintenance/existing.py"],
+        "validation_state": negative_evidence,
+    })
+
+    assert module._substantive_output_completed(unit) is False
+
+
 def test_r31_incomplete_local_environment_work_is_deferred(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2131,6 +2147,41 @@ def test_r31_incomplete_local_environment_work_is_deferred(
     assert final["HARNESS_STATE"] == "COMPLETED_WITH_DEFERRED_WORK"
     assert final["WORK_UNITS"][0]["status"] == "DEFERRED"
     assert final["TELEMETRY"]["local_blockers_bypassed"] == 0
+
+
+def test_r311_optional_blocked_local_does_not_fail_completed_mandatory_work(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    mandatory = module._new_work_unit("WU-001", "Complete the mandatory repair")
+    mandatory.update({"status": "DONE", "validation_state": "PASS"})
+    optional = module._new_work_unit("WU-002", "Run an optional diagnostic", optional=True)
+    optional.update({
+        "status": "BLOCKED_LOCAL",
+        "blocker": {"code": "OPTIONAL_DIAGNOSTIC_UNAVAILABLE", "detail": "Diagnostic cannot run"},
+    })
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [mandatory, optional],
+        "CONTROLLER_VALIDATION_STATUS": "PASS", "LAST_REVIEW_STATUS": "PASS_WITH_WARNINGS",
+        "REVIEW_FINDINGS": "No blocking findings; the optional diagnostic remains unavailable.",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/maintenance/existing.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "COMPLETED_WITH_DEFERRED_WORK"
+    assert final["TERMINAL_SUCCESS"] is True
+    assert final["WORK_UNITS"][0]["status"] == "DONE"
+    assert final["WORK_UNITS"][1]["status"] == "BLOCKED_LOCAL"
 
 
 @pytest.mark.parametrize(
