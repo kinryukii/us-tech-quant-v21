@@ -52,6 +52,7 @@ MAX_STATE_BYTES = 131_072
 MAX_TIMELINE_BYTES = 262_144
 MAX_LIST_ITEMS = 100
 MAX_TEXT = 8_000
+MAX_GOAL_CHARS = 12_000
 STATE_COMPACTION_TARGET_BYTES = 98_304
 STATE_HISTORY_RETAIN = 16
 STATE_TEST_HISTORY_RETAIN = 24
@@ -6442,8 +6443,8 @@ def _positive_hours(value: str) -> float:
 
 def command_start(args: argparse.Namespace) -> int:
     goal = args.goal.strip()
-    if not goal or len(goal) > MAX_TEXT:
-        raise HarnessError(f"GOAL_REQUIRED_MAX_{MAX_TEXT}_CHARS")
+    if not goal or len(goal) > MAX_GOAL_CHARS:
+        raise HarnessError(f"GOAL_REQUIRED_MAX_{MAX_GOAL_CHARS}_CHARS")
     task_id = args.task_id or f"{datetime.now(timezone.utc):%Y%m%d-%H%M%S}-{secrets.token_hex(2)}"
     validate_task_id(task_id)
     pointer = state_root() / "current_task.txt"

@@ -3331,6 +3331,38 @@ def local_persisted_start_roots(monkeypatch: pytest.MonkeyPatch):
         shutil.rmtree(root)
 
 
+@pytest.mark.parametrize("goal_length", [9_155, 12_000])
+def test_start_goal_uses_dedicated_length_limit(
+    goal_length: int, local_persisted_start_roots: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    goal = "x" * goal_length
+    args = argparse.Namespace(
+        goal=goal, task_id=f"goal-{goal_length}", task_kind="maintenance",
+        task_scope="independent-code", max_corrections=2, max_hours=None,
+        foreground=False,
+    )
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda task_id: 4242)
+
+    assert module.command_start(args) == 0
+    assert module.load_state(f"goal-{goal_length}")["GOAL"] == goal
+
+
+@pytest.mark.parametrize("goal", ["", "x" * 12_001])
+def test_start_goal_rejects_empty_or_over_dedicated_limit(goal: str) -> None:
+    with pytest.raises(module.HarnessError, match="^GOAL_REQUIRED_MAX_12000_CHARS$"):
+        module.command_start(argparse.Namespace(goal=goal))
+
+
+def test_generic_text_and_steer_limits_remain_unchanged() -> None:
+    assert module.MAX_TEXT == 8_000
+    assert module.MAX_GOAL_CHARS == 12_000
+    with pytest.raises(module.HarnessError, match="^STEER_REQUIRED_MAX_2000_CHARS$"):
+        module.command_steer(
+            argparse.Namespace(task_id="test-task", instruction="x" * 2_001),
+        )
+
+
 def test_real_goal_start_and_preflight_persist_legal_pre2026_contract(
     local_persisted_start_roots: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
