@@ -70,6 +70,10 @@ WORK_UNIT_TERMINAL_STATUSES = {"DONE", "BLOCKED_LOCAL", "DEFERRED", "SKIPPED_WIT
 HUMAN_BOUNDARY_KINDS = {
     "AUTHORIZATION", "SAFETY", "DESTRUCTIVE", "PROTECTED_PERMISSION", "PAUSE", "EXHAUSTED",
 }
+AUTONOMOUS_CONTRACT_DEFICITS = {
+    "MIN_SUBSTANTIVE_RUNTIME_UNMET", "RESEARCH_BREADTH_UNMET",
+    "INCOMPLETE_REQUIRED_WORK_UNITS",
+}
 TASK_KIND_SCOPES = {
     "maintenance": "independent-code",
     "independent-code": "independent-code",
@@ -1127,6 +1131,8 @@ def _new_state(
         "LAST_CHECKPOINT": "TASK_ACCEPTED",
         "WAITING_STARTED_AT": "",
         "TERMINAL_OUTCOME": "",
+        "TERMINAL_REASON": "",
+        "PENDING_AUTONOMOUS_CONTINUATION": {},
         "STATE_STORAGE_STATUS": "NORMAL",
         "STATE_STORAGE_FAILURE": "",
         "STATE_BYTES_LAST_WRITE": 0,
@@ -1134,6 +1140,10 @@ def _new_state(
         "TELEMETRY": {
             "total_wall_seconds": 0.0,
             "worker_wall_seconds": 0.0,
+            "substantive_worker_seconds": 0.0,
+            "worker_non_substantive_seconds": 0.0,
+            "worker_idle_seconds": 0.0,
+            "worker_validation_seconds": 0.0,
             "reviewer_wall_seconds": 0.0,
             "machine_validation_wall_seconds": 0.0,
             "waiting_human_wall_seconds": 0.0,
@@ -1219,6 +1229,55 @@ def _remaining_budget_seconds(state: dict[str, Any], *, now: datetime | None = N
     return max(0.0, (deadline_value - (now or datetime.now(timezone.utc))).total_seconds())
 
 
+def _minimum_substantive_runtime_hours_from_goal(goal: str) -> float:
+    match = re.search(
+        r"(?im)^\s*MIN_SUBSTANTIVE_(?:RESEARCH_|WORKER_)?HOURS\s*=\s*"
+        r"(\d+(?:\.\d+)?)\s*$",
+        goal,
+    )
+    if not match:
+        return 0.0
+    try:
+        return max(0.0, float(match.group(1)))
+    except ValueError:
+        return 0.0
+
+
+def _minimum_substantive_runtime_seconds(state: dict[str, Any]) -> float:
+    value = state.get("MIN_SUBSTANTIVE_RUNTIME_HOURS")
+    if value in (None, ""):
+        value = _minimum_substantive_runtime_hours_from_goal(str(state.get("GOAL", "")))
+    try:
+        return max(0.0, float(value) * 3600.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _canonical_substantive_worker_seconds(state: dict[str, Any]) -> float:
+    """Return only Controller-recorded worker time; never parse a caller report."""
+    telemetry = state.get("TELEMETRY", {})
+    value = telemetry.get("substantive_worker_seconds")
+    if value is None:
+        # Backward compatibility for state written before canonical exclusion buckets.
+        value = telemetry.get("worker_wall_seconds", 0.0)
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _runtime_contract_remaining_seconds(state: dict[str, Any]) -> float:
+    return max(
+        0.0,
+        _minimum_substantive_runtime_seconds(state)
+        - _canonical_substantive_worker_seconds(state),
+    )
+
+
+def _runtime_contract_unmet(state: dict[str, Any]) -> bool:
+    return _runtime_contract_remaining_seconds(state) > 0.0
+
+
 def _in_convergence_window(state: dict[str, Any], *, now: datetime | None = None) -> bool:
     remaining = _remaining_budget_seconds(state, now=now)
     hours = state.get("TIME_BUDGET_HOURS")
@@ -1229,6 +1288,19 @@ def _in_convergence_window(state: dict[str, Any], *, now: datetime | None = None
     except (TypeError, ValueError):
         return False
     return total > 0 and remaining <= total * CONVERGENCE_FRACTION
+
+
+def _autonomous_correction_or_contract_pending(state: dict[str, Any]) -> bool:
+    if _runtime_contract_unmet(state):
+        return True
+    return any(
+        (
+            unit.get("continuation_kind")
+            or str(unit.get("id", "")).startswith("FIX-")
+        )
+        and unit.get("status") in {"READY", "RETRY", "RUNNING"}
+        for unit in state.get("WORK_UNITS", [])
+    )
 
 
 def _deadline_expired(state: dict[str, Any], *, now: datetime | None = None) -> bool:
@@ -1251,6 +1323,15 @@ def _review_progress_hash(state: dict[str, Any], diff_hash: str) -> str:
     payload = {
         "diff": diff_hash,
         "units": units,
+        "substantive_worker_seconds": round(_canonical_substantive_worker_seconds(state), 3),
+        "contract_continuations": [
+            {
+                "id": unit.get("id"), "status": unit.get("status"),
+                "checkpoint": unit.get("last_checkpoint"),
+                "outputs": unit.get("produced_outputs", []),
+            }
+            for unit in state.get("WORK_UNITS", []) if unit.get("continuation_kind")
+        ],
         "controller_validation": state.get("CONTROLLER_VALIDATION_STATUS"),
         "anti_delta": state.get("ANTI_BLOAT_TASK_DELTA"),
         "active_blockers": sorted(
@@ -1449,6 +1530,23 @@ def _invalid_required_output(unit: dict[str, Any]) -> bool:
     ))
 
 
+def _retryable_local_blocker(state: dict[str, Any], unit: dict[str, Any]) -> bool:
+    blocker = unit.get("blocker", {}) if isinstance(unit.get("blocker", {}), dict) else {}
+    code = str(blocker.get("code", "WORKER_LOCAL_BLOCKER")).upper()
+    detail = str(blocker.get("detail", blocker))
+    kind = str(blocker.get("kind", "LOCAL")).upper()
+    if _requires_human_boundary(kind, detail, state):
+        return False
+    if code in {
+        "SOURCE_QUOTA_EXHAUSTED", "TIME_BUDGET_EXPIRED", "TIME_BUDGET_CONVERGENCE",
+        "DEPENDENCY_UNAVAILABLE", "CONTRACT_UNSATISFIED_AT_DEADLINE",
+    }:
+        return False
+    if int(unit.get("attempts", 0)) >= DEFAULT_FAILURE_RETRY_LIMIT:
+        return False
+    return True
+
+
 def _substantive_output_completed(unit: dict[str, Any]) -> bool:
     if _invalid_required_output(unit) or not any(str(value).strip() for value in unit.get("produced_outputs", [])):
         return False
@@ -1596,6 +1694,106 @@ def _permission_failure_signature(
     return f"PERMISSION:{operation}|{target}|ACCESS_DENIED"
 
 
+def _explicit_human_boundary_evidence(detail: str) -> bool:
+    text = " ".join(detail.split())
+    patterns = (
+        r"\b(?:human|user)\s+authorization\s+(?:is\s+)?required\b",
+        r"\bauthorization_required\b|\bcredential(?:s)?_required\b|\buser_secret_required\b",
+        r"\b(?:requires?|needs?)\s+(?:a\s+)?(?:credential|secret|api key|token)\b",
+        r"\b(?:exceeds?|outside|beyond)\s+(?:the\s+)?(?:authorized|user[- ]approved)\s+scope\b",
+        r"\b(?:pit|holdout|lookahead|temporal)[^.;]{0,120}"
+        r"(?:cannot|can't|unable)[^.;]{0,80}(?:without|unless)[^.;]{0,60}(?:scope|contract)\b",
+        r"\b(?:requires?|needs?|requested|would need)\b[^.;]{0,80}"
+        r"\b(?:takeown|icacls|acl|elevation|privilege escalation|writable[- ]root expansion)\b|"
+        r"\b(?:takeown|icacls|acl|elevation|privilege escalation|writable[- ]root expansion)\b"
+        r"[^.;]{0,80}\b(?:required|needed|requested)\b",
+        r"\b(?:destructive|production|live trading|canonical (?:data|output))\b"
+        r"[^.;]{0,100}\b(?:authorization|approval)\b",
+        r"\bhard ambiguity\b|\bcannot be resolved from (?:the )?(?:existing )?(?:goal|evidence)\b",
+    )
+    return any(
+        not _negated(text, match.start(), match.end())
+        for pattern in patterns
+        for match in re.finditer(pattern, text, re.I)
+    )
+
+
+def _contract_deficit_code(
+    state: dict[str, Any], detail: str, *, include_runtime_state: bool = False,
+) -> str:
+    text = " ".join(detail.split())
+    if _runtime_contract_unmet(state) and (
+        include_runtime_state
+        or re.search(r"\bMIN_SUBSTANTIVE_(?:RESEARCH_)?RUNTIME_UNMET\b", text, re.I)
+        or re.search(
+            r"\b(?:substantive|worker)\s+(?:research\s+)?(?:runtime|time|hours?)\b"
+            r"[^.;]{0,160}\b(?:unmet|below|short|insufficient|required|minimum)\b",
+            text,
+            re.I,
+        )
+    ):
+        return "MIN_SUBSTANTIVE_RUNTIME_UNMET"
+    if re.search(r"\bRESEARCH_BREADTH_UNMET\b", text, re.I) or re.search(
+        r"\bresearch breadth\b[^.;]{0,120}\b(?:unmet|below|insufficient|required|incomplete)\b|"
+        r"\b(?:mechanism families|information[- ]set categories)\b"
+        r"[^.;]{0,120}\b(?:unmet|below|fewer|insufficient|required)\b",
+        text,
+        re.I,
+    ):
+        return "RESEARCH_BREADTH_UNMET"
+    if re.search(
+        r"\bINCOMPLETE_REQUIRED_WORK_UNITS\b|"
+        r"\b(?:required|mandatory)\s+work units?\b[^.;]{0,100}"
+        r"\b(?:incomplete|unfinished|remain|blocked|missing)\b",
+        text,
+        re.I,
+    ):
+        return "INCOMPLETE_REQUIRED_WORK_UNITS"
+    return ""
+
+
+def _requires_human_boundary(blocker_kind: str, detail: str, state: dict[str, Any]) -> bool:
+    kind = blocker_kind.upper()
+    if kind in {"AUTHORIZATION", "DESTRUCTIVE", "PROTECTED_PERMISSION"} or any(
+        kind.startswith(f"{prefix}_BOUNDARY")
+        for prefix in ("AUTHORIZATION", "DESTRUCTIVE", "PROTECTED_PERMISSION")
+    ):
+        return True
+    if _explicit_human_boundary_evidence(detail):
+        return True
+    if kind == "SAFETY" or kind.startswith("SAFETY_BOUNDARY"):
+        return not bool(_contract_deficit_code(state, detail))
+    return False
+
+
+def _recoverable_required_unit_ids(state: dict[str, Any]) -> list[str]:
+    recoverable: list[str] = []
+    for unit in state.get("WORK_UNITS", []):
+        if unit.get("optional") or unit.get("status") == "DONE":
+            continue
+        status = str(unit.get("status", ""))
+        if status in {"READY", "RETRY", "RUNNING"}:
+            recoverable.append(str(unit.get("id", "")))
+            continue
+        blocker = unit.get("blocker", {}) if isinstance(unit.get("blocker", {}), dict) else {}
+        detail = " ".join([
+            str(blocker.get("detail", blocker)), str(unit.get("next_action", "")),
+        ])
+        kind = str(blocker.get("kind", blocker.get("code", "LOCAL"))).upper()
+        if _requires_human_boundary(kind, detail, state):
+            continue
+        if re.search(
+            r"\b(?:no authorized remedy|future authorized task|quota exhausted|source outage|"
+            r"prerequisites? change|time budget|new (?:authorized )?task)\b",
+            detail,
+            re.I,
+        ):
+            continue
+        if status in {"BLOCKED_LOCAL", "DEFERRED", "SKIPPED_WITH_REASON"}:
+            recoverable.append(str(unit.get("id", "")))
+    return [value for value in recoverable if value]
+
+
 def _review_finding_analysis(
     state: dict[str, Any], detail: str, relevant_paths: Sequence[str] = (),
 ) -> dict[str, Any]:
@@ -1603,6 +1801,9 @@ def _review_finding_analysis(
     text = detail.casefold()
     paths = list(dict.fromkeys([*_evidence_paths(detail), *(str(path).replace("\\", "/") for path in relevant_paths)]))
     identities: list[str] = []
+    contract_deficit = _contract_deficit_code(state, detail)
+    if contract_deficit:
+        identities.append(contract_deficit)
     permission = _permission_failure_signature(detail, relevant_paths)
     if permission:
         identities.append(permission)
@@ -2215,6 +2416,7 @@ def _task_contract(goal: str, task_kind: str, requested_scope: str) -> dict[str,
         "AUTO_SCOPE_SUGGESTION": suggestion,
         "SAFETY_FLAGS": evidence,
         "TASK_SCOPE": effective_scope,
+        "MIN_SUBSTANTIVE_RUNTIME_HOURS": _minimum_substantive_runtime_hours_from_goal(goal),
     }
 
 
@@ -2649,6 +2851,18 @@ def _worker_prompt(
     first_turn = int(state.get("TELEMETRY", {}).get("worker_turns", 0)) == 0
     goal = state["GOAL"] if first_turn else state["CURRENT_TASK"]
     correction_text = f"\nCORRECTION CONTEXT:\n{correction[:4_000]}\n" if correction else ""
+    continuation_units = [unit for unit in active if unit.get("continuation_kind")]
+    continuation_text = ""
+    if continuation_units:
+        continuation_text = (
+            "\nAUTONOMOUS CONTINUATION CONTRACT:\n"
+            f"Canonical substantive worker hours recorded before this turn: "
+            f"{_canonical_substantive_worker_seconds(state) / 3600.0:.3f}. "
+            f"Required minimum: {_minimum_substantive_runtime_seconds(state) / 3600.0:.3f}.\n"
+            "Perform the required next work in the active continuation unit productively and distinctly. "
+            "Sleeping, idle waiting, repeated no-op validation, equivalent variants, and caller-supplied "
+            "elapsed-hour claims do not satisfy the contract.\n"
+        )
     return f"""You are a substantive implementation worker for one authorized Harness R3 task.
 
 AUTHORIZED GOAL {'(full)' if first_turn else '(compact summary)'} version {state['GOAL_VERSION']}:
@@ -2660,6 +2874,7 @@ Safety flags: {state['SAFETY_FLAGS']}
 Applied human steering for this turn:
 {steer}
 {correction_text}
+{continuation_text}
 
 ACTIVE WORK-UNIT BATCH:
 {active_json}
@@ -2796,6 +3011,18 @@ def _phase_from_command(command: str) -> str | None:
     return None
 
 
+def _non_substantive_worker_command_kind(command: str) -> str:
+    if _phase_from_command(command) in {"TARGETED_TEST", "SELF_REVIEW"}:
+        return "VALIDATION"
+    if re.search(
+        r"(?i)(?:^|[;&|]\s*)(?:start-sleep|sleep|wait-process|wait-job)\b|"
+        r"\btimeout(?:\.exe)?\s+/t\b|\btime\.sleep\s*\(",
+        command,
+    ):
+        return "IDLE"
+    return ""
+
+
 def _known_windows_codex_pytest_temp_limitation(evidence: str) -> bool:
     """Recognize only the reproduced nested-Windows pytest temp ACL signature."""
     permission = re.search(r"PermissionError", evidence, re.I) and re.search(
@@ -2916,6 +3143,8 @@ def _run_codex_turn(
     tests: list[str] = []
     test_results: list[dict[str, Any]] = []
     seen_phase = ""
+    excluded_commands: dict[str, tuple[float, str]] = {}
+    excluded_seconds = {"IDLE": 0.0, "VALIDATION": 0.0}
     for raw in process.stdout:
         line = raw.rstrip("\r\n")
         if not line:
@@ -2955,6 +3184,13 @@ def _run_codex_turn(
             tail.append(json.dumps(event, ensure_ascii=False, default=str)[:2_000])
         if item.get("type") == "command_execution":
             command_text = str(item.get("command", ""))
+            command_key = str(item.get("id") or command_text)
+            excluded_kind = _non_substantive_worker_command_kind(command_text) if mutating_worker else ""
+            if event.get("type") == "item.started" and excluded_kind:
+                excluded_commands[command_key] = (time.monotonic(), excluded_kind)
+            elif event.get("type") == "item.completed" and command_key in excluded_commands:
+                command_started, started_kind = excluded_commands.pop(command_key)
+                excluded_seconds[started_kind] += max(0.0, time.monotonic() - command_started)
             command_phase = _phase_from_command(command_text)
             if command_phase and command_phase != seen_phase and mutating_worker and event.get("type") == "item.completed":
                 seen_phase = command_phase
@@ -2981,7 +3217,12 @@ def _run_codex_turn(
     combined_tests = (history + tests)[-MAX_LIST_ITEMS:]
     if mutating_worker:
         _refresh_changes(task_id, worker_findings=final_message)
-    elapsed = max(0.0, time.monotonic() - turn_started)
+    turn_ended = time.monotonic()
+    for command_started, started_kind in excluded_commands.values():
+        excluded_seconds[started_kind] += max(0.0, turn_ended - command_started)
+    elapsed = max(0.0, turn_ended - turn_started)
+    non_substantive_elapsed = min(elapsed, sum(excluded_seconds.values()))
+    substantive_elapsed = max(0.0, elapsed - non_substantive_elapsed)
     completed_fields = {
         "WORKER_STATUS": f"{kind}_EXITED_{exit_code}" if kind != "WORKER" else f"EXITED_{exit_code}",
         "WORKER_PID": None,
@@ -3007,7 +3248,15 @@ def _run_codex_turn(
 
     def mark_turn_completed(value: dict[str, Any]) -> None:
         if kind == "WORKER":
-            _telemetry_add(value, worker_wall_seconds=elapsed, worker_turns=1)
+            _telemetry_add(
+                value,
+                worker_wall_seconds=elapsed,
+                substantive_worker_seconds=substantive_elapsed,
+                worker_non_substantive_seconds=non_substantive_elapsed,
+                worker_idle_seconds=excluded_seconds["IDLE"],
+                worker_validation_seconds=excluded_seconds["VALIDATION"],
+                worker_turns=1,
+            )
         elif kind == "REVIEW":
             _telemetry_add(value, reviewer_wall_seconds=elapsed, reviewer_turns=1)
         else:
@@ -3485,7 +3734,7 @@ def _reconcile_correction_parents(state: dict[str, Any], correction: dict[str, A
     return resolved
 
 
-def _apply_validated_unit_results(state: dict[str, Any]) -> None:
+def _apply_validated_unit_results(state: dict[str, Any], progress_hash: str = "") -> None:
     pending = state.get("PENDING_UNIT_RESULTS", []) or _pending_unit_results(state)
     active_ids = set(state.get("ACTIVE_WORK_UNIT_IDS", []))
     completed = 0
@@ -3540,6 +3789,19 @@ def _apply_validated_unit_results(state: dict[str, Any]) -> None:
                 "code": str(blocker.get("code", "LOCAL_BLOCKER")),
                 "detail": detail[:2_000], "at": utc_now(),
             })
+            if _retryable_local_blocker(state, unit):
+                _record_unit_failure(
+                    state,
+                    [str(unit["id"])],
+                    str(blocker.get("code", "WORKER_LOCAL_BLOCKER")),
+                    detail,
+                    progress_hash,
+                )
+                if unit.get("status") == "RETRY":
+                    local_rows = [
+                        row for row in local_rows if row.get("work_unit_id") != unit.get("id")
+                    ]
+                    newly_local_blocked -= int(prior_status != "BLOCKED_LOCAL")
     state["LOCAL_BLOCKED_WORK"] = local_rows[-MAX_LIST_ITEMS:]
     state["PENDING_UNIT_RESULTS"] = []
     state["ACTIVE_WORK_UNIT_IDS"] = []
@@ -3564,6 +3826,233 @@ def _historical_identity_seen(state: dict[str, Any], field: str, identity: str) 
         return True
     digest = _state_row_identity({"identity": identity})
     return digest in state.get("COMPACTED_HISTORY_IDENTITIES", {}).get(field, [])
+
+
+def _continuation_progress_hash(state: dict[str, Any], worktree_hash: str) -> str:
+    payload = {
+        "worktree": worktree_hash,
+        "substantive_worker_seconds": round(_canonical_substantive_worker_seconds(state), 3),
+        "required_units": [
+            {
+                "id": unit.get("id"), "status": unit.get("status"),
+                "checkpoint": unit.get("last_checkpoint"),
+                "outputs": unit.get("produced_outputs", []),
+            }
+            for unit in state.get("WORK_UNITS", [])
+            if not unit.get("optional")
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _mark_contract_unsatisfied(
+    state: dict[str, Any], code: str, detail: str, *, deadline: bool,
+) -> None:
+    reason = "CONTRACT_UNSATISFIED_AT_DEADLINE" if deadline else code
+    for unit in state.get("WORK_UNITS", []):
+        if unit.get("continuation_kind") and unit.get("status") in {"READY", "RETRY", "RUNNING"}:
+            unit["status"] = "DEFERRED"
+            unit["blocker"] = {"code": reason, "detail": detail[:1_000]}
+            unit["last_checkpoint"] = reason
+            unit["next_action"] = "Start a new human-authorized task with a sufficient budget"
+    state["ACTIVE_WORK_UNIT_IDS"] = []
+    state["ACTIVE_WORK_UNIT_ID"] = ""
+    state["CURRENT_WORK_UNIT"] = ""
+    state["NEXT_ACTION_CODE"] = "FINALIZE"
+    state["CURRENT_PHASE"] = "FINALIZE"
+    state["CURRENT_ACTION"] = "Authorized work is preserved, but the task contract cannot be completed autonomously"
+    state["WHY_CURRENT_ACTION"] = detail[:MAX_TEXT]
+    state["NEXT_ACTION"] = "Preserve the worktree and report the non-success task outcome"
+    state["WHY_NEXT_ACTION"] = "No human safety decision is needed; a new task is required for more work."
+    state["REVIEW_CORRECTION_DISPOSITION"] = reason
+    state["TERMINAL_REASON"] = reason
+    state["HUMAN_ATTENTION_REQUIRED"] = False
+    state["HISTORICAL_FINDINGS"] = [
+        *state.get("HISTORICAL_FINDINGS", []),
+        {"code": reason, "detail": detail[:1_000], "at": utc_now()},
+    ][-MAX_LIST_ITEMS:]
+
+
+def _contract_continuation_required_work(
+    state: dict[str, Any], code: str, required_unit_ids: Sequence[str],
+) -> str:
+    if code == "MIN_SUBSTANTIVE_RUNTIME_UNMET":
+        remaining_hours = _runtime_contract_remaining_seconds(state) / 3600.0
+        return (
+            f"Perform at least {remaining_hours:.3f} additional canonical substantive worker hours of "
+            "productive, materially distinct authorized research. Use unused mechanism families or "
+            "information-set interactions; do not sleep, idle-wait, repeat no-op validation, rerun "
+            "equivalent variants, or trust caller-supplied elapsed hours."
+        )
+    if code == "RESEARCH_BREADTH_UNMET":
+        return (
+            "Add materially distinct in-scope research across missing mechanism families and "
+            "information-set categories, preserving PIT/maturity and candidate-budget guards."
+        )
+    identifiers = ",".join(required_unit_ids) or "the incomplete mandatory units"
+    return f"Complete the recoverable required work units ({identifiers}) with a different in-scope remedy."
+
+
+def _queue_contract_continuation_work_unit(
+    state: dict[str, Any], source: str, code: str, detail: str,
+    progress_hash: str, relevant_paths: Sequence[str] = (),
+    reactivate_unit_ids: Sequence[str] = (),
+) -> str:
+    if code not in AUTONOMOUS_CONTRACT_DEFICITS:
+        return "NOT_APPLICABLE"
+    if _explicit_human_boundary_evidence(detail):
+        return "HUMAN_BOUNDARY"
+    if code == "MIN_SUBSTANTIVE_RUNTIME_UNMET":
+        required_remaining = _runtime_contract_remaining_seconds(state)
+        if required_remaining <= 0:
+            return "SATISFIED"
+        budget_remaining = _remaining_budget_seconds(state)
+        if budget_remaining is not None and required_remaining > budget_remaining:
+            _mark_contract_unsatisfied(
+                state,
+                code,
+                (
+                    "Canonical substantive worker runtime remains "
+                    f"{required_remaining / 3600.0:.3f}h short, but only "
+                    f"{budget_remaining / 3600.0:.3f}h remains before the hard deadline."
+                ),
+                deadline=True,
+            )
+            return "DEADLINE"
+    required_unit_ids = _recoverable_required_unit_ids(state)
+    if code == "INCOMPLETE_REQUIRED_WORK_UNITS" and not required_unit_ids:
+        return "NO_RUNNABLE_REMEDY"
+    signature = f"CONTRACT:{code}"
+    ledger_key = f"CONTINUATION:{signature}"
+    ledger = state.setdefault("RETRY_LEDGER", {})
+    prior = ledger.get(ledger_key, {})
+    if int(prior.get("no_progress_count", 0)) > DEFAULT_FAILURE_RETRY_LIMIT:
+        _mark_contract_unsatisfied(
+            state,
+            "AUTONOMOUS_CORRECTION_NO_PROGRESS",
+            f"Repeated {code} continuation produced no canonical progress; signature={signature}.",
+            deadline=False,
+        )
+        state["REVIEW_CORRECTION_DISPOSITION"] = "NO_PROGRESS_RETRY_EXHAUSTED"
+        return "NO_PROGRESS"
+    existing = next(
+        (
+            unit for unit in reversed(state.get("WORK_UNITS", []))
+            if unit.get("failure_signature") == signature and unit.get("status") != "DONE"
+        ),
+        None,
+    )
+    if existing is None:
+        existing = next(
+            (
+                unit for unit_id in reactivate_unit_ids
+                if (unit := _unit_by_id(state, str(unit_id)))
+                and unit.get("status") != "DONE"
+            ),
+            None,
+        )
+    required_work = _contract_continuation_required_work(state, code, required_unit_ids)
+    if existing is not None:
+        if existing.get("status") in {"BLOCKED_LOCAL", "DEFERRED", "SKIPPED_WITH_REASON"}:
+            existing["status"] = "RETRY"
+            existing["blocker"] = {}
+            existing["last_checkpoint"] = "AUTONOMOUS_CONTINUATION_REACTIVATED"
+        existing["next_action"] = required_work
+        existing["required_next_work"] = required_work
+        existing["failure_signature"] = signature
+        existing["review_finding_id"] = signature
+        existing["review_finding_identity"] = code
+        existing["continuation_kind"] = code
+        existing["continuation_trigger"] = {
+            "source": source[:120], "code": code, "detail": detail[:1_000],
+        }
+        state["REVIEW_CORRECTION_DISPOSITION"] = "EXISTING_CONTINUATION_RUNNABLE"
+        return "RUNNABLE" if existing.get("status") in {"READY", "RETRY", "RUNNING"} else "NO_RUNNABLE_REMEDY"
+    next_number = 1 + sum(
+        str(unit.get("id", "")).startswith("FIX-") for unit in state.get("WORK_UNITS", [])
+    )
+    unit = _new_work_unit(
+        f"FIX-{next_number:03d}",
+        f"Autonomously continue correctable task contract [{code}]",
+        subsystem="correction",
+        relevant_paths=relevant_paths,
+        reuse_decision="EXTEND",
+        reuse_evidence=[f"Continuation extends the authorized task; signature={signature}"],
+    )
+    unit.update({
+        "failure_signature": signature,
+        "review_finding_id": signature,
+        "review_finding_identity": code,
+        "continuation_kind": code,
+        "continuation_trigger": {
+            "source": source[:120], "code": code, "detail": detail[:1_000],
+        },
+        "required_next_work": required_work,
+        "resolves_unit_ids": required_unit_ids,
+        "last_checkpoint": "AUTONOMOUS_CONTINUATION_QUEUED",
+        "next_action": required_work,
+    })
+    state.setdefault("WORK_UNITS", []).append(unit)
+    ledger.setdefault(ledger_key, {
+        "count": 0, "no_progress_count": 0, "progress_hash": progress_hash,
+        "last_attempted_remedy": source[:200], "last_detail": detail[:1_000],
+        "updated_at": utc_now(),
+    })
+    state["CURRENT_RETRY_SIGNATURE"] = signature
+    state["REVIEW_CORRECTION_DISPOSITION"] = "AUTONOMOUS_CONTINUATION_QUEUED"
+    _plan_update(state, "AUTONOMOUS_EXECUTION_LOOP", "IN_PROGRESS")
+    _plan_update(state, "FINAL_VALIDATION", "PENDING")
+    _plan_update(state, "FINAL_INDEPENDENT_REVIEW", "PENDING")
+    _meaningful_progress(state, f"AUTONOMOUS_CONTINUATION:{unit['id']}")
+    return "QUEUED"
+
+
+def _guard_contract_continuation_dispatch(
+    state: dict[str, Any], progress_hash: str,
+) -> bool:
+    for unit in state.get("WORK_UNITS", []):
+        if not unit.get("continuation_kind") or unit.get("status") not in {"READY", "RETRY"}:
+            continue
+        signature = str(unit.get("failure_signature", ""))
+        key = f"CONTINUATION:{signature}"
+        ledger = state.setdefault("RETRY_LEDGER", {})
+        prior = ledger.get(key, {})
+        previous_dispatch = str(prior.get("last_dispatch_progress_hash", ""))
+        no_progress = int(prior.get("no_progress_count", 0))
+        if previous_dispatch:
+            no_progress = no_progress + 1 if previous_dispatch == progress_hash else 0
+        count = int(prior.get("count", 0)) + 1
+        ledger[key] = {
+            **prior,
+            "count": count,
+            "no_progress_count": no_progress,
+            "progress_hash": progress_hash,
+            "last_dispatch_progress_hash": progress_hash,
+            "last_attempted_remedy": str(unit.get("continuation_kind", ""))[:200],
+            "last_detail": str(unit.get("required_next_work", ""))[:1_000],
+            "updated_at": utc_now(),
+        }
+        unit["continuation_attempts"] = count
+        if no_progress > DEFAULT_FAILURE_RETRY_LIMIT:
+            unit["status"] = "BLOCKED_LOCAL"
+            unit["blocker"] = {
+                "code": "AUTONOMOUS_CORRECTION_NO_PROGRESS", "signature": signature,
+                "detail": "Repeated continuation dispatches produced no canonical progress.",
+            }
+            unit["last_checkpoint"] = "NO_PROGRESS_RETRY_EXHAUSTED"
+            unit["next_action"] = "Start a new task only if new evidence or scope is available"
+            _mark_contract_unsatisfied(
+                state,
+                "AUTONOMOUS_CORRECTION_NO_PROGRESS",
+                f"Repeated continuation produced no canonical progress; signature={signature}.",
+                deadline=False,
+            )
+            state["REVIEW_CORRECTION_DISPOSITION"] = "NO_PROGRESS_RETRY_EXHAUSTED"
+            return False
+        return True
+    return True
 
 
 def _queue_correction_work_unit(
@@ -4063,7 +4552,11 @@ def _prepare_deadline_terminalization(state: dict[str, Any]) -> None:
     state["CURRENT_ACTION"] = "Hard deadline reached; only lightweight persisted terminal classification remains"
     state["WHY_CURRENT_ACTION"] = "No planner, worker, reviewer, or correction may start after the deadline."
     state["NEXT_ACTION"] = "Classify completed, blocked, and deferred work and preserve the worktree"
-    state["REVIEW_CORRECTION_DISPOSITION"] = "HARD_DEADLINE_NO_NEW_LLM_WORK"
+    if _runtime_contract_unmet(state):
+        state["REVIEW_CORRECTION_DISPOSITION"] = "CONTRACT_UNSATISFIED_AT_DEADLINE"
+        state["TERMINAL_REASON"] = "CONTRACT_UNSATISFIED_AT_DEADLINE"
+    else:
+        state["REVIEW_CORRECTION_DISPOSITION"] = "HARD_DEADLINE_NO_NEW_LLM_WORK"
     if deferred:
         state["HISTORICAL_FINDINGS"] = [
             *state.get("HISTORICAL_FINDINGS", []),
@@ -4329,9 +4822,40 @@ def _dispatch_r3(task_id: str) -> None:
                 mutate=_prepare_deadline_terminalization,
             )
             continue
+        remaining_budget = _remaining_budget_seconds(state)
+        remaining_runtime = _runtime_contract_remaining_seconds(state)
+        if (
+            action not in {"FINALIZE", "DONE"}
+            and remaining_runtime > 0
+            and remaining_budget is not None
+            and remaining_runtime > remaining_budget
+        ):
+            def runtime_deadline_unsatisfied(value: dict[str, Any]) -> None:
+                _mark_contract_unsatisfied(
+                    value,
+                    "MIN_SUBSTANTIVE_RUNTIME_UNMET",
+                    (
+                        "Canonical substantive worker runtime remains "
+                        f"{remaining_runtime / 3600.0:.3f}h short, but only "
+                        f"{remaining_budget / 3600.0:.3f}h remains before the hard deadline."
+                    ),
+                    deadline=True,
+                )
+
+            update_task(
+                task_id,
+                event="CONTRACT_UNSATISFIED_AT_DEADLINE",
+                detail=(
+                    f"remaining_substantive_seconds={remaining_runtime:.3f};"
+                    f"remaining_budget_seconds={remaining_budget:.3f};no_worker_dispatch=true"
+                ),
+                mutate=runtime_deadline_unsatisfied,
+            )
+            continue
         if (
             _in_convergence_window(state)
             and action in {"PLAN", "SELECT_WORK", "WORKER"}
+            and not _autonomous_correction_or_contract_pending(state)
         ):
             def converge(value: dict[str, Any]) -> None:
                 deferred = _activate_convergence(value)
@@ -4483,6 +5007,11 @@ def _dispatch_r3(task_id: str) -> None:
                 "NEXT_ACTION_CODE": "SELECT_WORK",
             }, event="WORK_PLAN_READY", detail=f"units={len(units)};fallback={fallback};duplicates_rejected={rejected}", mutate=complete_plan)
         elif action == "SELECT_WORK":
+            selection_state = load_state(task_id)
+            selection_progress = _continuation_progress_hash(
+                selection_state,
+                _worktree_progress_hash(Path(selection_state["WORKTREE"])),
+            )
             def select(value: dict[str, Any]) -> None:
                 if _remaining_budget_seconds(value) == 0:
                     deferred = _defer_for_expired_budget(value)
@@ -4491,14 +5020,34 @@ def _dispatch_r3(task_id: str) -> None:
                             *value.get("HISTORICAL_FINDINGS", []),
                             {"code": "TIME_BUDGET_EXPIRED", "detail": f"deferred={deferred}", "at": utc_now()},
                         ][-MAX_LIST_ITEMS:]
-                ids = _select_work_unit_batch(value)
+                if not _guard_contract_continuation_dispatch(value, selection_progress):
+                    ids: list[str] = []
+                else:
+                    ids = _select_work_unit_batch(value)
+                if not ids and value.get("NEXT_ACTION_CODE") != "FINALIZE":
+                    deficit_code = _contract_deficit_code(
+                        value, "", include_runtime_state=True,
+                    )
+                    if not deficit_code and _recoverable_required_unit_ids(value):
+                        deficit_code = "INCOMPLETE_REQUIRED_WORK_UNITS"
+                    if deficit_code:
+                        disposition = _queue_contract_continuation_work_unit(
+                            value,
+                            "CONTROLLER_CONTRACT",
+                            deficit_code,
+                            f"{deficit_code}: controller detected useful authorized work remains.",
+                            selection_progress,
+                        )
+                        if disposition in {"QUEUED", "RUNNABLE"}:
+                            if _guard_contract_continuation_dispatch(value, selection_progress):
+                                ids = _select_work_unit_batch(value)
                 if ids:
                     value["NEXT_ACTION_CODE"] = "WORKER"
                     value["CURRENT_PHASE"] = "AUTONOMOUS_EXECUTION_LOOP"
                     value["CURRENT_ACTION"] = f"Selected work-unit batch: {','.join(ids)}"
                     value["NEXT_ACTION"] = "Run a substantive batched worker turn"
                     _plan_update(value, "AUTONOMOUS_EXECUTION_LOOP", "IN_PROGRESS")
-                else:
+                elif value.get("NEXT_ACTION_CODE") != "FINALIZE":
                     value["NEXT_ACTION_CODE"] = "FINAL_VALIDATION"
                     value["CURRENT_PHASE"] = "AUTONOMOUS_EXECUTION_LOOP"
                     value["CURRENT_ACTION"] = "No runnable authorized work units remain"
@@ -4609,12 +5158,49 @@ def _dispatch_r3(task_id: str) -> None:
                 continue
             if outcome in {"WAITING_HUMAN", "BLOCKED"}:
                 detail = state.get("WORKER_FINDINGS", "")
-                if blocker_kind in HUMAN_BOUNDARY_KINDS - {"EXHAUSTED", "PAUSE"}:
+                deficit_code = _contract_deficit_code(state, detail)
+                if _requires_human_boundary(blocker_kind, detail, state):
+                    boundary_kind = (
+                        blocker_kind
+                        if blocker_kind in HUMAN_BOUNDARY_KINDS - {"EXHAUSTED", "PAUSE"}
+                        else "AUTHORIZATION"
+                    )
                     def boundary(value: dict[str, Any]) -> None:
-                        _record_unit_failure(value, unit_ids, f"{blocker_kind}_BOUNDARY", detail, progress_hash, retry_limit=0)
-                        _append_active_blocker(value, f"WORKER_{blocker_kind}_BOUNDARY", detail, blocker_kind)
+                        _record_unit_failure(value, unit_ids, f"{boundary_kind}_BOUNDARY", detail, progress_hash, retry_limit=0)
+                        _append_active_blocker(value, f"WORKER_{boundary_kind}_BOUNDARY", detail, boundary_kind)
                         value["NEXT_ACTION_CODE"] = "SELECT_WORK"
                     update_task(task_id, event="WORK_UNIT_HUMAN_BOUNDARY_ISOLATED", detail=detail[:1_000], mutate=boundary)
+                elif deficit_code and state.get("PENDING_UNIT_RESULTS"):
+                    update_task(task_id, {
+                        "PENDING_AUTONOMOUS_CONTINUATION": {
+                            "source": "WORKER_CONTRACT", "code": deficit_code,
+                            "detail": detail[:2_000], "progress_hash": progress_hash,
+                            "unit_ids": list(unit_ids),
+                        },
+                        "NEXT_ACTION_CODE": "UNIT_VALIDATE",
+                        "CURRENT_ACTION": "Correctable task-contract deficit checkpoint preserved for Controller validation",
+                        "WHY_CURRENT_ACTION": "Internal research-contract deficits are autonomous continuations, not human safety boundaries.",
+                        "NEXT_ACTION": "Validate the checkpoint, then dispatch productive continuation work",
+                    }, event="WORKER_AUTONOMOUS_CONTINUATION_CLASSIFIED", detail=deficit_code)
+                elif deficit_code:
+                    queued = {"result": ""}
+                    def contract_continuation(value: dict[str, Any]) -> None:
+                        queued["result"] = _queue_contract_continuation_work_unit(
+                            value, "WORKER_CONTRACT", deficit_code, detail, progress_hash,
+                        )
+                        if queued["result"] in {"QUEUED", "RUNNABLE"}:
+                            value["NEXT_ACTION_CODE"] = "SELECT_WORK"
+                            value["HARNESS_STATE"] = transition_value(value["HARNESS_STATE"], "RUNNING")
+                        elif value.get("NEXT_ACTION_CODE") != "FINALIZE":
+                            _mark_contract_unsatisfied(
+                                value, "CONTRACT_CONTINUATION_UNAVAILABLE",
+                                f"No autonomous continuation remedy remained for {deficit_code}.",
+                                deadline=False,
+                            )
+                    update_task(
+                        task_id, event="WORKER_AUTONOMOUS_CONTINUATION_DECISION",
+                        detail=deficit_code, mutate=contract_continuation,
+                    )
                 elif state.get("PENDING_UNIT_RESULTS"):
                     update_task(task_id, {
                         "NEXT_ACTION_CODE": "UNIT_VALIDATE",
@@ -4645,8 +5231,25 @@ def _dispatch_r3(task_id: str) -> None:
             progress_hash = _worktree_progress_hash(Path(state["WORKTREE"]))
             if passed:
                 def accept(value: dict[str, Any]) -> None:
-                    _apply_validated_unit_results(value)
+                    continuation = value.pop("PENDING_AUTONOMOUS_CONTINUATION", {}) or {}
+                    _apply_validated_unit_results(value, progress_hash)
                     value["NEXT_ACTION_CODE"] = "SELECT_WORK"
+                    if continuation:
+                        result = _queue_contract_continuation_work_unit(
+                            value,
+                            str(continuation.get("source", "WORKER_CONTRACT")),
+                            str(continuation.get("code", "")),
+                            str(continuation.get("detail", "")),
+                            progress_hash,
+                            reactivate_unit_ids=continuation.get("unit_ids", []),
+                        )
+                        if result not in {"QUEUED", "RUNNABLE", "SATISFIED"} and value.get("NEXT_ACTION_CODE") != "FINALIZE":
+                            _mark_contract_unsatisfied(
+                                value,
+                                "CONTRACT_CONTINUATION_UNAVAILABLE",
+                                f"No autonomous continuation remedy remained; disposition={result}.",
+                                deadline=False,
+                            )
                     value["LAST_COMPLETED"] = "WORK_UNIT_BATCH_VALIDATED"
                 update_task(task_id, event="WORK_UNIT_BATCH_ACCEPTED", detail=",".join(unit_ids), mutate=accept)
             else:
@@ -4655,6 +5258,32 @@ def _dispatch_r3(task_id: str) -> None:
                     value["NEXT_ACTION_CODE"] = "SELECT_WORK"
                 update_task(task_id, event="WORK_UNIT_VALIDATION_RETRY", detail=detail[:1_000], mutate=retry)
         elif action in {"VALIDATE", "FINAL_VALIDATION"}:
+            state = load_state(task_id)
+            if _runtime_contract_unmet(state):
+                progress_hash = _continuation_progress_hash(
+                    state, _worktree_progress_hash(Path(state["WORKTREE"])),
+                )
+                scheduled = {"value": False}
+                def continue_before_validation(value: dict[str, Any]) -> None:
+                    disposition = _queue_contract_continuation_work_unit(
+                        value,
+                        "PRE_FINAL_VALIDATION_CONTRACT",
+                        "MIN_SUBSTANTIVE_RUNTIME_UNMET",
+                        "MIN_SUBSTANTIVE_RUNTIME_UNMET: final validation cannot close an incomplete runtime contract.",
+                        progress_hash,
+                    )
+                    scheduled["value"] = disposition in {"QUEUED", "RUNNABLE"}
+                    if scheduled["value"]:
+                        value["NEXT_ACTION_CODE"] = "SELECT_WORK"
+
+                update_task(
+                    task_id,
+                    event="PRE_FINAL_VALIDATION_CONTRACT_CHECK",
+                    detail="MIN_SUBSTANTIVE_RUNTIME_UNMET",
+                    mutate=continue_before_validation,
+                )
+                if scheduled["value"] or load_state(task_id).get("NEXT_ACTION_CODE") == "FINALIZE":
+                    continue
             update_task(task_id, {
                 "CURRENT_PHASE": "FINAL_VALIDATION",
                 "CURRENT_ACTION": "Running final Controller-owned machine validation",
@@ -4666,17 +5295,10 @@ def _dispatch_r3(task_id: str) -> None:
                 progress_hash = _worktree_progress_hash(Path(state["WORKTREE"]))
                 queued = {"value": False}
                 def correction(value: dict[str, Any]) -> None:
-                    if value.get("CONVERGENCE_MODE"):
-                        value["REVIEW_CORRECTION_DISPOSITION"] = "VALIDATION_DEFECT_DEFERRED_DURING_CONVERGENCE"
-                        value["HISTORICAL_FINDINGS"] = [
-                            *value.get("HISTORICAL_FINDINGS", []),
-                            {"code": "CONVERGENCE_VALIDATION_FAILURE", "detail": detail[:1_000], "at": utc_now()},
-                        ][-MAX_LIST_ITEMS:]
-                    else:
-                        queued["value"] = _queue_correction_work_unit(
-                            value, "FINAL_VALIDATION", detail, progress_hash,
-                            value.get("FILES_CHANGED", []),
-                        )
+                    queued["value"] = _queue_correction_work_unit(
+                        value, "FINAL_VALIDATION", detail, progress_hash,
+                        value.get("FILES_CHANGED", []),
+                    )
                     if queued["value"]:
                         value["NEXT_ACTION_CODE"] = "SELECT_WORK"
                         _plan_update(value, "AUTONOMOUS_EXECUTION_LOOP", "IN_PROGRESS")
@@ -4694,6 +5316,30 @@ def _dispatch_r3(task_id: str) -> None:
             worktree = Path(state["WORKTREE"])
             progress_hash = _worktree_progress_hash(worktree)
             review_progress = _review_progress_hash(state, progress_hash)
+            if _runtime_contract_unmet(state):
+                scheduled = {"value": False}
+                def enforce_runtime_before_review(value: dict[str, Any]) -> None:
+                    disposition = _queue_contract_continuation_work_unit(
+                        value,
+                        "PRE_FINAL_REVIEW_CONTRACT",
+                        "MIN_SUBSTANTIVE_RUNTIME_UNMET",
+                        "MIN_SUBSTANTIVE_RUNTIME_UNMET: final review cannot precede the canonical runtime contract.",
+                        _continuation_progress_hash(value, progress_hash),
+                    )
+                    scheduled["value"] = disposition in {"QUEUED", "RUNNABLE"}
+                    if scheduled["value"]:
+                        value["NEXT_ACTION_CODE"] = "SELECT_WORK"
+                        value["HARNESS_STATE"] = transition_value(value["HARNESS_STATE"], "RUNNING")
+                        _plan_update(value, "FINAL_INDEPENDENT_REVIEW", "PENDING")
+
+                update_task(
+                    task_id,
+                    event="PRE_FINAL_REVIEW_CONTRACT_CHECK",
+                    detail="MIN_SUBSTANTIVE_RUNTIME_UNMET",
+                    mutate=enforce_runtime_before_review,
+                )
+                if scheduled["value"] or load_state(task_id).get("NEXT_ACTION_CODE") == "FINALIZE":
+                    continue
             if state.get("LAST_REVIEW_PROGRESS_HASH") == review_progress:
                 def skip_unchanged(value: dict[str, Any]) -> None:
                     value["NEXT_ACTION_CODE"] = "FINALIZE"
@@ -4736,8 +5382,19 @@ def _dispatch_r3(task_id: str) -> None:
                     _plan_update(value, "FINAL_INDEPENDENT_REVIEW", "PENDING")
                 update_task(task_id, event="FINAL_REVIEW_PROCESS_RETRY", detail=detail, mutate=reviewer_retry)
                 if not retry["value"]:
-                    _wait_human(task_id, "FINAL_REVIEW_INTERFACE_EXHAUSTED", detail, boundary_kind="EXHAUSTED")
-                    return
+                    def reviewer_exhausted(value: dict[str, Any]) -> None:
+                        _mark_contract_unsatisfied(
+                            value,
+                            "AUTONOMOUS_REVIEW_INTERFACE_EXHAUSTED",
+                            "The independent reviewer interface exhausted its bounded retries; useful work is preserved.",
+                            deadline=False,
+                        )
+
+                    update_task(
+                        task_id, event="FINAL_REVIEW_INTERFACE_EXHAUSTED",
+                        detail=detail, mutate=reviewer_exhausted,
+                    )
+                    continue
                 continue
             update_task(task_id, {"LAST_REVIEW_PROGRESS_HASH": review_progress})
             if _control_checkpoint(task_id):
@@ -4745,35 +5402,30 @@ def _dispatch_r3(task_id: str) -> None:
             if classification == "FIX_REQUIRED":
                 state = load_state(task_id)
                 findings = state.get("REVIEW_FINDINGS", "")
+                if _explicit_human_boundary_evidence(findings):
+                    _wait_human(
+                        task_id, "FINAL_REVIEW_AUTHORIZATION_BOUNDARY", findings,
+                        boundary_kind="AUTHORIZATION",
+                    )
+                    return
                 queued = {"value": False}
                 def review_correction(value: dict[str, Any]) -> None:
-                    if value.get("CONVERGENCE_MODE"):
-                        finding = _review_finding_identity(
-                            value, findings, value.get("FILES_CHANGED", []),
+                    deficit_code = _contract_deficit_code(value, findings)
+                    analysis = _review_finding_analysis(
+                        value, findings, value.get("FILES_CHANGED", []),
+                    )
+                    non_contract_identities = [
+                        identity for identity in analysis["identities"]
+                        if identity not in AUTONOMOUS_CONTRACT_DEFICITS
+                    ]
+                    disposition = "NOT_APPLICABLE"
+                    if deficit_code and not non_contract_identities:
+                        disposition = _queue_contract_continuation_work_unit(
+                            value, "FINAL_REVIEW", deficit_code, findings, progress_hash,
+                            value.get("FILES_CHANGED", []),
                         )
-                        semantic = finding["identity"]
-                        value["LAST_REVIEW_FINDING_IDENTITY"] = semantic
-                        signature = finding["signature"]
-                        duplicate = any(
-                            unit.get("failure_signature") == signature
-                            for unit in value.get("WORK_UNITS", [])
-                        )
-                        if duplicate:
-                            _telemetry_add(value, repeated_work_prevented=1, duplicate_planned_work_rejected=1)
-                        value["REVIEW_CORRECTION_DISPOSITION"] = (
-                            "DUPLICATE_REVIEW_FINDING_DEFERRED_DURING_CONVERGENCE"
-                            if duplicate else "REVIEW_FINDING_DEFERRED_DURING_CONVERGENCE"
-                        )
-                        value["HISTORICAL_FINDINGS"] = [
-                            *value.get("HISTORICAL_FINDINGS", []),
-                            {
-                                "identity": semantic,
-                                "code": "CONVERGENCE_REVIEW_FINDING",
-                                "detail": findings[:1_000],
-                                "at": utc_now(),
-                            },
-                        ][-MAX_LIST_ITEMS:]
-                    else:
+                        queued["value"] = disposition in {"QUEUED", "RUNNABLE"}
+                    if not queued["value"] and disposition in {"NOT_APPLICABLE", "SATISFIED"}:
                         queued["value"] = _queue_correction_work_unit(
                             value, "FINAL_REVIEW", findings, progress_hash,
                             value.get("FILES_CHANGED", []),
@@ -4793,6 +5445,37 @@ def _dispatch_r3(task_id: str) -> None:
                 continue
             if classification == "HUMAN_DECISION_REQUIRED":
                 findings = load_state(task_id).get("REVIEW_FINDINGS", "")
+                if _explicit_human_boundary_evidence(findings):
+                    _wait_human(
+                        task_id, "FINAL_REVIEW_HUMAN_BOUNDARY", findings,
+                        boundary_kind="AUTHORIZATION",
+                    )
+                    return
+                current = load_state(task_id)
+                deficit_code = _contract_deficit_code(current, findings)
+                if deficit_code and not _explicit_human_boundary_evidence(findings):
+                    queued = {"value": False}
+                    def autonomous_review_continuation(value: dict[str, Any]) -> None:
+                        disposition = _queue_contract_continuation_work_unit(
+                            value, "FINAL_REVIEW", deficit_code, findings, progress_hash,
+                            value.get("FILES_CHANGED", []),
+                        )
+                        queued["value"] = disposition in {"QUEUED", "RUNNABLE"}
+                        if queued["value"]:
+                            value["NEXT_ACTION_CODE"] = "SELECT_WORK"
+                            value["HARNESS_STATE"] = transition_value(value["HARNESS_STATE"], "RUNNING")
+                            _plan_update(value, "FINAL_INDEPENDENT_REVIEW", "PENDING")
+                        elif value.get("NEXT_ACTION_CODE") != "FINALIZE":
+                            value["NEXT_ACTION_CODE"] = "FINAL_REVIEW"
+
+                    update_task(
+                        task_id,
+                        event="FINAL_REVIEW_AUTONOMOUS_CONTINUATION_DECISION",
+                        detail=deficit_code,
+                        mutate=autonomous_review_continuation,
+                    )
+                    if queued["value"] or load_state(task_id).get("NEXT_ACTION_CODE") == "FINALIZE":
+                        continue
                 retry = {"value": False}
                 def unclassified_retry(value: dict[str, Any]) -> None:
                     retry["value"] = _record_global_retry(value, "REVIEW_UNCLASSIFIED", findings, progress_hash, retry_limit=1)
@@ -4801,8 +5484,19 @@ def _dispatch_r3(task_id: str) -> None:
                     _plan_update(value, "FINAL_INDEPENDENT_REVIEW", "PENDING")
                 update_task(task_id, event="FINAL_REVIEW_UNCLASSIFIED_RETRY", detail=findings[:1_000], mutate=unclassified_retry)
                 if not retry["value"]:
-                    _wait_human(task_id, "FINAL_REVIEW_HUMAN_BOUNDARY", findings, boundary_kind="EXHAUSTED")
-                    return
+                    def unresolved_review(value: dict[str, Any]) -> None:
+                        _mark_contract_unsatisfied(
+                            value,
+                            "AUTONOMOUS_REVIEW_AMBIGUITY_UNRESOLVED",
+                            "Reviewer requested a human decision without evidence of a genuine authorization or safety boundary.",
+                            deadline=False,
+                        )
+
+                    update_task(
+                        task_id, event="FINAL_REVIEW_UNCLASSIFIED_TERMINATED",
+                        detail=findings[:1_000], mutate=unresolved_review,
+                    )
+                    continue
                 continue
             update_task(task_id, {
                 "NEXT_ACTION_CODE": "FINALIZE",
@@ -4858,7 +5552,10 @@ def _dispatch_r3(task_id: str) -> None:
                 review_accepted = True
             controller_failed = state.get("CONTROLLER_VALIDATION_STATUS") == "FAIL"
             blocking_review = state.get("LAST_REVIEW_STATUS") in {"FIX_REQUIRED", "HUMAN_DECISION_REQUIRED"}
-            if controller_failed or blocking_review or invalid_required_outputs or unresolved_failures or mandatory_unresolved:
+            contract_terminal_reason = str(state.get("TERMINAL_REASON", ""))
+            if contract_terminal_reason:
+                terminal = "FAILED"
+            elif controller_failed or blocking_review or invalid_required_outputs or unresolved_failures or mandatory_unresolved:
                 terminal = "FAILED"
             elif deferred or cleanup_warning:
                 terminal = "COMPLETED_WITH_DEFERRED_WORK" if done or deferable_local else "FAILED"
@@ -4869,7 +5566,9 @@ def _dispatch_r3(task_id: str) -> None:
             else:
                 terminal = "FAILED"
             completion_reason = (
-                "Final machine validation and independent review accepted the bounded task."
+                state.get("WHY_CURRENT_ACTION", "The task contract remained unsatisfied.")
+                if contract_terminal_reason
+                else "Final machine validation and independent review accepted the bounded task."
                 if review_accepted and not deferred
                 else "The time-bounded task converged with unresolved work or an incomplete final gate explicitly preserved."
             )
@@ -4897,8 +5596,14 @@ def _dispatch_r3(task_id: str) -> None:
                 ),
                 "WHY_CURRENT_ACTION": completion_reason,
                 "LAST_COMPLETED": terminal,
-                "NEXT_ACTION": "Human may inspect and optionally integrate the preserved worktree",
-                "WHY_NEXT_ACTION": "Harness never auto-merges or deletes useful work.",
+                "NEXT_ACTION": (
+                    "Start a new authorized task if the preserved continuation should proceed"
+                    if contract_terminal_reason else "Human may inspect and optionally integrate the preserved worktree"
+                ),
+                "WHY_NEXT_ACTION": (
+                    "The current task ended non-successfully without requesting a human safety decision."
+                    if contract_terminal_reason else "Harness never auto-merges or deletes useful work."
+                ),
                 "NEXT_ACTION_CODE": "DONE",
                 "HUMAN_ATTENTION_REQUIRED": False,
                 "WORKER_STATUS": terminal,

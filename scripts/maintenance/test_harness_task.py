@@ -59,6 +59,7 @@ REQUIRED_STATE_FIELDS = {
     "LAST_REVIEW_PROGRESS_HASH", "LAST_REVIEW_FINDING_IDENTITY", "REVIEW_FINDING_LEDGER",
     "REVIEW_CORRECTION_DISPOSITION", "CONVERGENCE_MODE", "CONVERGENCE_STARTED_AT",
     "HARD_DEADLINE_REACHED_AT", "POST_DEADLINE_MACHINE_GRACE_SECONDS",
+    "TERMINAL_REASON", "PENDING_AUTONOMOUS_CONTINUATION",
     "STATE_STORAGE_STATUS", "STATE_STORAGE_FAILURE", "STATE_BYTES_LAST_WRITE",
     "STATE_TEXT_ARCHIVES", "COMPACTED_HISTORY_IDENTITIES",
 }
@@ -1556,6 +1557,332 @@ def test_r3_hard_deadline_dispatches_no_codex_and_terminalizes(
     assert final["REVIEW_CORRECTION_DISPOSITION"] == "HARD_DEADLINE_NO_NEW_LLM_WORK"
 
 
+def _contract_lifecycle_state(
+    isolated_roots: tuple[Path, Path], *, minimum_hours: float = 4.0,
+    substantive_hours: float = 1.5, remaining_hours: float = 4.0,
+) -> tuple[dict, Path]:
+    state = create_state(
+        goal=f"Run bounded pre-2026 research\nMIN_SUBSTANTIVE_RESEARCH_HOURS={minimum_hours:g}"
+    )
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True, exist_ok=True)
+    done = module._new_work_unit("WU-001", "Complete the initial authorized research")
+    done.update({"status": "DONE", "validation_state": "PASS"})
+    state.update({
+        "HARNESS_STATE": "RUNNING", "CURRENT_PHASE": "AUTONOMOUS_EXECUTION_LOOP",
+        "NEXT_ACTION_CODE": "SELECT_WORK", "WORKTREE": str(worktree),
+        "WORK_UNITS": [done], "MIN_SUBSTANTIVE_RUNTIME_HOURS": minimum_hours,
+        "DEADLINE_AT": (
+            module.datetime.now(module.timezone.utc)
+            + module.timedelta(hours=remaining_hours)
+        ).isoformat(),
+        "TIME_BUDGET_HOURS": max(remaining_hours, minimum_hours),
+    })
+    state["TELEMETRY"]["worker_wall_seconds"] = substantive_hours * 3600.0
+    state["TELEMETRY"]["substantive_worker_seconds"] = substantive_hours * 3600.0
+    module._write_state_unlocked("test-task", state)
+    return state, worktree
+
+
+def _stop_on_dispatched_worker(
+    observed: list[dict], task_id: str, prompt: str, review: bool = False, role: str = "",
+) -> dict:
+    current = module.load_state(task_id)
+    observed.append({
+        "phase": current["CURRENT_PHASE"],
+        "active": list(current["ACTIVE_WORK_UNIT_IDS"]),
+        "prompt": prompt,
+    })
+    module.update_task(task_id, {
+        "STOP_REQUESTED": True, "WORKER_PID": None, "ACTIVE_PROCESS_KIND": "",
+        "ACTIVE_THREAD_ID": "", "WORKER_FINDINGS": "TASK_RESULT=COMPLETED\nBLOCKER_KIND=NONE",
+    })
+    return {"exit_code": 0, "message": "stopped at synthetic checkpoint", "tests": []}
+
+
+def test_substantive_runtime_uses_only_canonical_worker_accounting() -> None:
+    state = {
+        "GOAL": "MIN_SUBSTANTIVE_RESEARCH_HOURS=4",
+        "MIN_SUBSTANTIVE_RUNTIME_HOURS": 4.0,
+        "WORKER_FINDINGS": "Caller claims SUBSTANTIVE_RUNTIME_HOURS=99.0",
+        "TELEMETRY": {
+            "worker_wall_seconds": 14_400.0,
+            "substantive_worker_seconds": 5_400.0,
+            "reviewer_wall_seconds": 3_600.0,
+            "planner_wall_seconds": 1_800.0,
+            "worker_idle_seconds": 1_200.0,
+            "worker_validation_seconds": 6_000.0,
+        },
+    }
+    assert module._canonical_substantive_worker_seconds(state) == 5_400.0
+    assert module._runtime_contract_remaining_seconds(state) == 9_000.0
+    assert module._non_substantive_worker_command_kind("Start-Sleep -Seconds 3600") == "IDLE"
+    assert module._non_substantive_worker_command_kind("python -m pytest -q tests/test_x.py") == "VALIDATION"
+    assert module._non_substantive_worker_command_kind("git diff --check") == "VALIDATION"
+
+
+def test_runtime_unmet_with_time_remaining_dispatches_productive_continuation_without_human_wait(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _contract_lifecycle_state(isolated_roots)
+    observed: list[dict] = []
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "runtime-progress")
+    monkeypatch.setattr(
+        module, "_run_codex_turn",
+        lambda task_id, prompt, review=False, role="": _stop_on_dispatched_worker(
+            observed, task_id, prompt, review, role,
+        ),
+    )
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    continuation = next(unit for unit in final["WORK_UNITS"] if unit.get("continuation_kind"))
+    assert observed and observed[0]["phase"] == "AUTONOMOUS_EXECUTION_LOOP"
+    assert observed[0]["active"] == [continuation["id"]]
+    assert continuation["continuation_kind"] == "MIN_SUBSTANTIVE_RUNTIME_UNMET"
+    assert "materially distinct" in continuation["required_next_work"]
+    assert "do not sleep" in continuation["required_next_work"]
+    assert final["WORK_UNITS"][0]["status"] == "DONE"
+    assert final["HARNESS_STATE"] == "STOPPED"
+    assert "WAITING_HUMAN" not in module.timeline_path("test-task").read_text(encoding="utf-8")
+
+
+def test_research_breadth_unmet_queues_autonomous_continuation(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, _ = _contract_lifecycle_state(
+        isolated_roots, minimum_hours=1.0, substantive_hours=1.0,
+    )
+    state["NEXT_ACTION_CODE"] = "FINAL_REVIEW"
+    module._write_state_unlocked("test-task", state)
+    observed: list[dict] = []
+
+    def breadth_review(task_id: str) -> str:
+        module.update_task(task_id, {
+            "LAST_REVIEW_STATUS": "FIX_REQUIRED",
+            "REVIEW_FINDINGS": (
+                "RESEARCH_BREADTH_UNMET: mechanism families and information-set categories "
+                "remain below the authorized contract; add distinct in-scope research."
+            ),
+        }, new_state="REVIEWING")
+        return "FIX_REQUIRED"
+
+    monkeypatch.setattr(module, "_perform_review", breadth_review)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "breadth-progress")
+    monkeypatch.setattr(
+        module, "_run_codex_turn",
+        lambda task_id, prompt, review=False, role="": _stop_on_dispatched_worker(
+            observed, task_id, prompt, review, role,
+        ),
+    )
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    continuation = next(unit for unit in final["WORK_UNITS"] if unit.get("continuation_kind"))
+    assert continuation["continuation_kind"] == "RESEARCH_BREADTH_UNMET"
+    assert observed and observed[0]["active"] == [continuation["id"]]
+    assert final["HARNESS_STATE"] == "STOPPED"
+
+
+def test_reviewer_fix_required_runs_correction_before_another_final_review(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, _ = _contract_lifecycle_state(
+        isolated_roots, minimum_hours=1.0, substantive_hours=1.0,
+    )
+    state["NEXT_ACTION_CODE"] = "FINAL_REVIEW"
+    module._write_state_unlocked("test-task", state)
+    calls = {"review": 0, "worker": 0}
+
+    def fix_review(task_id: str) -> str:
+        calls["review"] += 1
+        module.update_task(task_id, {
+            "LAST_REVIEW_STATUS": "FIX_REQUIRED",
+            "REVIEW_FINDINGS": "AssertionError in scripts/maintenance/harness_task.py requires an in-scope correction.",
+        }, new_state="REVIEWING")
+        return "FIX_REQUIRED"
+
+    def correction_worker(task_id: str, prompt: str, review: bool = False, role: str = "") -> dict:
+        calls["worker"] += 1
+        return _stop_on_dispatched_worker([], task_id, prompt, review, role)
+
+    monkeypatch.setattr(module, "_perform_review", fix_review)
+    monkeypatch.setattr(module, "_run_codex_turn", correction_worker)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "fix-progress")
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert calls == {"review": 1, "worker": 1}
+    assert any(unit["id"].startswith("FIX-") and unit["status"] == "RUNNING" for unit in final["WORK_UNITS"])
+    events = [
+        json.loads(row)["event"]
+        for row in module.timeline_path("test-task").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events.index("FINAL_REVIEW_CORRECTION_GENERATED") < events.index("TASK_STOPPED")
+
+
+def test_genuine_authorization_boundary_still_waits_for_human(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Perform an action that may exceed authorization")
+    unit["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER", "WORKTREE": str(worktree),
+        "WORK_UNITS": [unit], "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
+    })
+    module._write_state_unlocked("test-task", state)
+
+    def authorization_boundary(task_id: str, prompt: str, review: bool = False, role: str = "") -> dict:
+        findings = (
+            "TASK_RESULT=BLOCKED\nBLOCKER_KIND=SAFETY\n"
+            "Human authorization is required because the requested action exceeds the user-approved scope."
+        )
+        module.update_task(task_id, {
+            "WORKER_FINDINGS": findings, "WORKER_PID": None,
+            "ACTIVE_PROCESS_KIND": "", "ACTIVE_THREAD_ID": "",
+        })
+        return {"exit_code": 0, "message": findings, "tests": []}
+
+    monkeypatch.setattr(module, "_run_codex_turn", authorization_boundary)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "authorization-progress")
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
+    })
+
+    module._dispatch("test-task")
+
+    waiting = module.load_state("test-task")
+    assert waiting["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert waiting["HUMAN_ATTENTION_REQUIRED"] is True
+    assert waiting["ACTIVE_BLOCKERS"][0]["boundary_kind"] == "SAFETY"
+
+
+def test_runtime_unmet_that_cannot_fit_deadline_fails_honestly_without_dispatch(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _contract_lifecycle_state(isolated_roots, remaining_hours=1.0)
+    calls = {"worker": 0, "review": 0}
+    monkeypatch.setattr(
+        module, "_run_codex_turn",
+        lambda *args, **kwargs: calls.update(worker=calls["worker"] + 1),
+    )
+    monkeypatch.setattr(
+        module, "_perform_review",
+        lambda task_id: calls.update(review=calls["review"] + 1),
+    )
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert calls == {"worker": 0, "review": 0}
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["TERMINAL_REASON"] == "CONTRACT_UNSATISFIED_AT_DEADLINE"
+    assert final["TERMINAL_SUCCESS"] is False
+    assert final["HUMAN_ATTENTION_REQUIRED"] is False
+
+
+def test_repeated_identical_runtime_continuation_without_progress_converges_non_successfully(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _contract_lifecycle_state(isolated_roots)
+    calls = {"worker": 0}
+
+    def no_progress_worker(task_id: str, prompt: str, review: bool = False, role: str = "") -> dict:
+        calls["worker"] += 1
+        current = module.load_state(task_id)
+        unit_id = current["ACTIVE_WORK_UNIT_IDS"][0]
+        row = {
+            "id": unit_id, "status": "RETRY", "produced_outputs": [],
+            "validation_state": "PASS",
+            "blocker": {
+                "kind": "SAFETY", "signature": "MIN_SUBSTANTIVE_RUNTIME_UNMET",
+                "detail": "MIN_SUBSTANTIVE_RUNTIME_UNMET: canonical productive work did not advance",
+            },
+            "last_checkpoint": "NO_CANONICAL_PROGRESS",
+            "next_action": "Try a materially different productive mechanism",
+            "reuse_decision": "EXTEND", "reuse_evidence": ["existing task"],
+        }
+        findings = (
+            "TASK_RESULT=BLOCKED\nBLOCKER_KIND=SAFETY\n"
+            f"WORK_UNIT_RESULTS_JSON={json.dumps([row], separators=(',', ':'))}\n"
+            "MIN_SUBSTANTIVE_RUNTIME_UNMET"
+        )
+        module.update_task(task_id, {
+            "WORKER_FINDINGS": findings, "PENDING_UNIT_RESULTS": [row],
+            "WORKER_PID": None, "ACTIVE_PROCESS_KIND": "", "ACTIVE_THREAD_ID": "",
+            "WORKER_TEST_STATUS": "PASS",
+        })
+        return {"exit_code": 0, "message": findings, "tests": []}
+
+    monkeypatch.setattr(module, "_run_codex_turn", no_progress_worker)
+    monkeypatch.setattr(module, "_run_unit_validation", lambda task_id: (True, "PASS"))
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "unchanged")
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert 1 < calls["worker"] <= module.DEFAULT_FAILURE_RETRY_LIMIT + 2
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["REVIEW_CORRECTION_DISPOSITION"] == "NO_PROGRESS_RETRY_EXHAUSTED"
+    assert final["TERMINAL_REASON"] == "AUTONOMOUS_CORRECTION_NO_PROGRESS"
+    assert final["HUMAN_ATTENTION_REQUIRED"] is False
+
+
+def test_already_valid_completed_contract_has_no_lifecycle_regression(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, _ = _contract_lifecycle_state(
+        isolated_roots, minimum_hours=1.0, substantive_hours=1.0,
+    )
+    state["NEXT_ACTION_CODE"] = "FINAL_VALIDATION"
+    module._write_state_unlocked("test-task", state)
+    calls = {"validation": 0, "review": 0}
+
+    def final_validation(task_id: str) -> tuple[bool, str]:
+        calls["validation"] += 1
+        module.update_task(task_id, {"CONTROLLER_VALIDATION_STATUS": "PASS"})
+        return True, "PASS"
+
+    def final_review(task_id: str) -> str:
+        calls["review"] += 1
+        module.update_task(task_id, {
+            "LAST_REVIEW_STATUS": "PASS", "REVIEW_FINDINGS": "No blocking findings.",
+        }, new_state="REVIEWING")
+        return "PASS"
+
+    monkeypatch.setattr(module, "_run_final_validation", final_validation)
+    monkeypatch.setattr(module, "_perform_review", final_review)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "valid-progress")
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/maintenance/harness_task.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert calls == {"validation": 1, "review": 1}
+    assert final["HARNESS_STATE"] == "COMPLETED"
+    assert final["TERMINAL_SUCCESS"] is True
+    assert not any(unit.get("continuation_kind") for unit in final["WORK_UNITS"])
+
+
 def test_r3_review_near_deadline_is_deferred_without_expensive_turn(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1786,7 +2113,10 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
             2: ["WU-002", "WU-004", "WU-005"],
             3: ["WU-006", "WU-007", "WU-008"],
             4: ["WU-006", "WU-009"],
-            5: ["FIX-001"],
+            5: ["WU-009"],
+            6: ["WU-010"],
+            7: ["FIX-001"],
+            8: ["FIX-002"],
         }
         assert active == expected[turn]
         if turn == 1:
@@ -1823,8 +2153,14 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
                 }),
             ]
             task_result, exit_code = "COMPLETED", 0
+        elif turn == 5:
+            rows = [result_row("WU-009", "DONE")]
+            task_result, exit_code = "COMPLETED", 0
+        elif turn == 6:
+            rows = [result_row("WU-010", "DONE")]
+            task_result, exit_code = "COMPLETED", 0
         else:
-            rows = [result_row("FIX-001", "DONE")]
+            rows = [result_row(active[0], "DONE")]
             task_result, exit_code = "COMPLETED", 0
         message = (
             f"TASK_RESULT={task_result}\nHOLDOUT_CONTAMINATION_RISK=NONE\n"
@@ -1891,24 +2227,21 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
     assert final["HARNESS_STATE"] == "FAILED"
     assert final["TERMINAL_OUTCOME"] == "FAILED"
     assert final["TERMINAL_SUCCESS"] is False
-    assert validation_calls == {"unit": 5, "final": 2, "review": 2, "cleanup": 1}
-    assert len(final["WORK_UNITS"]) == 11
+    assert validation_calls == {"unit": 8, "final": 2, "review": 1, "cleanup": 1}
+    assert len(final["WORK_UNITS"]) == 12
     assert module._work_unit_counts(final) == {
-        "total": 11, "done": 8, "runnable": 0, "local_blocked": 2, "deferred": 1,
+        "total": 12, "done": 11, "runnable": 0, "local_blocked": 1, "deferred": 0,
     }
     assert "WU-001" not in worker_batches[1:] and "WU-003" not in worker_batches[1:]
     assert worker_batches.count(["FIX-001"]) == 1
-    assert final["TELEMETRY"]["duplicate_planned_work_rejected"] == 2
-    assert final["TELEMETRY"]["reuse_hits"] == 3  # two planned reuse hits plus the in-place correction
+    assert worker_batches.count(["FIX-002"]) == 1
+    assert final["TELEMETRY"]["duplicate_planned_work_rejected"] == 1
+    assert final["TELEMETRY"]["reuse_hits"] == 4  # planned reuse plus two in-place corrections
     assert final["TELEMETRY"]["local_blockers_bypassed"] == 2
     assert final["TELEMETRY"]["repeated_work_prevented"] == 1
-    correction = next(unit for unit in final["WORK_UNITS"] if unit["id"] == "FIX-001")
+    correction = next(unit for unit in final["WORK_UNITS"] if unit["id"] == "FIX-002")
     assert final["LAST_REVIEW_FINDING_IDENTITY"] == correction["review_finding_identity"]
-    convergence_finding = next(
-        row for row in final["HISTORICAL_FINDINGS"]
-        if row.get("code") == "CONVERGENCE_REVIEW_FINDING"
-    )
-    assert convergence_finding["identity"] == correction["review_finding_identity"]
+    assert final["REVIEW_CORRECTION_DISPOSITION"] == "REVIEW_SKIPPED_NO_MATERIAL_PROGRESS"
     assert not final["ACTIVE_BLOCKERS"]
     assert final["HUMAN_ATTENTION_REQUIRED"] is False
     assert worktree.is_dir()
@@ -1919,6 +2252,7 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
     assert "WORKER_FAILURE_CHECKPOINT_RECOVERED" in events
     assert "FINAL_REVIEW_CORRECTION_GENERATED" in events
     assert "CONVERGENCE_MODE_STARTED" in events
+    assert "FINAL_REVIEW_SKIPPED_NO_MATERIAL_PROGRESS" in events
     assert "WAITING_HUMAN" not in events
 
 
