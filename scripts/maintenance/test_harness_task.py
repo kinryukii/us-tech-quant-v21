@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import pytest
@@ -37,7 +38,20 @@ REQUIRED_STATE_FIELDS = {
     "HUMAN_ATTENTION_REQUIRED", "LAST_REVIEW_STATUS", "LAST_UPDATED_AT",
     "TEST_HISTORY_START_INDEX", "ANTI_BLOAT_BASELINE_RESIDUE", "ANTI_BLOAT_TASK_DELTA",
     "TASK_KIND", "TASK_KIND_SOURCE", "AUTO_SCOPE_SUGGESTION", "SAFETY_FLAGS", "TASK_SCOPE",
+    "PROSPECTIVE_LIFECYCLE_APPLICABILITY", "RESEARCH_SPEC_PATH",
+    "RESEARCH_SPEC_SHA256", "PROSPECTIVE_RESEARCH_ID", "RESEARCH_TASK_ROOT",
+    "RESEARCH_START_DECISION",
+    "RESEARCH_MECHANISM_KEY", "RESEARCH_REGISTRY_HEAD_AT_START", "MATCHED_PRIOR_BRANCH",
+    "PRIOR_RESEARCH_STATUS",
+    "PRIOR_RESEARCH_CONCLUSION", "REOPEN_CONDITION", "REOPEN_JUSTIFICATION",
+    "REGISTRY_COMPLETION_STATUS", "REGISTRY_COMPLETION_HEAD_SHA256",
+    "RETENTION_MANIFEST_STATUS", "RETENTION_MANIFEST_PATH", "RETENTION_MANIFEST_SHA256",
+    "RETENTION_BUDGET",
+    "HOST_CLEANUP_STATUS", "HOST_CLEANUP_RECLAIMED_BYTES",
+    "HOST_CLEANUP_DEFERRED_ALLOWLIST", "HOST_CLEANUP_DEFERRED_ALLOWLIST_PATH",
+    "WORKTREE_RETIREMENT_STATUS", "WORKTREE_RETIREMENT_REASON", "FINAL_REVIEWER_ID",
     "TASK_TEMP_RUNTIME", "TASK_TEMP_RUNTIME_STATUS", "TASK_TEMP_RUNTIME_OWNED",
+    "TASK_TEMP_RUNTIME_CLEANUP_STATUS",
     "WORKER_TEST_STATUS", "WORKER_TEST_LIMITATION", "WORKER_TEST_EVIDENCE",
     "CONTROLLER_VALIDATION_STATUS", "WORKTREE_INVENTORY_STATUS",
     "JUSTIFIED_CREATED_PATHS", "UNJUSTIFIED_CREATED_PATHS",
@@ -69,8 +83,9 @@ REQUIRED_STATE_FIELDS = {
 def isolated_roots(monkeypatch: pytest.MonkeyPatch):
     external_parent = Path(tempfile.gettempdir()).resolve()
     assert external_parent != REPOSITORY_ROOT and REPOSITORY_ROOT not in external_parent.parents
-    with tempfile.TemporaryDirectory(prefix="us-tech-quant-harness-r2-") as directory:
-        root = Path(directory).resolve()
+    root = (external_parent / f"h-{uuid.uuid4().hex}").resolve()
+    root.mkdir()
+    try:
         assert root.parent == external_parent
         assert root != REPOSITORY_ROOT and REPOSITORY_ROOT not in root.parents
         repository = root / "primary-repository"
@@ -81,6 +96,8 @@ def isolated_roots(monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("USTQ_HARNESS_STATE_ROOT", str(state))
         monkeypatch.setenv("USTQ_HARNESS_WORKTREE_ROOT", str(worktrees))
         yield state, worktrees
+    finally:
+        shutil.rmtree(root)
 
 
 def create_state(task_id: str = "test-task", goal: str = "Improve one small code path") -> dict:
@@ -110,7 +127,7 @@ def use_supervisor_test_storage(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> argparse.Namespace:
     """Keep synthetic storage roots sibling to, never above, the worktree fixture."""
-    base = isolated_roots[0].parents[1].parent
+    base = isolated_roots[0].parents[1]
     storage = argparse.Namespace(
         python_exe=Path(sys.executable),
         data_root=base / "supervisor-test-data",
@@ -1122,7 +1139,10 @@ def test_controller_ready_handshake_uses_one_shared_windows_safe_launch(
     assert command[3:6] == ["_run", "--task-id", "test-task"]
     assert command[6] == "--launch-token" and len(command[7]) == 32
     assert Path(observed["cwd"]).resolve() == module.REPO.resolve()
-    assert all(Path(observed["env"][name]).resolve() == runtime for name in ("TEMP", "TMP", "TMPDIR"))
+    assert all(
+        Path(observed["env"][name]).resolve() == runtime / "temp"
+        for name in ("TEMP", "TMP", "TMPDIR")
+    )
     if module.os.name == "nt":
         assert observed["creationflags"] & module.subprocess.DETACHED_PROCESS
         assert observed["creationflags"] & module.subprocess.CREATE_BREAKAWAY_FROM_JOB
@@ -1350,7 +1370,7 @@ def test_supervisor_ready_child_outlives_start_parent_contract_and_uses_stable_i
     assert Path(observed["cwd"]).resolve() == module.REPO.resolve()
     assert observed["close_fds"] is True
     for name in ("TEMP", "TMP", "TMPDIR"):
-        assert Path(observed["env"][name]).resolve() == runtime
+        assert Path(observed["env"][name]).resolve() == runtime / "temp"
     if module.os.name == "nt":
         assert observed["creationflags"] & module.subprocess.DETACHED_PROCESS
         assert observed["creationflags"] & module.subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1402,7 +1422,10 @@ def test_supervisor_missing_host_temp_uses_external_task_runtime_without_permiss
     assert runtime.is_dir()
     assert module.REPO.resolve() not in runtime.parents
     assert module.load_state("test-task")["TASK_TEMP_RUNTIME_STATUS"] == "READY"
-    assert all(Path(observed["env"][name]).resolve() == runtime for name in ("TEMP", "TMP", "TMPDIR"))
+    assert all(
+        Path(observed["env"][name]).resolve() == runtime / "temp"
+        for name in ("TEMP", "TMP", "TMPDIR")
+    )
     source = module._worker_prompt(module.load_state("test-task"))
     assert "Never change ACLs" in source and "icacls/takeown" in source
 
@@ -2269,8 +2292,9 @@ def test_real_frozen_dependency_remains_conservative() -> None:
 def test_harness_temp_roots_are_external_to_repository(isolated_roots: tuple[Path, Path]) -> None:
     state, worktrees = isolated_roots
     test_root = state.parents[1]
-    controller_pytest_temp = (module.task_dir("test-task") / "pytest-temp").resolve()
-    for owned_root in (test_root, state, worktrees, controller_pytest_temp):
+    runtime = module.task_temp_runtime("test-task")
+    layout = module._task_runtime_paths(runtime)
+    for owned_root in (test_root, state, worktrees, runtime, *layout.values()):
         resolved = owned_root.resolve()
         for repository in (REPOSITORY_ROOT, module.REPO.resolve()):
             assert resolved != repository
@@ -2290,9 +2314,18 @@ def test_task_temp_runtime_is_external_task_specific_and_probe_passes(
     assert runtime != module.REPO.resolve() and module.REPO.resolve() not in runtime.parents
 
     prepared = module._ensure_task_temp_runtime("test-task")
+    layout = module._task_runtime_paths(runtime)
     assert prepared == runtime
     assert (runtime / module.TASK_TEMP_OWNER_MARKER).is_file()
+    assert all(path.is_dir() for path in layout.values())
+    assert layout == {
+        "temp": runtime / "temp",
+        "cache": runtime / "cache",
+        "pytest_cache": runtime / "pytest" / "cache",
+        "pytest_basetemp": runtime / "pytest" / "basetemp",
+    }
     assert not list(runtime.glob(".write-probe-*.tmp"))
+    assert not list(runtime.rglob(".write-probe-*.tmp"))
     assert module.load_state("test-task")["TASK_TEMP_RUNTIME_STATUS"] == "READY"
 
     module._cleanup_task_temp_runtime("test-task")
@@ -2308,12 +2341,23 @@ def test_worker_temp_environment_supports_real_tempfile_and_pytest_tmp_path(
     create_state()
     runtime = module._ensure_task_temp_runtime("test-task")
     environment = module._task_temp_environment(runtime)
+    layout = module._task_runtime_paths(runtime)
 
     for name in ("TEMP", "TMP", "TMPDIR"):
-        assert Path(environment[name]).resolve() == runtime
-    assert Path(environment["USTQ_CACHE_ROOT"]).resolve() == runtime / "cache"
+        assert Path(environment[name]).resolve() == layout["temp"]
+    assert Path(environment["USTQ_CACHE_ROOT"]).resolve() == layout["cache"]
+    assert Path(environment["US_TECH_QUANT_TEST_TMP_ROOT"]).resolve() == layout["temp"]
+    assert Path(environment["USTQ_HARNESS_RUNTIME_ROOT"]).resolve() == runtime
+    assert Path(environment["USTQ_HARNESS_PYTEST_CACHE_ROOT"]).resolve() == layout["pytest_cache"]
+    assert Path(environment["USTQ_HARNESS_PYTEST_BASETEMP_ROOT"]).resolve() == layout["pytest_basetemp"]
+    assert Path(environment["PYTEST_DEBUG_TEMPROOT"]).resolve() == layout["temp"]
+    assert "scripts.maintenance.harness_task" in environment["PYTEST_PLUGINS"].split(",")
+    assert str(module.SCRIPT.resolve().parents[2]) in environment["PYTHONPATH"].split(module.os.pathsep)
     assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
-    assert environment["PYTEST_ADDOPTS"] == "-p no:cacheprovider"
+    assert environment["PYTEST_ADDOPTS"] == (
+        f"--basetemp={layout['pytest_basetemp'].as_posix()} "
+        f"-o=cache_dir={layout['pytest_cache'].as_posix()}"
+    )
 
     python_probe = subprocess.run(
         [
@@ -2321,35 +2365,140 @@ def test_worker_temp_environment_supports_real_tempfile_and_pytest_tmp_path(
             "import tempfile; from pathlib import Path; "
             "root=Path(tempfile.gettempdir()).resolve(); "
             "handle=tempfile.NamedTemporaryFile(delete=False); name=Path(handle.name); "
-            "handle.write(b'ok'); handle.close(); print(root); name.unlink()",
+            "handle.write(b'ok'); handle.close(); print(root); print(name.resolve().parent); name.unlink()",
         ],
         cwd=runtime, env=environment, text=True, capture_output=True, check=False, timeout=30,
     )
     assert python_probe.returncode == 0, python_probe.stderr
-    assert Path(python_probe.stdout.strip()).resolve() == runtime
+    python_paths = [Path(value).resolve() for value in python_probe.stdout.splitlines()]
+    assert python_paths == [layout["temp"], layout["temp"]]
 
     probe_dir = runtime / "pytest-probe"
     probe_dir.mkdir()
     probe_test = probe_dir / "test_temp_runtime.py"
     probe_test.write_text(
-        "import tempfile\nfrom pathlib import Path\n\n"
+        "import os\nimport tempfile\nfrom pathlib import Path\n\n"
         "def test_external_tmp_path(tmp_path):\n"
-        "    assert Path(tempfile.gettempdir()).resolve() == Path(__file__).parents[1].resolve()\n"
+        "    assert Path(tempfile.gettempdir()).resolve() == Path(os.environ['TEMP']).resolve()\n"
         "    (tmp_path / 'writable.txt').write_text('ok', encoding='utf-8')\n",
         encoding="utf-8",
     )
     pytest_probe = subprocess.run(
         [
-            sys.executable, "-B", "-m", "pytest", "-q",
-            "--basetemp", str(runtime / "pytest-basetemp"), str(probe_test),
+            sys.executable, "-B", "-m", "pytest", "-q", str(probe_test),
         ],
         cwd=runtime, env=environment, text=True, capture_output=True, check=False, timeout=60,
     )
     assert pytest_probe.returncode == 0, pytest_probe.stdout + pytest_probe.stderr
+    assert (layout["pytest_cache"] / "v" / "cache" / "nodeids").is_file()
+    assert list(layout["pytest_basetemp"].rglob("writable.txt"))
     assert not (runtime / ".pytest_cache").exists()
     assert not (module.REPO / ".pytest_cache").exists()
     assert not list(module.REPO.glob("pytest-cache-files-*"))
 
+    rejected_basetemp = runtime / "pytest" / "forbidden-override"
+    rejected = subprocess.run(
+        [
+            sys.executable, "-B", "-m", "pytest", "-q",
+            "--basetemp", str(rejected_basetemp), str(probe_test),
+        ],
+        cwd=runtime, env=environment, text=True, capture_output=True, check=False, timeout=60,
+    )
+    assert rejected.returncode != 0
+    assert "PYTEST_RUNTIME_OVERRIDE_REJECTED" in rejected.stdout + rejected.stderr
+    assert not rejected_basetemp.exists()
+
+    module._cleanup_task_temp_runtime("test-task")
+    assert not runtime.exists()
+
+
+def test_nested_subprocess_inherits_task_temp_environment(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    create_state()
+    runtime = module._ensure_task_temp_runtime("test-task")
+    environment = module._task_temp_environment(runtime)
+    layout = module._task_runtime_paths(runtime)
+    grandchild = (
+        "import json, os, tempfile; from pathlib import Path; "
+        "handle=tempfile.NamedTemporaryFile(delete=False); name=Path(handle.name).resolve(); "
+        "handle.write(b'nested'); handle.close(); "
+        "print(json.dumps({'temp': str(name), 'TEMP': os.environ['TEMP'], "
+        "'TMP': os.environ['TMP'], 'TMPDIR': os.environ['TMPDIR']})); name.unlink()"
+    )
+    parent = (
+        "import subprocess, sys; "
+        f"result=subprocess.run([sys.executable, '-B', '-c', {grandchild!r}], "
+        "text=True, capture_output=True, check=False); "
+        "print(result.stdout.strip()); print(result.stderr, file=sys.stderr); "
+        "raise SystemExit(result.returncode)"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-B", "-c", parent], cwd=runtime, env=environment,
+        text=True, capture_output=True, check=False, timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    observed = json.loads(result.stdout)
+    assert Path(observed["temp"]).resolve().parent == layout["temp"]
+    assert {
+        Path(observed[name]).resolve() for name in ("TEMP", "TMP", "TMPDIR")
+    } == {layout["temp"]}
+    module._cleanup_task_temp_runtime("test-task")
+
+
+def test_parallel_task_runtime_isolation_and_task_scoped_cleanup(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    synthetic_task_ids = {
+        "TEMP_GOV_TEST_A": "temp-gov-test-a",
+        "TEMP_GOV_TEST_B": "temp-gov-test-b",
+    }
+    for task_id in synthetic_task_ids.values():
+        create_state(task_id)
+
+    runtime_a = module._ensure_task_temp_runtime(synthetic_task_ids["TEMP_GOV_TEST_A"])
+    runtime_b = module._ensure_task_temp_runtime(synthetic_task_ids["TEMP_GOV_TEST_B"])
+    layout_a = module._task_runtime_paths(runtime_a)
+    layout_b = module._task_runtime_paths(runtime_b)
+    assert runtime_a != runtime_b
+    assert all(layout_a[name] != layout_b[name] for name in layout_a)
+
+    keep_a = layout_a["temp"] / "TEMP_GOV_TEST_A.keep"
+    keep_b = layout_b["temp"] / "TEMP_GOV_TEST_B.keep"
+    keep_a.write_text("A", encoding="utf-8")
+    keep_b.write_text("B", encoding="utf-8")
+    module._cleanup_task_temp_runtime(synthetic_task_ids["TEMP_GOV_TEST_A"])
+    assert not runtime_a.exists()
+    assert keep_b.read_text(encoding="utf-8") == "B"
+
+    runtime_a = module._ensure_task_temp_runtime(synthetic_task_ids["TEMP_GOV_TEST_A"])
+    keep_a = module._task_runtime_paths(runtime_a)["temp"] / "TEMP_GOV_TEST_A.keep"
+    keep_a.write_text("A", encoding="utf-8")
+    module._cleanup_task_temp_runtime(synthetic_task_ids["TEMP_GOV_TEST_B"])
+    assert not runtime_b.exists()
+    assert keep_a.read_text(encoding="utf-8") == "A"
+    module._cleanup_task_temp_runtime(synthetic_task_ids["TEMP_GOV_TEST_A"])
+
+
+def test_foreign_runtime_owner_prevents_cleanup(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    create_state()
+    runtime = module._ensure_task_temp_runtime("test-task")
+    marker = runtime / module.TASK_TEMP_OWNER_MARKER
+    marker.write_text(
+        json.dumps({"task_id": "other-task", "runtime": str(runtime)}), encoding="utf-8",
+    )
+
+    with pytest.raises(module.HarnessError, match="WORKER_TEMP_RUNTIME_CLEANUP_FAILED"):
+        module._cleanup_task_temp_runtime("test-task")
+    assert runtime.is_dir()
+
+    module._atomic_write(
+        marker, module._json_bytes({"task_id": "test-task", "runtime": str(runtime)}),
+    )
     module._cleanup_task_temp_runtime("test-task")
     assert not runtime.exists()
 
@@ -2559,7 +2708,7 @@ def test_r31_terminal_reconciliation_keeps_real_failures_failed(
     assert final["WORK_UNITS"][0]["status"] == "BLOCKED_LOCAL"
 
 
-def test_unwritable_task_temp_runtime_is_scoped_blocker_before_worker_launch(
+def test_unwritable_pytest_basetemp_fails_closed_before_worker_launch(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = use_r2_compat_state(create_state())
@@ -2571,7 +2720,9 @@ def test_unwritable_task_temp_runtime_is_scoped_blocker_before_worker_launch(
     real_probe = module._probe_temp_runtime
 
     def deny_probe(path: Path) -> None:
-        raise PermissionError(f"write denied: {path}")
+        if path.name == "basetemp":
+            raise PermissionError(f"write denied: {path}")
+        real_probe(path)
 
     monkeypatch.setattr(module, "assert_registered_isolated_worktree", lambda path: None)
     monkeypatch.setattr(module, "_git_changes", lambda path: {
@@ -2590,6 +2741,8 @@ def test_unwritable_task_temp_runtime_is_scoped_blocker_before_worker_launch(
     assert blocked["HARNESS_STATE"] == "WAITING_HUMAN"
     assert blocked["BLOCKERS"][-1]["code"] == "WORKER_TEMP_RUNTIME_UNAVAILABLE"
     assert blocked["TASK_TEMP_RUNTIME_STATUS"] == "UNAVAILABLE"
+    assert "FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE" in blocked["BLOCKERS"][-1]["detail"]
+    assert str(module.task_temp_runtime("test-task") / "pytest" / "basetemp") in blocked["BLOCKERS"][-1]["detail"]
     assert "HOST_ACL_FAILURE" not in blocked["BLOCKERS"][-1]["detail"]
 
     monkeypatch.setattr(module, "_probe_temp_runtime", real_probe)
@@ -2916,7 +3069,7 @@ def test_worker_attempt_boundary_and_final_exit_inventory_are_coherent(
     assert result["exit_code"] == 0
     runtime = module.task_temp_runtime("test-task")
     for name in ("TEMP", "TMP", "TMPDIR"):
-        assert Path(observed_popen["env"][name]).resolve() == runtime
+        assert Path(observed_popen["env"][name]).resolve() == runtime / "temp"
     assert Path(observed_popen["env"]["USTQ_CACHE_ROOT"]).resolve() == runtime / "cache"
     started = observed_started[0]
     assert started["CURRENT_PHASE"] == "AUTONOMOUS_EXECUTION_LOOP"
@@ -3100,7 +3253,7 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
     assert reviewed["FILES_CHANGED"] == ["reviewed.py"]
 
 
-def test_controller_targeted_pytest_disables_cache_provider(
+def test_controller_targeted_pytest_uses_task_runtime_cache_and_basetemp(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = create_state()
@@ -3115,21 +3268,28 @@ def test_controller_targeted_pytest_disables_cache_provider(
     })
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_candidate_tests", lambda worktree, changed: ["focused_test.py"])
-    monkeypatch.setattr(module, "_storage_paths", lambda: argparse.Namespace(python_exe=Path("python.exe")))
-    observed: list[str] = []
+    observed: dict = {}
 
-    def successful_run(args, cwd=module.REPO, timeout=30):
-        observed.extend(args)
+    def successful_run(args, cwd=module.REPO, timeout=30, environment=None):
+        observed.update(args=list(args), cwd=cwd, timeout=timeout, environment=environment)
         return subprocess.CompletedProcess(args, 0, "passed", "")
 
     monkeypatch.setattr(module, "_run", successful_run)
     passed, detail = module._validate_targeted("test-task")
     assert passed is True
     assert detail.startswith("Controller-owned focused pytest:")
-    assert observed[observed.index("-p"):observed.index("-p") + 2] == ["-p", "no:cacheprovider"]
-    base_temp = Path(observed[observed.index("--basetemp") + 1]).resolve()
-    assert base_temp == (module.task_dir("test-task") / "pytest-temp").resolve()
+    args = observed["args"]
+    runtime = module.task_temp_runtime("test-task")
+    layout = module._task_runtime_paths(runtime)
+    assert "-p" not in args
+    base_temp = Path(args[args.index("--basetemp") + 1]).resolve()
+    assert base_temp == layout["pytest_basetemp"]
+    assert args[args.index("-o") + 1] == f"cache_dir={layout['pytest_cache']}"
     assert module.REPO != base_temp and module.REPO not in base_temp.parents
+    environment = observed["environment"]
+    assert Path(environment["TEMP"]).resolve() == layout["temp"]
+    assert layout["pytest_basetemp"].as_posix() in environment["PYTEST_ADDOPTS"]
+    assert layout["pytest_cache"].as_posix() in environment["PYTEST_ADDOPTS"]
 
 
 def test_anti_bloat_status_distinguishes_pre_existing_residue_from_task_delta(
@@ -3366,11 +3526,18 @@ def test_generic_text_and_steer_limits_remain_unchanged() -> None:
 def test_real_goal_start_and_preflight_persist_legal_pre2026_contract(
     local_persisted_start_roots: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    research_spec = local_persisted_start_roots / "legal-research-spec.json"
+    research_spec.write_text("{}", encoding="utf-8")
     args = module.build_parser().parse_args([
         "start", "--task-id", "real-goal", "--goal", REAL_PRE2026_DISCOVERY_GOAL,
-        "--task-kind", "pre2026-research", "--max-hours", "8",
+        "--task-kind", "pre2026-research", "--research-spec", str(research_spec),
+        "--max-hours", "8",
     ])
     monkeypatch.setattr(module, "_spawn_supervisor", lambda task_id: 4242)
+    monkeypatch.setattr(
+        module, "_prospective_start_gate",
+        lambda task_id, spec: "ALLOW_NEW_RESEARCH",
+    )
 
     assert module.command_start(args) == 0
     stored = module.load_state("real-goal")
@@ -4172,3 +4339,638 @@ def test_controller_failure_preserves_live_worker_and_stop_remains_effective(
     assert stopped["HARNESS_STATE"] == "STOPPED"
     assert stopped["WORKER_PID"] is None
     assert stopped["WORKER_STATUS"] == "STOPPED_PROCESS_NOT_RUNNING"
+
+
+def _prospective_spec(task_root: Path, research_id: str = "prospective-e2e") -> dict:
+    return {
+        "research_id": research_id,
+        "research_family": "synthetic lifecycle",
+        "economic_mechanism": "synthetic registry gate",
+        "target": "synthetic target",
+        "information_source": "synthetic source",
+        "portfolio_role": "test only",
+        "hypothesis": "Harness orders existing lifecycle calls without economic evaluation.",
+        "task_root": str(task_root),
+        "code_reference": "synthetic-commit",
+        "config_reference": "synthetic-config.json",
+        "data_reference": "synthetic-fingerprint",
+        "reopen_request": {},
+    }
+
+
+def test_prospective_duplicate_negative_blocks_before_real_entrypoint_worker(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = use_supervisor_test_storage(isolated_roots, monkeypatch)
+    storage.repo_root = module.REPO
+    task_root = storage.results_root / "duplicate-negative"
+    spec_path = isolated_roots[0].parent / "duplicate-negative-spec.json"
+    spec = _prospective_spec(task_root, "duplicate-negative")
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    worker_calls = {"count": 0}
+
+    class DuplicateLifecycle:
+        @staticmethod
+        def research_start_gate(repo: Path, path: Path, *, storage=None) -> dict:
+            assert path == spec_path.resolve()
+            return {
+                "spec": spec,
+                "decision": {
+                    "mechanism_key": "a" * 64,
+                    "matched_prior_branch": "prior-negative",
+                    "prior_status": "CLOSED_NEGATIVE",
+                    "prior_conclusion": "existing concise negative conclusion",
+                    "reopen_condition": "genuinely new source",
+                    "decision": "BLOCK_AS_DUPLICATE_RESEARCH",
+                    "justification": "no qualifying reopen basis",
+                    "registry_head_sha256": "b" * 64,
+                },
+            }
+
+    def forbidden_worker(task_id: str) -> int:
+        worker_calls["count"] += 1
+        pytest.fail("duplicate research must terminate before the Harness worker")
+
+    monkeypatch.setattr(module, "_load_prospective_lifecycle", lambda: DuplicateLifecycle)
+    monkeypatch.setattr(module, "hard_guard_conflicts", lambda goal: [])
+    monkeypatch.setattr(module, "run_task", forbidden_worker)
+
+    assert module.main([
+        "start", "--task-id", "duplicate-negative", "--foreground",
+        "--goal", "Synthetic registered pre-2026 research fixture.",
+        "--task-kind", "pre2026-research", "--research-spec", str(spec_path),
+    ]) == 0
+    state = module.load_state("duplicate-negative")
+    assert worker_calls["count"] == 0
+    assert state["HARNESS_STATE"] == "COMPLETED"
+    assert state["TERMINAL_OUTCOME"] == "BLOCK_AS_DUPLICATE_RESEARCH"
+    assert state["MATCHED_PRIOR_BRANCH"] == "prior-negative"
+    assert state["PRIOR_RESEARCH_STATUS"] == "CLOSED_NEGATIVE"
+    assert state["PRIOR_RESEARCH_CONCLUSION"] == "existing concise negative conclusion"
+
+
+def test_prospective_valid_reopen_reaches_worker_and_persists_justification(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = use_supervisor_test_storage(isolated_roots, monkeypatch)
+    storage.repo_root = module.REPO
+    spec_path = isolated_roots[0].parent / "valid-reopen-spec.json"
+    spec = _prospective_spec(storage.results_root / "valid-reopen", "valid-reopen")
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    worker_calls = {"count": 0}
+
+    class ReopenLifecycle:
+        @staticmethod
+        def research_start_gate(repo: Path, path: Path, *, storage=None) -> dict:
+            return {
+                "spec": spec,
+                "decision": {
+                    "mechanism_key": "c" * 64,
+                    "matched_prior_branch": "prior-closed",
+                    "prior_status": "CLOSED_NEGATIVE",
+                    "prior_conclusion": "negative on prior source",
+                    "reopen_condition": "new source arrives",
+                    "decision": "ALLOW_REOPEN",
+                    "justification": "documented new source evidence",
+                    "registry_head_sha256": "d" * 64,
+                },
+            }
+
+    def synthetic_worker(task_id: str) -> int:
+        worker_calls["count"] += 1
+        return 0
+
+    monkeypatch.setattr(module, "_load_prospective_lifecycle", lambda: ReopenLifecycle)
+    monkeypatch.setattr(module, "hard_guard_conflicts", lambda goal: [])
+    monkeypatch.setattr(module, "run_task", synthetic_worker)
+
+    assert module.main([
+        "start", "--task-id", "valid-reopen", "--foreground",
+        "--goal", "Synthetic registered reopen fixture.",
+        "--task-kind", "pre2026-research", "--research-spec", str(spec_path),
+    ]) == 0
+    state = module.load_state("valid-reopen")
+    assert worker_calls["count"] == 1
+    assert state["RESEARCH_START_DECISION"] == "ALLOW_REOPEN"
+    assert state["REOPEN_JUSTIFICATION"] == "documented new source evidence"
+    assert state["REOPEN_CONDITION"] == "new source arrives"
+
+
+@pytest.mark.parametrize("task_kind", ["maintenance", "auto"])
+def test_non_research_real_entrypoint_is_not_false_blocked(
+    task_kind: str, isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"worker": 0}
+
+    def synthetic_worker(task_id: str) -> int:
+        calls["worker"] += 1
+        return 0
+
+    monkeypatch.setattr(
+        module, "_load_prospective_lifecycle",
+        lambda: pytest.fail("non-research task must not load research governance"),
+    )
+    monkeypatch.setattr(module, "run_task", synthetic_worker)
+    task_id = f"maintenance-not-research-{task_kind}"
+    assert module.main([
+        "start", "--task-id", task_id, "--foreground",
+        "--goal", "Harness maintenance: repair one lifecycle fixture; do not perform economic research.",
+        "--task-kind", task_kind,
+    ]) == 0
+    state = module.load_state(task_id)
+    assert calls["worker"] == 1
+    assert state["TASK_KIND"] == "maintenance"
+    assert state["RESEARCH_START_DECISION"] == "NOT_APPLICABLE_NON_RESEARCH_TASK"
+    assert state["PROSPECTIVE_LIFECYCLE_APPLICABILITY"] == "NOT_APPLICABLE_NON_RESEARCH_TASK"
+
+
+def test_non_research_finalization_never_invokes_prospective_retirement(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state(goal="Harness maintenance fixture")
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "TASK_KIND": "maintenance",
+        "WORKTREE": str(worktree), "NEXT_ACTION_CODE": "FINALIZE",
+        "LAST_REVIEW_STATUS": "PASS", "CONTROLLER_VALIDATION_STATUS": "PASS",
+    })
+    module._write_state_unlocked("test-task", state)
+    cleanup_calls: list[str] = []
+
+    def terminal_temp_cleanup(task_id: str) -> None:
+        assert module.load_state(task_id)["HARNESS_STATE"] == "COMPLETED"
+        cleanup_calls.append(task_id)
+
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [],
+        "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", terminal_temp_cleanup)
+    monkeypatch.setattr(
+        module, "_run_prospective_post_completion",
+        lambda *args, **kwargs: pytest.fail("non-research worktree retirement is out of scope"),
+    )
+    monkeypatch.setattr(
+        module, "_load_prospective_lifecycle",
+        lambda: pytest.fail("non-research finalization must not load research governance"),
+    )
+
+    module._dispatch("test-task")
+
+    completed = module.load_state("test-task")
+    assert completed["HARNESS_STATE"] == "COMPLETED"
+    assert completed["WORKTREE_RETIREMENT_STATUS"] == "NOT_APPLICABLE"
+    assert cleanup_calls == ["test-task"]
+
+
+def test_worker_prompt_declares_exact_prospective_completion_schema(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state(goal="Synthetic prospective prompt fixture")
+    state.update({
+        "TASK_KIND": "pre2026-research", "RESEARCH_START_DECISION": "ALLOW_NEW_RESEARCH",
+        "RESEARCH_MECHANISM_KEY": "a" * 64, "PROSPECTIVE_RESEARCH_ID": "RESEARCH-001",
+        "RESEARCH_TASK_ROOT": str(isolated_roots[0].parent / "prospective-prompt"),
+    })
+    prompt = module._worker_prompt(state)
+    assert "CLOSED_NEGATIVE, FAILED, REJECTED, SUPERSEDED" in prompt
+    assert '"schema_version":1,"task_id":"RESEARCH-001","artifacts":[...]' in prompt
+    assert "object_type (FILE or DIRECTORY)" in prompt
+    assert "delete_after_completion, protected, rebuildable, and forward_decision" in prompt
+    assert "disposable FILE also requires its whole-file lowercase SHA256" in prompt
+    assert "one exact KEEP_RESEARCH_KNOWLEDGE row" in prompt
+
+
+def test_prospective_real_entrypoint_orders_finalize_cleanup_and_retirement(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = use_supervisor_test_storage(isolated_roots, monkeypatch)
+    storage.repo_root = module.REPO
+    (module.REPO / "config").mkdir(parents=True)
+    shutil.copy2(REPOSITORY_ROOT / "research_registry.py", module.REPO / "research_registry.py")
+    registry_root = storage.results_root / "synthetic-existing-registry"
+    (module.REPO / "config" / "research_registry.json").write_text(json.dumps({
+        "schema_version": 1, "registry_root": str(registry_root),
+    }), encoding="utf-8")
+    lifecycle = module._load_prospective_lifecycle()
+    prior_spec = lifecycle.normalize_research_spec({
+        **_prospective_spec(storage.results_root / "prior-prospective-e2e", "prior-prospective-e2e"),
+        "research_family": "distinct prior family",
+        "economic_mechanism": "distinct prior mechanism",
+        "target": "distinct prior target",
+        "information_source": "distinct prior source",
+        "data_reference": "contract://distinct-prior-source",
+        "portfolio_role": "distinct prior role",
+    })
+    registry = lifecycle._registry_module(module.REPO)
+    active = {
+        **lifecycle.registry_candidate(prior_spec),
+        "status": "ACTIVE",
+        "evidence_source_temporal_status": "STRUCTURAL_GOVERNANCE_METADATA_ONLY",
+        "excluded_source_refs": [],
+        "temporal_evidence_limitations": [],
+        "metadata": {"mechanism_key": lifecycle.mechanism_key(prior_spec)},
+    }
+    operations = [{"op": "add_entity", "entity": active}]
+    registry.apply_patch(registry_root, {
+        "schema_version": 1,
+        "expected_base_head_sha256": registry.GENESIS,
+        "author": "synthetic-harness-e2e",
+        "event_time_utc": "2025-12-30T00:00:00+00:00",
+        "validation": {"status": "PASS", "post_2025_observation_count": 0},
+        "independent_review": {
+            "status": "PASS", "independent": True, "reviewer": "synthetic-fixture",
+        },
+        "operations": operations,
+        "operation_count": 1,
+        "operations_sha256": registry.sha256_value(operations),
+    })
+    task_root = storage.results_root / "prospective-e2e"
+    retained = task_root / "retained"
+    scratch_dir = task_root / "scratch"
+    receipt_path = retained / "result_receipt.json"
+    source_marker = retained / "source-reference.json"
+    forward_evidence = retained / "forward-decision.json"
+    scratch = scratch_dir / "derived.tmp"
+    manifest_path = task_root / "retention_manifest.json"
+    spec = _prospective_spec(task_root)
+    spec_path = isolated_roots[0].parent / "prospective-e2e-spec.json"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    worktree = isolated_roots[1] / "harness-task-prospective-e2e"
+    worktree.mkdir(parents=True)
+    order: list[str] = []
+
+    real_start_gate = lifecycle.research_start_gate
+    real_receipt_validation = lifecycle.validate_completion_receipt
+    real_registry_update = lifecycle.apply_registry_completion
+    real_manifest_validation = lifecycle.validate_retention_manifest
+
+    def observed_start_gate(repo: Path, path: Path, *, storage=None) -> dict:
+        order.append("START_GATE")
+        assert not task_root.exists()
+        return real_start_gate(repo, path, storage=storage)
+
+    def observed_receipt_validation(receipt: dict, received_spec: dict) -> dict:
+        order.append("RECEIPT_VALIDATION")
+        return real_receipt_validation(receipt, received_spec)
+
+    def observed_registry_update(
+        repo: Path, received_spec: dict, receipt: dict, path: Path, *, reviewer: str,
+    ) -> dict:
+        order.append("REGISTRY_UPDATE")
+        assert reviewer == "harness-final-independent-review:review-thread-e2e"
+        return real_registry_update(repo, received_spec, receipt, path, reviewer=reviewer)
+
+    def observed_manifest_validation(
+        path: Path, received_spec: dict, received_storage,
+    ) -> dict:
+        order.append("RETENTION_MANIFEST")
+        assert path == manifest_path.resolve()
+        return real_manifest_validation(path, received_spec, received_storage)
+
+    def deferred_host_cleanup(
+        received_rows, *, task_completed: bool, worker_active: bool,
+        task_root: Path, storage,
+    ) -> dict:
+        order.append("HOST_CLEANUP")
+        assert module.load_state("prospective-e2e")["HARNESS_STATE"] == "COMPLETED"
+        assert task_completed and not worker_active
+        assert next(
+            row for row in received_rows if row["path"] == str(source_marker.resolve())
+        )["retention_class"] == "KEEP_DATA"
+        assert next(
+            row for row in received_rows if row["path"] == str(forward_evidence.resolve())
+        )["retention_class"] == "KEEP_KEY_EVIDENCE"
+        return {
+            "status": "HOST_CLEANUP_DEFERRED", "deleted_paths": [],
+            "reclaimed_bytes": 0,
+            "deferred": [{"path": str(scratch.resolve()), "reason": "PermissionError:synthetic"}],
+        }
+
+    def deferred_worktree_retirement(
+        repo: Path, path: Path, *, task_completed: bool, active: bool,
+    ) -> dict:
+        order.append("WORKTREE_RETIREMENT")
+        assert task_completed and not active and path == worktree.resolve()
+        return {"status": "WORKTREE_RETIREMENT_DEFERRED", "reason": "REVIEW"}
+
+    monkeypatch.setattr(lifecycle, "research_start_gate", observed_start_gate)
+    monkeypatch.setattr(lifecycle, "validate_completion_receipt", observed_receipt_validation)
+    monkeypatch.setattr(lifecycle, "apply_registry_completion", observed_registry_update)
+    monkeypatch.setattr(lifecycle, "validate_retention_manifest", observed_manifest_validation)
+    monkeypatch.setattr(lifecycle, "host_cleanup", deferred_host_cleanup)
+    monkeypatch.setattr(lifecycle, "retire_completed_worktree", deferred_worktree_retirement)
+
+    def synthetic_run_task(task_id: str) -> int:
+        order.append("WORKER")
+        retained.mkdir(parents=True)
+        scratch_dir.mkdir(parents=True)
+        normalized_spec = lifecycle.normalize_research_spec(spec)
+        receipt_path.write_text(json.dumps({
+            "research_id": normalized_spec["research_id"],
+            "mechanism_key": lifecycle.mechanism_key(normalized_spec),
+            "hypothesis": normalized_spec["hypothesis"],
+            "final_status": "CLOSED_NEGATIVE",
+            "key_conclusion": "synthetic non-economic lifecycle conclusion",
+            "key_metrics_summary": {"synthetic_count": 1},
+            "trial_count": {field: 0 for field in lifecycle.TRIAL_FIELDS},
+            "code_commit": "synthetic-commit",
+            "config_reference": normalized_spec["config_reference"],
+            "data_reference": normalized_spec["data_reference"],
+            "stop_reason": "synthetic fixture completed",
+            "reopen_condition": "documented fixture change",
+            "related_branch": "",
+            "completed_at": "2025-12-31T00:00:00+00:00",
+        }), encoding="utf-8")
+        source_marker.write_text("synthetic source reference", encoding="utf-8")
+        forward_evidence.write_text("synthetic pre-outcome decision", encoding="utf-8")
+        scratch.write_text("synthetic disposable payload", encoding="utf-8")
+
+        def artifact_row(
+            path: Path, retention_class: str, provenance: str, reason: str,
+            *, forward_decision: bool = False, key_evidence_justification: str = "",
+        ) -> dict:
+            disposable = retention_class in lifecycle.DISPOSABLE_CLASSES
+            row = {
+                "path": str(path.resolve()), "retention_class": retention_class,
+                "object_type": "FILE", "size_bytes": path.stat().st_size,
+                "provenance": provenance, "reason": reason,
+                "delete_after_completion": disposable, "protected": not disposable,
+                "rebuildable": disposable, "forward_decision": forward_decision,
+            }
+            if disposable:
+                row["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            if key_evidence_justification:
+                row["key_evidence_justification"] = key_evidence_justification
+            return row
+
+        manifest_path.write_text(json.dumps({
+            "schema_version": 1,
+            "task_id": normalized_spec["research_id"],
+            "artifacts": [
+                artifact_row(
+                    receipt_path, "KEEP_RESEARCH_KNOWLEDGE", "RESEARCH_KNOWLEDGE",
+                    "compact terminal research receipt",
+                ),
+                artifact_row(
+                    source_marker, "KEEP_DATA", "RAW", "synthetic source identity",
+                ),
+                artifact_row(
+                    forward_evidence, "KEEP_KEY_EVIDENCE", "DERIVED",
+                    "synthetic forward decision evidence", forward_decision=True,
+                    key_evidence_justification="pre-outcome decision evidence",
+                ),
+                artifact_row(
+                    scratch, "DERIVED_DISPOSABLE", "DERIVED",
+                    "locally reproducible synthetic payload",
+                ),
+            ],
+        }), encoding="utf-8")
+        state = module.load_state(task_id)
+        state.update({
+            "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "FINAL_VALIDATION",
+            "WORKTREE": str(worktree), "CONTROLLER_VALIDATION_STATUS": "NOT_RUN",
+            "WORK_UNITS": [{
+                "id": "WU-001", "status": "DONE", "optional": False,
+                "produced_outputs": [str(receipt_path)],
+                "validation_state": "PASS", "last_checkpoint": "COMPLETED",
+            }],
+        })
+        module._write_state_unlocked(task_id, state)
+        module._dispatch(task_id)
+        return 0
+
+    def final_validation(task_id: str) -> tuple[bool, str]:
+        order.append("FINAL_VALIDATION")
+        module.update_task(task_id, {"CONTROLLER_VALIDATION_STATUS": "PASS"})
+        return True, "synthetic controller validation passed"
+
+    def final_review(task_id: str) -> str:
+        order.append("FINAL_REVIEW")
+        module.update_task(task_id, {
+            "LAST_REVIEW_STATUS": "PASS", "REVIEW_FINDINGS": "No blocking findings.",
+            "FINAL_REVIEWER_ID": "review-thread-e2e",
+        }, new_state="REVIEWING", event="SYNTHETIC_FINAL_REVIEW", detail="PASS")
+        return "PASS"
+
+    def post_terminal_temp_cleanup(task_id: str) -> None:
+        order.append("TEMP_CLEANUP")
+        assert module.load_state(task_id)["HARNESS_STATE"] == "COMPLETED"
+
+    monkeypatch.setattr(module, "_load_prospective_lifecycle", lambda: lifecycle)
+    monkeypatch.setattr(module, "hard_guard_conflicts", lambda goal: [])
+    monkeypatch.setattr(module, "run_task", synthetic_run_task)
+    monkeypatch.setattr(module, "_run_final_validation", final_validation)
+    monkeypatch.setattr(module, "_perform_review", final_review)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "synthetic-progress")
+    monkeypatch.setattr(module, "_git", lambda args, cwd=module.REPO, timeout=30: subprocess.CompletedProcess(
+        args, 0, stdout="refs/heads/main\n", stderr="",
+    ))
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": [], "created": [], "dependencies": [],
+        "changed_count": 0, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", post_terminal_temp_cleanup)
+
+    assert module.main([
+        "start", "--task-id", "prospective-e2e", "--foreground",
+        "--goal", "Synthetic prospective lifecycle integration fixture.",
+        "--task-kind", "pre2026-research", "--research-spec", str(spec_path),
+    ]) == 0
+    state = module.load_state("prospective-e2e")
+    assert order == [
+        "START_GATE", "WORKER", "FINAL_VALIDATION", "FINAL_REVIEW",
+        "RECEIPT_VALIDATION", "REGISTRY_UPDATE", "RETENTION_MANIFEST",
+        "TEMP_CLEANUP", "HOST_CLEANUP", "WORKTREE_RETIREMENT",
+    ]
+    assert state["HARNESS_STATE"] == "COMPLETED"
+    assert state["REGISTRY_COMPLETION_STATUS"] == "APPLIED"
+    assert state["RETENTION_MANIFEST_STATUS"] == "PASS"
+    assert state["HOST_CLEANUP_STATUS"] == "HOST_CLEANUP_DEFERRED"
+    assert state["HOST_CLEANUP_DEFERRED_ALLOWLIST"] == [str(scratch.resolve())]
+    assert state["WORKTREE_RETIREMENT_STATUS"] == "WORKTREE_RETIREMENT_DEFERRED"
+    assert state["WORKTREE_RETIREMENT_REASON"] == "REVIEW"
+    allowlist = json.loads(
+        Path(state["HOST_CLEANUP_DEFERRED_ALLOWLIST_PATH"]).read_text(encoding="utf-8")
+    )
+    assert [row["path"] for row in allowlist["exact_paths"]] == [str(scratch.resolve())]
+    assert source_marker.is_file() and forward_evidence.is_file() and scratch.is_file()
+    assert worktree.is_dir()
+    stored = registry.query_registry(
+        registry_root, entity_id="prospective-e2e",
+    )["entities"][0]
+    assert stored["status"] == "CLOSED"
+    assert stored["metadata"]["retention_class"] == "KEEP_RESEARCH_KNOWLEDGE"
+    receipt_sha256 = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    expected_reference = f"receipt://sha256/{receipt_sha256}"
+    assert stored["metadata"]["research_knowledge_sha256"] == receipt_sha256
+    for field in (
+        "research_knowledge_ref", "final_conclusion_ref",
+        "key_result_summary_ref", "stop_reason_ref", "reopen_condition_ref",
+    ):
+        assert stored["metadata"][field] == expected_reference
+    assert str(receipt_path.resolve()) not in json.dumps(
+        stored["metadata"], sort_keys=True,
+    )
+    assert registry._performance_value_paths(stored["metadata"]) == []
+    events = [
+        json.loads(line)["event"]
+        for line in module.timeline_path("prospective-e2e").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events.index("RESEARCH_START_GATE_COMPLETED") < events.index("FINAL_VALIDATION_STARTED")
+    assert events.index("TASK_COMPLETED") < events.index("HOST_CLEANUP_COMPLETED")
+
+
+def test_prospective_post_completion_exception_is_terminal_fail_safe(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state(goal="Synthetic post-terminal fail-safe fixture")
+    state.update({
+        "HARNESS_STATE": "COMPLETED", "TERMINAL_OUTCOME": "COMPLETED",
+        "TERMINAL_SUCCESS": True, "TASK_KIND": "pre2026-research",
+    })
+    module._write_state_unlocked("test-task", state)
+    evidence_root = isolated_roots[0].parent / "post-terminal-fail-safe"
+    evidence_root.mkdir()
+    manifest_path = evidence_root / "retention_manifest.json"
+    receipt_path = evidence_root / "result_receipt.json"
+    disposable = evidence_root / "scratch.bin"
+    for path in (manifest_path, receipt_path, disposable):
+        path.write_bytes(b"synthetic")
+
+    class Lifecycle:
+        DISPOSABLE_CLASSES = {"DERIVED_DISPOSABLE", "SCRATCH_DISPOSABLE"}
+
+        @staticmethod
+        def host_cleanup(*args, **kwargs):
+            pytest.fail("hash failure must prevent destructive cleanup")
+
+        @staticmethod
+        def retire_completed_worktree(*args, **kwargs):
+            pytest.fail("hash failure must prevent retirement")
+
+    context = {
+        "lifecycle": Lifecycle,
+        "rows": [{
+            "path": str(disposable.resolve()), "retention_class": "DERIVED_DISPOSABLE",
+            "object_type": "FILE", "size_bytes": disposable.stat().st_size,
+            "sha256": hashlib.sha256(disposable.read_bytes()).hexdigest(),
+        }],
+        "manifest_path": manifest_path, "manifest_sha256": "a" * 64,
+        "receipt_path": receipt_path, "receipt_sha256": "b" * 64,
+        "task_root": evidence_root, "storage": argparse.Namespace(),
+    }
+    monkeypatch.setattr(
+        module, "_whole_file_sha256",
+        lambda path: (_ for _ in ()).throw(OSError("synthetic post-terminal hash failure")),
+    )
+
+    module._run_prospective_post_completion("test-task", context)
+
+    completed = module.load_state("test-task")
+    assert completed["HARNESS_STATE"] == "COMPLETED"
+    assert completed["TERMINAL_OUTCOME"] == "COMPLETED"
+    assert completed["TERMINAL_SUCCESS"] is True
+    assert completed["HOST_CLEANUP_STATUS"] == "HOST_CLEANUP_DEFERRED"
+    assert completed["WORKTREE_RETIREMENT_STATUS"] == "WORKTREE_RETIREMENT_DEFERRED"
+    assert "POST_COMPLETION_FAIL_SAFE:OSError" in completed["WORKTREE_RETIREMENT_REASON"]
+    assert completed["HOST_CLEANUP_DEFERRED_ALLOWLIST"] == [str(disposable.resolve())]
+
+
+def test_prospective_post_completion_dirty_worktree_never_reaches_git_remove(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = use_supervisor_test_storage(isolated_roots, monkeypatch)
+    storage.repo_root = module.REPO
+    lifecycle = module._load_prospective_lifecycle()
+    task_root = storage.results_root / "dirty-worktree-post-completion"
+    retained = task_root / "retained"
+    retained.mkdir(parents=True)
+    receipt_path = retained / "result_receipt.json"
+    manifest_path = task_root / "retention_manifest.json"
+    receipt_path.write_bytes(b"synthetic retained receipt")
+    manifest_path.write_bytes(b"synthetic stable manifest")
+    worktree = isolated_roots[1] / "harness-task-dirty-retirement"
+    worktree.mkdir(parents=True)
+    state = create_state(goal="Synthetic dirty worktree retirement fixture")
+    state.update({
+        "HARNESS_STATE": "COMPLETED", "TERMINAL_OUTCOME": "COMPLETED",
+        "TERMINAL_SUCCESS": True, "TASK_KIND": "pre2026-research",
+        "WORKTREE": str(worktree), "WORKER_PID": None,
+        "ACTIVE_PROCESS_KIND": "", "ACTIVE_THREAD_ID": "",
+    })
+    module._write_state_unlocked("test-task", state)
+    git_calls: list[list[str]] = []
+
+    def fake_git(arguments: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        git_calls.append(arguments)
+        if arguments[:2] == ["worktree", "remove"]:
+            pytest.fail("dirty worktree must never reach git worktree remove")
+        if arguments == ["worktree", "list", "--porcelain"]:
+            normalized = str(worktree.resolve()).replace("\\", "/")
+            return subprocess.CompletedProcess(
+                arguments, 0,
+                f"worktree {normalized}\nHEAD abc123\nbranch refs/heads/task\n\n", "",
+            )
+        if arguments == ["status", "--porcelain=v1"]:
+            return subprocess.CompletedProcess(arguments, 0, "?? scratch.tmp\n", "")
+        if arguments == ["rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(arguments, 0, "abc123\n", "")
+        if arguments == ["symbolic-ref", "-q", "HEAD"]:
+            return subprocess.CompletedProcess(arguments, 0, "refs/heads/task\n", "")
+        if arguments == ["rev-parse", "--git-dir"]:
+            return subprocess.CompletedProcess(arguments, 0, ".git\n", "")
+        if arguments[:3] == ["show-ref", "--verify", "--quiet"]:
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        if arguments == ["rev-parse", "refs/heads/task"]:
+            return subprocess.CompletedProcess(arguments, 0, "abc123\n", "")
+        if arguments == ["merge-base", "--is-ancestor", "abc123", "abc123"]:
+            return subprocess.CompletedProcess(arguments, 0, "", "")
+        return subprocess.CompletedProcess(arguments, 0, "", "")
+
+    monkeypatch.setattr(lifecycle, "_git", fake_git)
+    context = {
+        "lifecycle": lifecycle,
+        "rows": [{
+            "path": str(receipt_path.resolve()),
+            "retention_class": "KEEP_RESEARCH_KNOWLEDGE",
+            "object_type": "FILE", "size_bytes": receipt_path.stat().st_size,
+        }],
+        "manifest_path": manifest_path,
+        "manifest_sha256": module._whole_file_sha256(manifest_path),
+        "receipt_path": receipt_path,
+        "receipt_sha256": module._whole_file_sha256(receipt_path),
+        "task_root": task_root, "storage": storage,
+    }
+
+    module._run_prospective_post_completion("test-task", context)
+
+    completed = module.load_state("test-task")
+    assert completed["HOST_CLEANUP_STATUS"] == "PASS"
+    assert completed["WORKTREE_RETIREMENT_STATUS"] == "WORKTREE_RETIREMENT_DEFERRED"
+    assert completed["WORKTREE_RETIREMENT_REASON"] == "REVIEW"
+    assert ["status", "--porcelain=v1"] in git_calls
+    assert not any(arguments[:2] == ["worktree", "remove"] for arguments in git_calls)
+
+
+def test_research_dispatch_defense_in_depth_blocks_missing_start_gate(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state(goal="Synthetic research bypass fixture")
+    state.update({
+        "HARNESS_STATE": "RUNNING", "TASK_KIND": "pre2026-research",
+        "NEXT_ACTION_CODE": "WORKER", "RESEARCH_START_DECISION": "NOT_RUN",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(
+        module, "_run_codex_turn",
+        lambda *args, **kwargs: pytest.fail("worker must not dispatch without research start gate"),
+    )
+    module._dispatch("test-task")
+    blocked = module.load_state("test-task")
+    assert blocked["HARNESS_STATE"] == "BLOCKED"
+    assert blocked["ACTIVE_BLOCKERS"][0]["code"] == "RESEARCH_START_GATE_NOT_PASSED"

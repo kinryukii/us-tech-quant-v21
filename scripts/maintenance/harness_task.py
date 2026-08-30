@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterator, Sequence
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve()
 R1_PREFLIGHT = SCRIPT.with_name("harness_preflight.py")
+PROSPECTIVE_LIFECYCLE = REPO / "prospective_research_lifecycle.py"
 POLICY = REPO / "configs/anti_bloat_policy.toml"
 TERMINAL_STATES = {"STOPPED", "COMPLETED", "COMPLETED_WITH_DEFERRED_WORK", "FAILED"}
 ACTIVE_STATES = {"PLANNING", "RUNNING", "PAUSING", "REVIEWING", "STOPPING"}
@@ -35,7 +36,7 @@ STATES = {
 }
 ALLOWED_TRANSITIONS = {
     "IDLE": {"PLANNING", "BLOCKED"},
-    "PLANNING": {"RUNNING", "PAUSING", "PAUSED", "WAITING_HUMAN", "BLOCKED", "STOPPING", "STOPPED", "FAILED"},
+    "PLANNING": {"RUNNING", "PAUSING", "PAUSED", "WAITING_HUMAN", "BLOCKED", "STOPPING", "STOPPED", "COMPLETED", "FAILED"},
     "RUNNING": {"PLANNING", "PAUSING", "PAUSED", "REVIEWING", "WAITING_HUMAN", "BLOCKED", "STOPPING", "STOPPED", "COMPLETED", "COMPLETED_WITH_DEFERRED_WORK", "FAILED"},
     "PAUSING": {"PAUSED", "WAITING_HUMAN", "STOPPING", "FAILED"},
     "PAUSED": {"PLANNING", "RUNNING", "REVIEWING", "WAITING_HUMAN", "STOPPING", "STOPPED", "FAILED"},
@@ -82,6 +83,7 @@ TASK_KIND_SCOPES = {
     "2026-evaluation": "2026-evaluation",
 }
 TASK_KINDS = ("auto", *TASK_KIND_SCOPES)
+PROSPECTIVE_RESEARCH_TASK_KINDS = {"pre2026-research", "2026-evaluation"}
 SCOPE_SAFETY_RANK = {
     "independent-code": 0,
     "historical-fetch": 1,
@@ -131,6 +133,17 @@ def _load_r1():
     return module
 
 
+def _load_prospective_lifecycle():
+    spec = importlib.util.spec_from_file_location(
+        "ustq_prospective_research_lifecycle", PROSPECTIVE_LIFECYCLE,
+    )
+    if spec is None or spec.loader is None:
+        raise HarnessError(f"PROSPECTIVE_LIFECYCLE_UNAVAILABLE:{PROSPECTIVE_LIFECYCLE}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _storage_paths():
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
@@ -172,7 +185,8 @@ def task_temp_runtime(task_id: str) -> Path:
         raise HarnessError(f"WORKER_TEMP_RUNTIME_NOT_TASK_SCOPED:{runtime}")
     paths = _storage_paths()
     protected = {
-        REPO.resolve(), paths.data_root.resolve(), paths.cache_root.resolve(),
+        REPO.resolve(), getattr(paths, "repo_root", REPO).resolve(),
+        paths.data_root.resolve(), paths.cache_root.resolve(),
         paths.daily_root.resolve(), paths.backtest_root.resolve(),
         paths.results_root.resolve(), paths.envs_root.resolve(),
     }
@@ -180,6 +194,17 @@ def task_temp_runtime(task_id: str) -> Path:
         if runtime == protected_root or protected_root in runtime.parents:
             raise HarnessError(f"WORKER_TEMP_RUNTIME_PROTECTED_ROOT:{runtime}:{protected_root}")
     return runtime
+
+
+def _task_runtime_paths(runtime: Path) -> dict[str, Path]:
+    """Return the fixed task-owned runtime layout used by every Harness child."""
+    resolved = runtime.resolve(strict=False)
+    return {
+        "temp": resolved / "temp",
+        "cache": resolved / "cache",
+        "pytest_cache": resolved / "pytest" / "cache",
+        "pytest_basetemp": resolved / "pytest" / "basetemp",
+    }
 
 
 def state_path(task_id: str) -> Path:
@@ -341,8 +366,12 @@ def _prepare_task_temp_runtime(task_id: str) -> Path:
     else:
         runtime.mkdir()
         _atomic_write(marker, _json_bytes({"task_id": task_id, "runtime": str(runtime)}))
-    (runtime / "cache").mkdir(exist_ok=True)
+    layout = _task_runtime_paths(runtime)
+    for path in layout.values():
+        path.mkdir(parents=True, exist_ok=True)
     _probe_temp_runtime(runtime)
+    for path in layout.values():
+        _probe_temp_runtime(path)
     return runtime
 
 
@@ -361,7 +390,10 @@ def _ensure_task_temp_runtime(task_id: str) -> Path:
             "TASK_TEMP_RUNTIME_STATUS": "UNAVAILABLE",
             "TASK_TEMP_RUNTIME_OWNED": False,
         }, event="TASK_TEMP_RUNTIME_UNAVAILABLE", detail=f"{type(exc).__name__}:{exc}")
-        raise HarnessError(f"WORKER_TEMP_RUNTIME_UNAVAILABLE:{type(exc).__name__}:{exc}") from exc
+        raise HarnessError(
+            f"WORKER_TEMP_RUNTIME_UNAVAILABLE:FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:"
+            f"{type(exc).__name__}:{exc}"
+        ) from exc
     update_task(task_id, {
         "TASK_TEMP_RUNTIME": str(runtime),
         "TASK_TEMP_RUNTIME_STATUS": "READY",
@@ -372,13 +404,127 @@ def _ensure_task_temp_runtime(task_id: str) -> Path:
 
 def _task_temp_environment(runtime: Path) -> dict[str, str]:
     resolved = runtime.resolve()
+    layout = _task_runtime_paths(resolved)
     environment = os.environ.copy()
     for name in ("TEMP", "TMP", "TMPDIR"):
-        environment[name] = str(resolved)
-    environment["USTQ_CACHE_ROOT"] = str(resolved / "cache")
+        environment[name] = str(layout["temp"])
+    environment["USTQ_CACHE_ROOT"] = str(layout["cache"])
+    environment["US_TECH_QUANT_TEST_TMP_ROOT"] = str(layout["temp"])
+    environment["USTQ_HARNESS_RUNTIME_ROOT"] = str(resolved)
+    environment["USTQ_HARNESS_PYTEST_CACHE_ROOT"] = str(layout["pytest_cache"])
+    environment["USTQ_HARNESS_PYTEST_BASETEMP_ROOT"] = str(layout["pytest_basetemp"])
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    environment["PYTEST_ADDOPTS"] = "-p no:cacheprovider"
+    environment["PYTEST_DEBUG_TEMPROOT"] = layout["temp"].as_posix()
+    environment["PYTEST_ADDOPTS"] = (
+        f"--basetemp={layout['pytest_basetemp'].as_posix()} "
+        f"-o=cache_dir={layout['pytest_cache'].as_posix()}"
+    )
+    plugins = [
+        name.strip() for name in environment.get("PYTEST_PLUGINS", "").split(",")
+        if name.strip()
+    ]
+    harness_plugin = "scripts.maintenance.harness_task"
+    if harness_plugin not in plugins:
+        plugins.append(harness_plugin)
+    environment["PYTEST_PLUGINS"] = ",".join(plugins)
+    python_paths = [
+        path for path in environment.get("PYTHONPATH", "").split(os.pathsep) if path
+    ]
+    source_root = str(SCRIPT.resolve().parents[2])
+    if source_root not in python_paths:
+        python_paths.append(source_root)
+    environment["PYTHONPATH"] = os.pathsep.join(python_paths)
     return environment
+
+
+def _pytest_task_mktemp(factory: Any, basename: str, numbered: bool = True) -> Path:
+    """Create pytest temp directories without Windows' inaccessible mode-0700 ACL."""
+    from _pytest.pathlib import make_numbered_dir
+
+    basename = factory._ensure_relative_to_basetemp(basename)
+    if numbered:
+        path = make_numbered_dir(
+            root=factory.getbasetemp(), prefix=basename, mode=0o777,
+        )
+        factory._trace("mktemp", path)
+        return path
+    path = factory.getbasetemp().joinpath(basename)
+    path.mkdir(mode=0o777)
+    return path
+
+
+def pytest_configure(config: Any) -> None:
+    """Fail closed on pytest path overrides and retain inherited Windows ACLs."""
+    runtime_raw = os.environ.get("USTQ_HARNESS_RUNTIME_ROOT")
+    cache_raw = os.environ.get("USTQ_HARNESS_PYTEST_CACHE_ROOT")
+    basetemp_raw = os.environ.get("USTQ_HARNESS_PYTEST_BASETEMP_ROOT")
+    if not any((runtime_raw, cache_raw, basetemp_raw)):
+        return
+    if not all((runtime_raw, cache_raw, basetemp_raw)):
+        raise HarnessError("FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:PYTEST_RUNTIME_ENV_INCOMPLETE")
+
+    runtime = Path(str(runtime_raw)).resolve(strict=False)
+    if not runtime.name.startswith(TASK_TEMP_RUNTIME_PREFIX):
+        raise HarnessError(
+            f"FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:PYTEST_RUNTIME_NOT_TASK_SCOPED:{runtime}"
+        )
+    paths = _storage_paths()
+    protected = {
+        REPO.resolve(), getattr(paths, "repo_root", REPO).resolve(),
+        paths.data_root.resolve(), paths.cache_root.resolve(),
+        paths.daily_root.resolve(), paths.backtest_root.resolve(),
+        paths.results_root.resolve(), paths.envs_root.resolve(),
+    }
+    for protected_root in protected:
+        if runtime == protected_root or protected_root in runtime.parents:
+            raise HarnessError(
+                "FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:PYTEST_RUNTIME_PROTECTED_ROOT:"
+                f"{runtime}:{protected_root}"
+            )
+    layout = _task_runtime_paths(runtime)
+    cache_root = Path(str(cache_raw)).resolve(strict=False)
+    basetemp_root = Path(str(basetemp_raw)).resolve(strict=False)
+    if cache_root != layout["pytest_cache"] or basetemp_root != layout["pytest_basetemp"]:
+        raise HarnessError("FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:PYTEST_RUNTIME_ENV_MISMATCH")
+    configured_basetemp = Path(config.option.basetemp).resolve(strict=False)
+    cache = getattr(config, "cache", None)
+    if cache is None:
+        raise HarnessError(
+            "FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:PYTEST_CACHE_PROVIDER_DISABLED"
+        )
+    configured_cache = Path(cache._cachedir).resolve(strict=False)
+    if configured_basetemp != basetemp_root or configured_cache != cache_root:
+        raise HarnessError(
+            "FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:PYTEST_RUNTIME_OVERRIDE_REJECTED:"
+            f"basetemp={configured_basetemp};cache={configured_cache}"
+        )
+    for path in (basetemp_root, cache_root):
+        if not path.is_dir():
+            raise HarnessError(f"FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:PYTEST_PATH_MISSING:{path}")
+        try:
+            _probe_temp_runtime(path)
+        except OSError as exc:
+            raise HarnessError(
+                f"FAIL_EXTERNAL_TEMP_ROOT_UNAVAILABLE:PYTEST_PATH_UNWRITABLE:{path}:"
+                f"{type(exc).__name__}:{exc}"
+            ) from exc
+
+    factory = config._tmp_path_factory
+    factory._given_basetemp = basetemp_root
+    factory._basetemp = basetemp_root
+    from types import MethodType
+
+    factory.mktemp = MethodType(_pytest_task_mktemp, factory)
+
+
+pytest_configure.pytest_impl = {
+    "wrapper": False,
+    "hookwrapper": False,
+    "optionalhook": False,
+    "tryfirst": False,
+    "trylast": True,
+    "specname": None,
+}
 
 
 def _cleanup_task_temp_runtime(task_id: str) -> None:
@@ -1017,6 +1163,7 @@ def _new_state(
         "TASK_TEMP_RUNTIME": "",
         "TASK_TEMP_RUNTIME_STATUS": "NOT_PROVISIONED",
         "TASK_TEMP_RUNTIME_OWNED": False,
+        "TASK_TEMP_RUNTIME_CLEANUP_STATUS": "NOT_RUN",
         "WORKER_STATUS": "NOT_STARTED",
         "WORKER_TEST_STATUS": "NOT_RUN",
         "WORKER_TEST_LIMITATION": "",
@@ -1033,12 +1180,38 @@ def _new_state(
         "STOP_REQUESTED": False,
         "HUMAN_ATTENTION_REQUIRED": False,
         "LAST_REVIEW_STATUS": "NOT_RUN",
+        "FINAL_REVIEWER_ID": "",
         "LAST_UPDATED_AT": utc_now(),
         "TASK_KIND": scope if scope in TASK_KINDS else "independent-code",
         "TASK_KIND_SOURCE": "LEGACY_TASK_SCOPE",
         "AUTO_SCOPE_SUGGESTION": scope,
         "SAFETY_FLAGS": {},
         "TASK_SCOPE": scope,
+        "PROSPECTIVE_LIFECYCLE_APPLICABILITY": "PENDING",
+        "RESEARCH_SPEC_PATH": "",
+        "RESEARCH_SPEC_SHA256": "",
+        "PROSPECTIVE_RESEARCH_ID": "",
+        "RESEARCH_TASK_ROOT": "",
+        "RESEARCH_START_DECISION": "NOT_RUN",
+        "RESEARCH_MECHANISM_KEY": "",
+        "RESEARCH_REGISTRY_HEAD_AT_START": "",
+        "MATCHED_PRIOR_BRANCH": "",
+        "PRIOR_RESEARCH_STATUS": "",
+        "PRIOR_RESEARCH_CONCLUSION": "",
+        "REOPEN_CONDITION": "",
+        "REOPEN_JUSTIFICATION": "",
+        "REGISTRY_COMPLETION_STATUS": "NOT_APPLICABLE",
+        "REGISTRY_COMPLETION_HEAD_SHA256": "",
+        "RETENTION_MANIFEST_STATUS": "NOT_APPLICABLE",
+        "RETENTION_MANIFEST_PATH": "",
+        "RETENTION_MANIFEST_SHA256": "",
+        "RETENTION_BUDGET": {},
+        "HOST_CLEANUP_STATUS": "NOT_APPLICABLE",
+        "HOST_CLEANUP_RECLAIMED_BYTES": 0,
+        "HOST_CLEANUP_DEFERRED_ALLOWLIST": [],
+        "HOST_CLEANUP_DEFERRED_ALLOWLIST_PATH": "",
+        "WORKTREE_RETIREMENT_STATUS": "NOT_APPLICABLE",
+        "WORKTREE_RETIREMENT_REASON": "",
         "PLAN": plan,
         "NEXT_ACTION_CODE": "HARD_PREFLIGHT",
         "TESTS_RUN": [],
@@ -2421,10 +2594,104 @@ def _task_contract(goal: str, task_kind: str, requested_scope: str) -> dict[str,
     }
 
 
-def _run(args: Sequence[str], cwd: Path = REPO, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+def _whole_file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _prospective_start_gate(task_id: str, research_spec: str | None) -> str:
+    """Run the existing research gate before any planner or worker can start."""
+    state = load_state(task_id)
+    if state.get("TASK_KIND") not in PROSPECTIVE_RESEARCH_TASK_KINDS:
+        update_task(task_id, {
+            "PROSPECTIVE_LIFECYCLE_APPLICABILITY": "NOT_APPLICABLE_NON_RESEARCH_TASK",
+            "RESEARCH_START_DECISION": "NOT_APPLICABLE_NON_RESEARCH_TASK",
+        }, event="RESEARCH_START_GATE_NOT_APPLICABLE", detail=str(state.get("TASK_KIND", "")))
+        return "NOT_APPLICABLE_NON_RESEARCH_TASK"
+    if not research_spec:
+        raise HarnessError("RESEARCH_SPEC_REQUIRED_BEFORE_SUBSTANTIVE_EXECUTION")
+    try:
+        spec_path = Path(research_spec).resolve(strict=True)
+        if not spec_path.is_file():
+            raise OSError("not a file")
+        lifecycle = _load_prospective_lifecycle()
+        result = lifecycle.research_start_gate(
+            REPO, spec_path, storage=_storage_paths(),
+        )
+    except Exception as exc:
+        raise HarnessError(
+            f"RESEARCH_START_GATE_FAILED:{type(exc).__name__}:{exc}"
+        ) from exc
+    decision = dict(result.get("decision", {}))
+    normalized_spec = dict(result.get("spec", {}))
+    outcome = str(decision.get("decision", ""))
+    allowed = {
+        "ALLOW_NEW_RESEARCH", "ALLOW_REOPEN", "BLOCK_AS_DUPLICATE_RESEARCH",
+        "REVIEW_REQUIRED",
+    }
+    if outcome not in allowed:
+        raise HarnessError(f"RESEARCH_START_GATE_INVALID_DECISION:{outcome}")
+    updates = {
+        "PROSPECTIVE_LIFECYCLE_APPLICABILITY": "APPLICABLE_RESEARCH_TASK",
+        "RESEARCH_SPEC_PATH": str(spec_path),
+        "RESEARCH_SPEC_SHA256": _whole_file_sha256(spec_path),
+        "PROSPECTIVE_RESEARCH_ID": str(normalized_spec.get("research_id", "")),
+        "RESEARCH_TASK_ROOT": str(normalized_spec.get("task_root", "")),
+        "RESEARCH_START_DECISION": outcome,
+        "RESEARCH_MECHANISM_KEY": str(decision.get("mechanism_key", "")),
+        "MATCHED_PRIOR_BRANCH": str(decision.get("matched_prior_branch", "")),
+        "PRIOR_RESEARCH_STATUS": str(decision.get("prior_status", "")),
+        "PRIOR_RESEARCH_CONCLUSION": str(decision.get("prior_conclusion", ""))[:MAX_TEXT],
+        "REOPEN_CONDITION": str(decision.get("reopen_condition", ""))[:MAX_TEXT],
+        "REOPEN_JUSTIFICATION": str(decision.get("justification", ""))[:MAX_TEXT],
+        "RESEARCH_REGISTRY_HEAD_AT_START": str(decision.get("registry_head_sha256", "")),
+    }
+    update_task(
+        task_id, updates, event="RESEARCH_START_GATE_COMPLETED",
+        detail=(
+            f"decision={outcome};mechanism={updates['RESEARCH_MECHANISM_KEY']};"
+            f"prior={updates['MATCHED_PRIOR_BRANCH']}"
+        ),
+    )
+    if outcome == "BLOCK_AS_DUPLICATE_RESEARCH":
+        update_task(task_id, {
+            "CURRENT_PHASE": "COMPLETED",
+            "CURRENT_ACTION": "Equivalent terminal research found; substantive execution was not started",
+            "WHY_CURRENT_ACTION": updates["REOPEN_JUSTIFICATION"],
+            "LAST_COMPLETED": "BLOCK_AS_DUPLICATE_RESEARCH",
+            "NEXT_ACTION": "Reopen only with a documented qualifying basis",
+            "WHY_NEXT_ACTION": updates["REOPEN_CONDITION"] or "No qualifying reopen condition is recorded.",
+            "NEXT_ACTION_CODE": "DONE",
+            "WORKER_STATUS": "NOT_STARTED_DUPLICATE_BLOCK",
+            "TERMINAL_OUTCOME": "BLOCK_AS_DUPLICATE_RESEARCH",
+            "TERMINAL_REASON": updates["REOPEN_JUSTIFICATION"],
+            "TERMINAL_SUCCESS": True,
+            "HUMAN_ATTENTION_REQUIRED": False,
+            "PROGRESS_SUMMARY": "Research stopped before substantive execution by the registry gate",
+        }, new_state="COMPLETED", event="DUPLICATE_RESEARCH_BLOCKED", detail=(
+            f"matched_prior_branch={updates['MATCHED_PRIOR_BRANCH']};"
+            f"prior_status={updates['PRIOR_RESEARCH_STATUS']}"
+        ))
+    return outcome
+
+
+def _research_start_gate_passed(state: dict[str, Any]) -> bool:
+    return (
+        state.get("TASK_KIND") not in PROSPECTIVE_RESEARCH_TASK_KINDS
+        or state.get("RESEARCH_START_DECISION") in {"ALLOW_NEW_RESEARCH", "ALLOW_REOPEN"}
+    )
+
+
+def _run(
+    args: Sequence[str], cwd: Path = REPO, timeout: int = 30,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(args), cwd=str(cwd), text=True, encoding="utf-8", errors="replace",
-        capture_output=True, check=False, timeout=timeout,
+        capture_output=True, check=False, timeout=timeout, env=environment,
     )
 
 
@@ -2864,6 +3131,16 @@ def _worker_prompt(
             "Sleeping, idle waiting, repeated no-op validation, equivalent variants, and caller-supplied "
             "elapsed-hour claims do not satisfy the contract.\n"
         )
+    prospective_text = ""
+    if state.get("TASK_KIND") in PROSPECTIVE_RESEARCH_TASK_KINDS:
+        task_root = Path(str(state.get("RESEARCH_TASK_ROOT", ""))).resolve(strict=False)
+        prospective_text = f"""
+PROSPECTIVE RESEARCH COMPLETION CONTRACT:
+The registry start gate already returned {state.get('RESEARCH_START_DECISION')} for mechanism {state.get('RESEARCH_MECHANISM_KEY')}.
+Before reporting completion, write exactly one compact receipt at {task_root / 'retained' / 'result_receipt.json'} and one compact retention manifest at {task_root / 'retention_manifest.json'}.
+The receipt must contain research_id, mechanism_key, hypothesis, final_status, key_conclusion, key_metrics_summary, trial_count, code_commit, config_reference, data_reference, stop_reason, reopen_condition, completed_at, and optional related_branch. final_status must be exactly one of COMPLETED, CLOSED, CLOSED_NEGATIVE, FAILED, REJECTED, SUPERSEDED, PARKED, DEPRIORITIZED, PROMOTED, or FROZEN. trial_count must contain nonnegative integer hypothesis_trials, feature_trials, model_trials, hyperparameter_trials, portfolio_threshold_trials, and holdout_peeks. Negative or failed research still requires this knowledge receipt.
+The manifest top level must be {{"schema_version":1,"task_id":"{state.get('PROSPECTIVE_RESEARCH_ID')}","artifacts":[...]}} and must classify every task artifact by exact absolute path. Every artifact row requires path, retention_class, object_type (FILE or DIRECTORY), nonnegative integer size_bytes, provenance, reason, and explicit JSON booleans delete_after_completion, protected, rebuildable, and forward_decision. A disposable FILE also requires its whole-file lowercase SHA256. KEEP_KEY_EVIDENCE requires key_evidence_justification. Source/provider/raw data is never disposable; rebuildable derived and scratch output defaults disposable; forward/prospective pre-outcome decision evidence must be retained. A CANONICAL_SNAPSHOT_PAYLOAD row must also declare snapshot_id, source_data_fingerprint, producer_commit, config_hash, output_fingerprint, status, and supersedes. The receipt itself must have one exact KEEP_RESEARCH_KNOWLEDGE row. Do not perform cleanup yourself; the inactive host validates and handles exact paths after finalization.
+"""
     return f"""You are a substantive implementation worker for one authorized Harness R3 task.
 
 AUTHORIZED GOAL {'(full)' if first_turn else '(compact summary)'} version {state['GOAL_VERSION']}:
@@ -2876,6 +3153,7 @@ Applied human steering for this turn:
 {steer}
 {correction_text}
 {continuation_text}
+{prospective_text}
 
 ACTIVE WORK-UNIT BATCH:
 {active_json}
@@ -3160,6 +3438,8 @@ def _run_codex_turn(
             fields = {"ACTIVE_THREAD_ID": thread_id}
             if mutating_worker:
                 fields["WORKER_THREAD_ID"] = thread_id
+            elif kind == "REVIEW":
+                fields["FINAL_REVIEWER_ID"] = thread_id
             update_task(task_id, fields, event=f"{kind}_THREAD_READY", detail=thread_id)
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         if event.get("type") == "item.completed" and item.get("type") == "agent_message":
@@ -3463,16 +3743,20 @@ def _validate_targeted(
             f"Worker test status={worker_report} is recorded but is not authoritative."
         )
     python = _storage_paths().python_exe
-    base_temp = (task_dir(task_id) / "pytest-temp").resolve()
+    runtime = _ensure_task_temp_runtime(task_id)
+    layout = _task_runtime_paths(runtime)
+    base_temp = layout["pytest_basetemp"]
+    cache_root = layout["pytest_cache"]
     if REPO == base_temp or REPO in base_temp.parents:
         raise HarnessError(f"PYTEST_TEMP_ROOT_INSIDE_REPOSITORY:{base_temp}")
     result = _run(
         [
-            str(python), "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
-            "--basetemp", str(base_temp), *candidates,
+            str(python), "-B", "-m", "pytest", "-q",
+            "--basetemp", str(base_temp), "-o", f"cache_dir={cache_root}", *candidates,
         ],
         worktree,
         300,
+        _task_temp_environment(runtime),
     )
     summary = (result.stdout + "\n" + result.stderr).strip()[-4_000:]
     row = f"{' '.join(candidates)} | exit={result.returncode} | {summary}"
@@ -4810,12 +5094,331 @@ def _dispatch_r2_compat(task_id: str) -> None:
             return
 
 
+def _prepare_prospective_completion(task_id: str) -> dict[str, Any] | None:
+    """Persist research knowledge and validate retention before terminal state."""
+    state = load_state(task_id)
+    if state.get("TASK_KIND") not in PROSPECTIVE_RESEARCH_TASK_KINDS:
+        return None
+    if not _research_start_gate_passed(state):
+        raise HarnessError("RESEARCH_START_GATE_NOT_PASSED_AT_FINALIZATION")
+    lifecycle = _load_prospective_lifecycle()
+    spec_path = Path(str(state.get("RESEARCH_SPEC_PATH", "")))
+    if (
+        not spec_path.is_file()
+        or _whole_file_sha256(spec_path) != state.get("RESEARCH_SPEC_SHA256")
+    ):
+        raise HarnessError("RESEARCH_SPEC_DRIFT_BEFORE_FINALIZATION")
+    try:
+        spec = lifecycle.normalize_research_spec(lifecycle.load_small_json(spec_path))
+    except Exception as exc:
+        raise HarnessError(
+            f"RESEARCH_SPEC_RELOAD_FAILED:{type(exc).__name__}:{exc}"
+        ) from exc
+    if (
+        str(spec.get("task_root", "")) != str(state.get("RESEARCH_TASK_ROOT", ""))
+        or lifecycle.mechanism_key(spec) != state.get("RESEARCH_MECHANISM_KEY")
+    ):
+        raise HarnessError("RESEARCH_SPEC_IDENTITY_DRIFT_BEFORE_FINALIZATION")
+    task_root = Path(str(spec.get("task_root", ""))).resolve(strict=False)
+    receipt_path = (task_root / "retained" / "result_receipt.json").resolve(strict=False)
+    manifest_path = (task_root / "retention_manifest.json").resolve(strict=False)
+    try:
+        receipt = lifecycle.validate_completion_receipt(
+            lifecycle.load_small_json(receipt_path), spec,
+        )
+    except Exception as exc:
+        raise HarnessError(
+            f"RESEARCH_COMPLETION_RECEIPT_INCOMPLETE:{type(exc).__name__}:{exc}"
+        ) from exc
+    code_commit = str(receipt.get("code_commit", "")).strip()
+    commit_exists = _git(["cat-file", "-e", f"{code_commit}^{{commit}}"], REPO)
+    reachable_refs = _git([
+        "for-each-ref", "--contains", code_commit, "--format=%(refname)",
+        "refs/heads", "refs/tags",
+    ], REPO)
+    if (
+        commit_exists.returncode != 0 or reachable_refs.returncode != 0
+        or not reachable_refs.stdout.strip()
+    ):
+        raise HarnessError(f"COMPLETION_CODE_COMMIT_NOT_REACHABLE:{code_commit}")
+    reviewer_id = str(state.get("FINAL_REVIEWER_ID", "")).strip()
+    if not reviewer_id:
+        raise HarnessError("FINAL_REVIEWER_ID_MISSING_FOR_REGISTRY_COMPLETION")
+    try:
+        registry_result = lifecycle.apply_registry_completion(
+            REPO, spec, receipt, receipt_path,
+            reviewer=f"harness-final-independent-review:{reviewer_id}",
+        )
+    except Exception as exc:
+        raise HarnessError(
+            f"REGISTRY_COMPLETION_UPDATE_FAILED:{type(exc).__name__}:{exc}"
+        ) from exc
+    update_task(task_id, {
+        "REGISTRY_COMPLETION_STATUS": str(registry_result.get("status", "UNKNOWN")),
+        "REGISTRY_COMPLETION_HEAD_SHA256": str(registry_result.get("head_sha256", "")),
+    }, event="REGISTRY_COMPLETION_PERSISTED", detail=(
+        f"status={registry_result.get('status')};head={registry_result.get('head_sha256', '')}"
+    ))
+    try:
+        storage = _storage_paths()
+        validated_manifest = lifecycle.validate_retention_manifest(
+            manifest_path, spec, storage,
+        )
+        receipt_key = str(receipt_path).replace("\\", "/").casefold()
+        receipt_rows = [
+            row for row in validated_manifest["rows"]
+            if str(row.get("path", "")).replace("\\", "/").casefold() == receipt_key
+        ]
+        if len(receipt_rows) != 1 or receipt_rows[0].get("retention_class") != "KEEP_RESEARCH_KNOWLEDGE":
+            raise HarnessError("COMPLETION_RECEIPT_MUST_BE_EXACT_KEEP_RESEARCH_KNOWLEDGE_ROW")
+        budget = lifecycle.retention_budget(receipt, validated_manifest)
+    except Exception as exc:
+        if isinstance(exc, HarnessError):
+            raise
+        raise HarnessError(
+            f"RETENTION_MANIFEST_INCOMPLETE:{type(exc).__name__}:{exc}"
+        ) from exc
+    manifest_sha256 = _whole_file_sha256(manifest_path)
+    receipt_sha256 = _whole_file_sha256(receipt_path)
+    update_task(task_id, {
+        "RETENTION_MANIFEST_STATUS": "PASS",
+        "RETENTION_MANIFEST_PATH": str(manifest_path),
+        "RETENTION_MANIFEST_SHA256": manifest_sha256,
+        "RETENTION_BUDGET": budget,
+    }, event="RETENTION_MANIFEST_VALIDATED", detail=(
+        f"artifacts={len(validated_manifest['rows'])};budget={budget.get('status')}"
+    ))
+    return {
+        "lifecycle": lifecycle,
+        "spec": spec,
+        "rows": list(validated_manifest["rows"]),
+        "manifest_path": manifest_path,
+        "manifest_sha256": manifest_sha256,
+        "receipt_path": receipt_path,
+        "receipt_sha256": receipt_sha256,
+        "task_root": task_root,
+        "storage": storage,
+    }
+
+
+def _write_host_cleanup_deferred_allowlist(
+    task_id: str, rows: Sequence[dict[str, Any]], reasons: dict[str, str],
+) -> str:
+    exact_rows = [
+        {
+            "path": str(row["path"]),
+            "retention_class": str(row.get("retention_class", "")),
+            "object_type": str(row.get("object_type", "FILE")),
+            "size_bytes": int(row.get("size_bytes", 0) or 0),
+            "sha256": str(row.get("sha256", "")),
+            "reason": reasons.get(str(row["path"]), "HOST_CLEANUP_DEFERRED"),
+        }
+        for row in rows
+    ]
+    path = task_dir(task_id) / "host_cleanup_deferred_allowlist.json"
+    _atomic_write(path, _json_bytes({
+        "schema_version": 1, "task_id": task_id, "exact_paths": exact_rows,
+    }))
+    return str(path)
+
+
+def _run_prospective_post_completion(
+    task_id: str, context: dict[str, Any],
+) -> None:
+    """Run prospective cleanup/retirement without changing a terminal outcome."""
+    try:
+        _run_prospective_post_completion_inner(task_id, context)
+    except Exception as exc:
+        rows: list[dict[str, Any]] = []
+        try:
+            lifecycle = context.get("lifecycle")
+            rows = [
+                dict(row) for row in context.get("rows", [])
+                if row.get("retention_class") in lifecycle.DISPOSABLE_CLASSES
+            ]
+        except Exception:
+            rows = []
+        reason = f"POST_COMPLETION_FAIL_SAFE:{type(exc).__name__}:{exc}"[:MAX_TEXT]
+        reasons = {str(row.get("path", "")): reason for row in rows if row.get("path")}
+        allowlist_path = ""
+        try:
+            if rows:
+                allowlist_path = _write_host_cleanup_deferred_allowlist(
+                    task_id, rows, reasons,
+                )
+        except Exception:
+            allowlist_path = ""
+        try:
+            update_task(task_id, {
+                "HOST_CLEANUP_STATUS": "HOST_CLEANUP_DEFERRED",
+                "HOST_CLEANUP_DEFERRED_ALLOWLIST": list(reasons),
+                "HOST_CLEANUP_DEFERRED_ALLOWLIST_PATH": allowlist_path,
+                "WORKTREE_RETIREMENT_STATUS": "WORKTREE_RETIREMENT_DEFERRED",
+                "WORKTREE_RETIREMENT_REASON": reason,
+            }, event="PROSPECTIVE_POST_COMPLETION_DEFERRED", detail=reason)
+        except Exception:
+            pass
+
+
+def _run_prospective_post_completion_inner(
+    task_id: str, context: dict[str, Any],
+) -> None:
+    state = load_state(task_id)
+    lifecycle = context["lifecycle"]
+    rows = list(context["rows"])
+    worker_active = bool(
+        state.get("WORKER_PID") or state.get("ACTIVE_PROCESS_KIND")
+        or state.get("ACTIVE_THREAD_ID")
+    )
+    task_completed = state.get("HARNESS_STATE") in {
+        "COMPLETED", "COMPLETED_WITH_DEFERRED_WORK",
+    }
+    manifest_stable = (
+        Path(context["manifest_path"]).is_file()
+        and _whole_file_sha256(Path(context["manifest_path"])) == context["manifest_sha256"]
+    )
+    receipt_stable = (
+        Path(context["receipt_path"]).is_file()
+        and _whole_file_sha256(Path(context["receipt_path"])) == context["receipt_sha256"]
+    )
+    disposable = [
+        row for row in rows
+        if row.get("retention_class") in lifecycle.DISPOSABLE_CLASSES
+    ]
+    if not manifest_stable or not receipt_stable:
+        drift_reason = "RETENTION_MANIFEST_DRIFT" if not manifest_stable else "RETAINED_RECEIPT_DRIFT"
+        cleanup_result = {
+            "status": "HOST_CLEANUP_DEFERRED", "deleted_paths": [],
+            "reclaimed_bytes": 0,
+            "deferred": [
+                {"path": str(row["path"]), "reason": drift_reason}
+                for row in disposable
+            ],
+        }
+    else:
+        try:
+            cleanup_result = lifecycle.host_cleanup(
+                rows, task_completed=task_completed,
+                worker_active=worker_active, task_root=context["task_root"],
+                storage=context["storage"],
+            )
+        except Exception as exc:
+            cleanup_result = {
+                "status": "HOST_CLEANUP_DEFERRED", "deleted_paths": [],
+                "reclaimed_bytes": 0,
+                "deferred": [
+                    {"path": str(row["path"]), "reason": f"{type(exc).__name__}:{exc}"}
+                    for row in disposable
+                ],
+            }
+    disposable_by_path = {str(row["path"]): row for row in disposable}
+    reasons = {
+        str(row.get("path", "")): str(row.get("reason", "HOST_CLEANUP_DEFERRED"))
+        for row in cleanup_result.get("deferred", [])
+        if str(row.get("path", "")) in disposable_by_path
+    }
+    deferred_rows = [disposable_by_path[path] for path in reasons]
+    allowlist_path = (
+        _write_host_cleanup_deferred_allowlist(task_id, deferred_rows, reasons)
+        if deferred_rows else ""
+    )
+    update_task(task_id, {
+        "HOST_CLEANUP_STATUS": str(cleanup_result.get("status", "HOST_CLEANUP_DEFERRED")),
+        "HOST_CLEANUP_RECLAIMED_BYTES": int(cleanup_result.get("reclaimed_bytes", 0)),
+        "HOST_CLEANUP_DEFERRED_ALLOWLIST": [str(row["path"]) for row in deferred_rows],
+        "HOST_CLEANUP_DEFERRED_ALLOWLIST_PATH": allowlist_path,
+    }, event="HOST_CLEANUP_COMPLETED", detail=(
+        f"status={cleanup_result.get('status')};deleted={len(cleanup_result.get('deleted_paths', []))};"
+        f"deferred={len(deferred_rows)}"
+    ))
+    state = load_state(task_id)
+    retained_rows_stable = True
+    for row in rows:
+        if row.get("retention_class") in lifecycle.DISPOSABLE_CLASSES:
+            continue
+        retained_path = Path(str(row.get("path", "")))
+        object_type = str(row.get("object_type", "FILE")).upper()
+        if object_type == "FILE":
+            expected_size = row.get("size_bytes")
+            if (
+                not retained_path.is_file()
+                or isinstance(expected_size, bool)
+                or not isinstance(expected_size, int)
+                or retained_path.stat().st_size != expected_size
+            ):
+                retained_rows_stable = False
+                break
+        elif object_type == "DIRECTORY":
+            if not retained_path.is_dir():
+                retained_rows_stable = False
+                break
+        else:
+            retained_rows_stable = False
+            break
+    retained_integrity = (
+        manifest_stable and receipt_stable
+        and Path(context["manifest_path"]).is_file()
+        and _whole_file_sha256(Path(context["manifest_path"])) == context["manifest_sha256"]
+        and Path(context["receipt_path"]).is_file()
+        and _whole_file_sha256(Path(context["receipt_path"])) == context["receipt_sha256"]
+        and retained_rows_stable
+    )
+    if not task_completed or worker_active or not retained_integrity:
+        retirement = {
+            "status": "WORKTREE_RETIREMENT_DEFERRED",
+            "reason": (
+                "TASK_NOT_COMPLETED" if not task_completed else "WORKER_ACTIVE"
+                if worker_active else "RETAINED_ARTIFACT_DRIFT"
+            ),
+        }
+    elif not state.get("WORKTREE"):
+        retirement = {"status": "NOT_APPLICABLE", "reason": "NO_WORKTREE"}
+    else:
+        try:
+            retirement = lifecycle.retire_completed_worktree(
+                REPO, Path(state["WORKTREE"]), task_completed=True, active=False,
+            )
+        except Exception as exc:
+            retirement = {
+                "status": "WORKTREE_RETIREMENT_DEFERRED",
+                "reason": f"{type(exc).__name__}:{exc}",
+            }
+    update_task(task_id, {
+        "WORKTREE_RETIREMENT_STATUS": str(retirement.get("status", "WORKTREE_RETIREMENT_DEFERRED")),
+        "WORKTREE_RETIREMENT_REASON": str(retirement.get("reason", "")),
+    }, event="WORKTREE_RETIREMENT_COMPLETED", detail=(
+        f"status={retirement.get('status')};reason={retirement.get('reason', '')}"
+    ))
+
+
+def _run_post_terminal_temp_cleanup(task_id: str) -> None:
+    """Best-effort cleanup of Harness-owned runtime for every terminal task."""
+    try:
+        _cleanup_task_temp_runtime(task_id)
+        update_task(task_id, {"TASK_TEMP_RUNTIME_CLEANUP_STATUS": "PASS"})
+    except Exception as exc:
+        try:
+            update_task(task_id, {
+                "TASK_TEMP_RUNTIME_CLEANUP_STATUS": "HOST_CLEANUP_DEFERRED",
+            }, event="TASK_TEMP_RUNTIME_CLEANUP_DEFERRED", detail=(
+                f"{type(exc).__name__}:{exc}"[:MAX_TEXT]
+            ))
+        except Exception:
+            pass
+
+
 def _dispatch_r3(task_id: str) -> None:
     while True:
         if _control_checkpoint(task_id):
             return
         state = load_state(task_id)
         action = str(state.get("NEXT_ACTION_CODE", "HARD_PREFLIGHT"))
+        if action != "DONE" and not _research_start_gate_passed(state):
+            _block(
+                task_id, "RESEARCH_START_GATE_NOT_PASSED",
+                "A substantive research Harness state cannot dispatch before ALLOW_NEW_RESEARCH or ALLOW_REOPEN.",
+            )
+            return
         if _deadline_expired(state) and action not in {"FINALIZE", "DONE"}:
             update_task(
                 task_id, event="HARD_DEADLINE_TERMINALIZATION",
@@ -5514,11 +6117,6 @@ def _dispatch_r3(task_id: str) -> None:
                 )
                 return
             changes = _refresh_changes(task_id)
-            cleanup_warning = ""
-            try:
-                _cleanup_task_temp_runtime(task_id)
-            except HarnessError as exc:
-                cleanup_warning = str(exc)
             state = load_state(task_id)
             reconciled_done, reconciled_deferred = _reconcile_terminal_local_environment_units(state)
             review_accepted = _accepted_nonblocking_review(state)
@@ -5558,7 +6156,7 @@ def _dispatch_r3(task_id: str) -> None:
                 terminal = "FAILED"
             elif controller_failed or blocking_review or invalid_required_outputs or unresolved_failures or mandatory_unresolved:
                 terminal = "FAILED"
-            elif deferred or cleanup_warning:
+            elif deferred:
                 terminal = "COMPLETED_WITH_DEFERRED_WORK" if done or deferable_local else "FAILED"
             elif review_accepted:
                 terminal = "COMPLETED"
@@ -5574,16 +6172,26 @@ def _dispatch_r3(task_id: str) -> None:
                 else "The time-bounded task converged with unresolved work or an incomplete final gate explicitly preserved."
             )
             terminal_success = terminal in {"COMPLETED", "COMPLETED_WITH_DEFERRED_WORK"}
+            prospective_context = None
+            if terminal_success and state.get("TASK_KIND") in PROSPECTIVE_RESEARCH_TASK_KINDS:
+                try:
+                    prospective_context = _prepare_prospective_completion(task_id)
+                except HarnessError as exc:
+                    code = str(exc).split(":", 1)[0]
+                    if code == "RETENTION_MANIFEST_INCOMPLETE":
+                        update_task(task_id, {"RETENTION_MANIFEST_STATUS": "INCOMPLETE"})
+                    elif code in {
+                        "REGISTRY_COMPLETION_UPDATE_FAILED",
+                        "FINAL_REVIEWER_ID_MISSING_FOR_REGISTRY_COMPLETION",
+                    }:
+                        update_task(task_id, {"REGISTRY_COMPLETION_STATUS": "INCOMPLETE"})
+                    _wait_human(task_id, code, str(exc), boundary_kind="SAFETY")
+                    return
 
             def complete_all(value: dict[str, Any]) -> None:
                 persisted_done, _ = _reconcile_terminal_local_environment_units(value)
                 if persisted_done:
                     _telemetry_add(value, local_blockers_bypassed=persisted_done)
-                if cleanup_warning:
-                    value["HISTORICAL_FINDINGS"] = [
-                        *value.get("HISTORICAL_FINDINGS", []),
-                        {"code": "TEMP_CLEANUP_WARNING", "detail": cleanup_warning[:1_000], "at": utc_now()},
-                    ][-MAX_LIST_ITEMS:]
                 _plan_update(value, "AUTONOMOUS_EXECUTION_LOOP", "COMPLETED")
                 _plan_update(value, "FINALIZE", "COMPLETED")
                 _telemetry_add(value, new_components_created=len(changes["created"]))
@@ -5620,6 +6228,9 @@ def _dispatch_r3(task_id: str) -> None:
                 f"outcome={terminal};worktree_preserved={state['WORKTREE']};deferred={len(deferred)};"
                 f"local_reconciled_done={reconciled_done};local_reconciled_deferred={reconciled_deferred}"
             ), mutate=complete_all)
+            _run_post_terminal_temp_cleanup(task_id)
+            if prospective_context is not None:
+                _run_prospective_post_completion(task_id, prospective_context)
             return
         elif action == "DONE":
             return
@@ -6472,6 +7083,29 @@ def command_start(args: argparse.Namespace) -> int:
         _block(task_id, "HARD_GUARD_CONFLICT", ",".join(conflicts))
         print(f"TASK_ID={task_id}\nHARNESS_STATE=BLOCKED\nHARD_GUARD_CONFLICT={','.join(conflicts)}")
         return 2
+    try:
+        start_decision = _prospective_start_gate(
+            task_id, getattr(args, "research_spec", None),
+        )
+    except HarnessError as exc:
+        _block(task_id, "RESEARCH_START_GATE_FAILED", str(exc))
+        print(f"TASK_ID={task_id}\nHARNESS_STATE=BLOCKED\nRESEARCH_START_GATE={exc}")
+        return 2
+    if start_decision == "BLOCK_AS_DUPLICATE_RESEARCH":
+        state = load_state(task_id)
+        print(
+            f"TASK_ID={task_id}\nHARNESS_STATE=COMPLETED\n"
+            f"RESEARCH_START_DECISION={start_decision}\n"
+            f"MATCHED_PRIOR_BRANCH={state.get('MATCHED_PRIOR_BRANCH', '')}"
+        )
+        return 0
+    if start_decision == "REVIEW_REQUIRED":
+        _block(
+            task_id, "RESEARCH_START_GATE_REVIEW_REQUIRED",
+            "The authoritative registry could not safely classify this research proposal.",
+        )
+        print(f"TASK_ID={task_id}\nHARNESS_STATE=BLOCKED\nRESEARCH_START_DECISION=REVIEW_REQUIRED")
+        return 2
     if args.foreground:
         code = run_task(task_id)
         command_status(argparse.Namespace(task_id=task_id))
@@ -6490,6 +7124,9 @@ def command_status(args: argparse.Namespace) -> int:
         "TASK_ID", "HARNESS_STATE", "CURRENT_PHASE", "CURRENT_ACTION", "PROGRESS_SUMMARY",
         "LAST_COMPLETED", "NEXT_ACTION", "OVERFIT_GUARD", "ANTI_BLOAT",
         "ANTI_BLOAT_TASK_DELTA", "REUSE_GUARD", "WORKER_STATUS",
+        "RESEARCH_START_DECISION", "MATCHED_PRIOR_BRANCH",
+        "REGISTRY_COMPLETION_STATUS", "RETENTION_MANIFEST_STATUS",
+        "HOST_CLEANUP_STATUS", "WORKTREE_RETIREMENT_STATUS",
         "ACTIVE_PROCESS_KIND", "CURRENT_WORK_UNIT", "LAST_MEANINGFUL_PROGRESS_AT",
         "CURRENT_RETRY_SIGNATURE", "CURRENT_RETRY_COUNT", "LAST_CHECKPOINT",
         "CONTROLLER_VALIDATION_STATUS", "CONTROLLER_PID", "CONTROLLER_LAUNCH_PID",
@@ -6740,6 +7377,10 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--goal", required=True)
     start.add_argument("--task-id")
     start.add_argument("--task-kind", choices=TASK_KINDS, default="auto")
+    start.add_argument(
+        "--research-spec",
+        help="Known-schema prospective research specification JSON; required for research task kinds",
+    )
     start.add_argument("--task-scope", choices=_load_r1().TASK_SCOPES, default="independent-code")
     start.add_argument("--max-corrections", type=int, choices=range(0, 6), default=DEFAULT_MAX_CORRECTIONS)
     start.add_argument("--max-hours", type=_positive_hours)
