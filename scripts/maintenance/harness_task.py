@@ -69,6 +69,22 @@ WORK_UNIT_STATUSES = {
     "SKIPPED_WITH_REASON",
 }
 WORK_UNIT_TERMINAL_STATUSES = {"DONE", "BLOCKED_LOCAL", "DEFERRED", "SKIPPED_WITH_REASON"}
+CANONICAL_DONE_VALIDATION_STATE = "PASS"
+WORKER_RESULT_REQUIRED_FIELDS = {
+    "blocker", "id", "last_checkpoint", "next_action", "produced_outputs",
+    "reuse_decision", "reuse_evidence", "status", "validation_state",
+}
+WORKER_RESULT_OPTIONAL_EVIDENCE_FIELDS = {
+    "blockers", "failed_tests", "failed_validation", "test_errors", "test_failure",
+    "test_failures", "test_result", "tests_failed", "tests_passed", "tests_status",
+    "validation_errors", "validation_failed", "validation_failure",
+    "validation_failures", "validation_ok", "validation_passed", "validation_result",
+    "validation_success",
+}
+WORKER_RESULT_MARKER_RE = re.compile(
+    r"^[ \t]*WORK_UNIT_RESULTS_JSON[ \t]*=[ \t]*(.*?)[ \t]*$",
+    re.I | re.M,
+)
 HUMAN_BOUNDARY_KINDS = {
     "AUTHORIZATION", "SAFETY", "DESTRUCTIVE", "PROTECTED_PERMISSION", "PAUSE", "EXHAUSTED",
 }
@@ -623,6 +639,34 @@ def _bounded_state_text(
     return compact, True, digest
 
 
+def _work_unit_completion_authority_signature(
+    state: dict[str, Any],
+) -> tuple[tuple[int, str, bool], ...]:
+    """Snapshot canonical per-unit DONE authority across persistence transforms."""
+    units = state.get("WORK_UNITS", [])
+    if not isinstance(units, list):
+        return ()
+    return tuple(
+        (
+            index,
+            str(unit.get("id", "")) if isinstance(unit, dict) else "",
+            _done_worker_result_terminal(unit),
+        )
+        for index, unit in enumerate(units)
+    )
+
+
+def _require_work_unit_completion_authority_preserved(
+    before: tuple[tuple[int, str, bool], ...],
+    state: dict[str, Any],
+    stage: str,
+) -> None:
+    if _work_unit_completion_authority_signature(state) != before:
+        raise HarnessError(
+            f"WORK_UNIT_COMPLETION_AUTHORITY_CHANGED_DURING_PERSISTENCE:{stage}"
+        )
+
+
 def _state_row_identity(row: Any) -> str:
     if isinstance(row, dict):
         value = (
@@ -720,14 +764,13 @@ def _compact_work_units(
     for unit in state.get("WORK_UNITS", []):
         if not isinstance(unit, dict) or str(unit.get("id", "")) in active_ids:
             continue
-        if unit.get("status") not in WORK_UNIT_TERMINAL_STATUSES:
+        if not (
+            _done_worker_result_terminal(unit)
+            or unit.get("status") in WORK_UNIT_TERMINAL_STATUSES - {"DONE"}
+        ):
             continue
         changed = False
-        for field, limit in (
-            ("objective", 140 if aggressive else 220),
-            ("next_action", 160 if aggressive else 220),
-            ("last_checkpoint", 160 if aggressive else 220),
-        ):
+        for field, limit in (("objective", 140 if aggressive else 220),):
             if isinstance(unit.get(field), str):
                 bounded, truncated, _ = _bounded_state_text(unit[field], limit)
                 if truncated:
@@ -740,15 +783,6 @@ def _compact_work_units(
             unit["canonical_identity"] = f"sha256:{identity_digest}"
             metrics["text_fields_truncated"] += 1
             changed = True
-        blocker = unit.get("blocker")
-        if isinstance(blocker, dict):
-            before = json.dumps(blocker, sort_keys=True, default=str)
-            _compact_mapping_text(
-                blocker,
-                {"detail": 160 if aggressive else 360, "reason": 160 if aggressive else 360},
-                metrics,
-            )
-            changed = changed or before != json.dumps(blocker, sort_keys=True, default=str)
         evidence = list(unit.get("reuse_evidence", []))
         evidence_retain = 1 if aggressive else 2
         evidence_limit = 160 if aggressive else 220
@@ -903,8 +937,8 @@ def _compact_state_for_write(
     for field, retain, limit in (
         ("BLOCKERS", STATE_HISTORY_RETAIN, 300 if aggressive else 500),
         ("LOCAL_BLOCKED_WORK", max(MAX_WORK_UNITS, STATE_HISTORY_RETAIN), 300 if aggressive else 500),
-        ("RESOLVED_FINDINGS", STATE_HISTORY_RETAIN, 240 if aggressive else 360),
-        ("HISTORICAL_FINDINGS", STATE_HISTORY_RETAIN, 240 if aggressive else 360),
+        ("RESOLVED_FINDINGS", STATE_HISTORY_RETAIN, 220 if aggressive else 360),
+        ("HISTORICAL_FINDINGS", STATE_HISTORY_RETAIN, 220 if aggressive else 360),
         ("VALIDATION_RESULTS", 20 if not aggressive else 12, 1_000 if not aggressive else 600),
         ("STEERING_HISTORY", STATE_HISTORY_RETAIN, 500),
     ):
@@ -960,28 +994,22 @@ def _state_storage_failure_snapshot(
     keep = {
         "TASK_ID", "HARNESS_VERSION", "GOAL_VERSION", "TASK_STARTED_AT", "DEADLINE_AT",
         "TIME_BUDGET_HOURS", "TASK_KIND", "TASK_SCOPE", "SAFETY_FLAGS", "WORKTREE",
+        "START_REPO_HEAD", "START_REPO_TOPLEVEL", "WORKTREE_BASE_HEAD",
+        "WORKTREE_ACTUAL_HEAD", "BASE_HEAD_IDENTITY_STATUS", "BASE_HEAD", "BASE_BRANCH",
         "TASK_TEMP_RUNTIME", "TASK_TEMP_RUNTIME_STATUS", "OVERFIT_GUARD", "ANTI_BLOAT",
         "ANTI_BLOAT_TASK_DELTA", "REUSE_GUARD", "FILES_CHANGED", "FILES_CREATED",
         "DEPENDENCIES_ADDED", "STOP_REQUESTED", "PAUSE_REQUESTED", "SUPERVISOR_PID",
         "SUPERVISOR_HEARTBEAT_AT", "CONTROLLER_PID", "CONTROLLER_HEARTBEAT_AT",
         "WORKER_PID", "WORKER_THREAD_ID", "ACTIVE_THREAD_ID", "ACTIVE_PROCESS_KIND",
         "ACTIVE_WORK_UNIT_ID", "ACTIVE_WORK_UNIT_IDS", "PENDING_UNIT_RESULTS",
+        "WORKER_COMPLETION_EVIDENCE", "REVIEW_AUTHORITY_EVIDENCE",
+        "REVIEW_CLASSIFICATION",
         "CURRENT_RETRY_SIGNATURE", "CURRENT_RETRY_COUNT", "LAST_CHECKPOINT",
         "LAST_MEANINGFUL_PROGRESS_AT", "STATE_TEXT_ARCHIVES", "TELEMETRY",
     }
     snapshot = {key: state.get(key) for key in keep if key in state}
-    active_ids = set(str(value) for value in state.get("ACTIVE_WORK_UNIT_IDS", []))
-    snapshot["WORK_UNITS"] = [
-        {
-            key: unit.get(key) for key in (
-                "id", "parent_id", "dependencies", "objective", "status", "relevant_paths",
-                "produced_outputs", "validation_state", "blocker", "failure_signature",
-                "last_checkpoint", "next_action", "attempts",
-            ) if key in unit
-        }
-        for unit in state.get("WORK_UNITS", [])
-        if str(unit.get("id", "")) in active_ids
-    ]
+    work_units = state.get("WORK_UNITS", [])
+    snapshot["WORK_UNITS"] = work_units if isinstance(work_units, list) else []
     diagnosis = f"STATE_COMPACTION_EXHAUSTED:{before}->{after}>{MAX_STATE_BYTES}"
     snapshot.update({
         "HARNESS_STATE": "RUNNING" if active_worker else "FAILED",
@@ -1011,10 +1039,14 @@ def _state_storage_failure_snapshot(
 
 
 def _write_state_unlocked(task_id: str, state: dict[str, Any]) -> None:
+    completion_authority_before = _work_unit_completion_authority_signature(state)
     state["LAST_UPDATED_AT"] = utc_now()
     before = len(_json_bytes(state))
     metrics, archives = _compact_state_for_write(
         task_id, state, aggressive=before > STATE_COMPACTION_TARGET_BYTES,
+    )
+    _require_work_unit_completion_authority_preserved(
+        completion_authority_before, state, "STATE_COMPACTION",
     )
     if any(metrics.values()):
         _archive_state_text(task_id, state, archives)
@@ -1064,6 +1096,11 @@ def _write_state_unlocked(task_id: str, state: dict[str, Any]) -> None:
                 "LAST_UPDATED_AT": utc_now(),
             }
             diagnostic_payload = _json_bytes(failed)
+        _require_work_unit_completion_authority_preserved(
+            completion_authority_before,
+            json.loads(diagnostic_payload.decode("utf-8")),
+            "STATE_STORAGE_FAILURE_SNAPSHOT",
+        )
         if len(diagnostic_payload) > MAX_STATE_BYTES:
             raise HarnessError(
                 f"STATE_STORAGE_DIAGNOSTIC_TOO_LARGE:{len(diagnostic_payload)}>{MAX_STATE_BYTES}"
@@ -1079,6 +1116,11 @@ def _write_state_unlocked(task_id: str, state: dict[str, Any]) -> None:
         except HarnessError:
             pass
         return
+    _require_work_unit_completion_authority_preserved(
+        completion_authority_before,
+        json.loads(payload.decode("utf-8")),
+        "SERIALIZATION",
+    )
     _atomic_write(state_path(task_id), payload)
 
 
@@ -1129,6 +1171,7 @@ def update_task(
 def _new_state(
     task_id: str, goal: str, scope: str, max_corrections: int,
     task_contract: dict[str, Any] | None = None, max_hours: float | None = None,
+    start_repo_head: str = "", start_repo_toplevel: str = "",
 ) -> dict[str, Any]:
     started_at = utc_now()
     deadline_at = (
@@ -1218,7 +1261,10 @@ def _new_state(
         "TEST_HISTORY_START_INDEX": 0,
         "VALIDATION_RESULTS": [],
         "WORKER_FINDINGS": "",
+        "WORKER_COMPLETION_EVIDENCE": {},
         "REVIEW_FINDINGS": "",
+        "REVIEW_AUTHORITY_EVIDENCE": {},
+        "REVIEW_CLASSIFICATION": "NOT_RUN",
         "BLOCKERS": [],
         "ACTIVE_BLOCKERS": [],
         "LOCAL_BLOCKED_WORK": [],
@@ -1267,6 +1313,11 @@ def _new_state(
         "SUPERVISOR_BOOTSTRAP_LOG": str(supervisor_bootstrap_log_path(task_id)),
         "SUPERVISOR_SPAWN_MODE": "",
         "CONTROLLER_HEARTBEAT_AT": "",
+        "START_REPO_HEAD": start_repo_head,
+        "START_REPO_TOPLEVEL": start_repo_toplevel,
+        "WORKTREE_BASE_HEAD": "",
+        "WORKTREE_ACTUAL_HEAD": "",
+        "BASE_HEAD_IDENTITY_STATUS": "PENDING",
         "BASE_HEAD": "",
         "BASE_BRANCH": "",
         "REUSE_EVIDENCE": {},
@@ -1648,11 +1699,16 @@ def _unit_by_id(state: dict[str, Any], unit_id: str) -> dict[str, Any] | None:
     return next((unit for unit in state.get("WORK_UNITS", []) if unit.get("id") == unit_id), None)
 
 
+def _dependency_satisfied(unit: Any) -> bool:
+    """Authorize dependent work only from the canonical DONE predicate."""
+    return _done_worker_result_terminal(unit)
+
+
 def _work_unit_counts(state: dict[str, Any]) -> dict[str, int]:
     units = state.get("WORK_UNITS", [])
     return {
         "total": len(units),
-        "done": sum(unit.get("status") == "DONE" for unit in units),
+        "done": sum(_done_worker_result_terminal(unit) for unit in units),
         "runnable": len(_runnable_work_units(state)),
         "local_blocked": sum(unit.get("status") == "BLOCKED_LOCAL" for unit in units),
         "deferred": sum(unit.get("status") == "DEFERRED" for unit in units),
@@ -1734,16 +1790,10 @@ def _substantive_output_completed(unit: dict[str, Any]) -> bool:
 
 
 def _accepted_nonblocking_review(state: dict[str, Any]) -> bool:
-    if state.get("REVIEW_CORRECTION_DISPOSITION") == "VALID_ZERO_DIFF_COMPLETION":
-        return True
-    if state.get("LAST_REVIEW_STATUS") not in {"PASS", "PASS_WITH_WARNINGS"}:
-        return False
-    findings = re.sub(
-        r"\bno blocking (?:finding|findings|issue|issues|defect|defects)\b",
-        "",
-        str(state.get("REVIEW_FINDINGS", "")).casefold(),
-    )
-    return not bool(re.search(r"\bblocking (?:finding|findings|issue|issues|defect|defects)\b", findings))
+    """Accept only the canonical full-message review receipt, never display text."""
+    return _canonical_persisted_review_classification(state) in {
+        "PASS", "PASS_WITH_WARNINGS",
+    }
 
 
 def _reconcile_terminal_local_environment_units(state: dict[str, Any]) -> tuple[int, int]:
@@ -1757,8 +1807,10 @@ def _reconcile_terminal_local_environment_units(state: dict[str, Any]) -> tuple[
         if _invalid_required_output(unit):
             continue
         if _substantive_output_completed(unit):
-            unit["status"] = "DONE"
-            completed += 1
+            candidate = {**unit, "status": "DONE"}
+            if _done_worker_result_terminal(candidate):
+                unit.update(candidate)
+                completed += 1
         else:
             unit["status"] = "DEFERRED"
             deferred += 1
@@ -1773,7 +1825,7 @@ def _runnable_work_units(state: dict[str, Any]) -> list[dict[str, Any]]:
         if unit.get("status") not in {"READY", "RETRY"}:
             continue
         dependencies = [by_id.get(value) for value in unit.get("dependencies", [])]
-        if all(dependency and dependency.get("status") == "DONE" for dependency in dependencies):
+        if all(_dependency_satisfied(dependency) for dependency in dependencies):
             runnable.append(unit)
     return runnable
 
@@ -1819,6 +1871,12 @@ def _select_work_unit_batch(state: dict[str, Any]) -> list[str]:
         unit["attempts"] = int(unit.get("attempts", 0)) + 1
         unit["last_checkpoint"] = "DISPATCHED"
         unit["next_action"] = "Complete or checkpoint this unit in the active worker batch"
+    # A newly selected batch must never inherit completion authority from the
+    # preceding turn.  Clear it in the same state mutation that marks units
+    # RUNNING so crash recovery cannot mistake a stale receipt for this batch.
+    state["WORKER_COMPLETION_EVIDENCE"] = {}
+    state["PENDING_UNIT_RESULTS"] = []
+    state["WORKER_REPORTED_CHANGED_PATHS"] = []
     state["ACTIVE_WORK_UNIT_IDS"] = ids
     state["ACTIVE_WORK_UNIT_ID"] = ids[0]
     state["CURRENT_WORK_UNIT"] = " | ".join(
@@ -1942,8 +2000,12 @@ def _requires_human_boundary(blocker_kind: str, detail: str, state: dict[str, An
 
 def _recoverable_required_unit_ids(state: dict[str, Any]) -> list[str]:
     recoverable: list[str] = []
+    by_id = {unit.get("id"): unit for unit in state.get("WORK_UNITS", [])}
     for unit in state.get("WORK_UNITS", []):
-        if unit.get("optional") or unit.get("status") == "DONE":
+        if unit.get("optional") or _done_worker_result_terminal(unit):
+            continue
+        dependencies = [by_id.get(value) for value in unit.get("dependencies", [])]
+        if not all(_dependency_satisfied(dependency) for dependency in dependencies):
             continue
         status = str(unit.get("status", ""))
         if status in {"READY", "RETRY", "RUNNING"}:
@@ -1966,6 +2028,203 @@ def _recoverable_required_unit_ids(state: dict[str, Any]) -> list[str]:
         if status in {"BLOCKED_LOCAL", "DEFERRED", "SKIPPED_WITH_REASON"}:
             recoverable.append(str(unit.get("id", "")))
     return [value for value in recoverable if value]
+
+
+def _review_match_negated(text: str, start: int, end: int) -> bool:
+    """Recognize a denial that grammatically governs this finding only."""
+    strong_boundary = r"[.;!?]+|\b(?:although|but|however|though|while|whereas|yet)\b"
+    prior_boundaries = list(re.finditer(strong_boundary, text[:start], re.I))
+    clause_start = prior_boundaries[-1].end() if prior_boundaries else 0
+    next_boundary = re.search(strong_boundary, text[end:], re.I)
+    clause_end = end + next_boundary.start() if next_boundary else len(text)
+    clause_prefix = text[clause_start:start]
+    clause_suffix = text[end:clause_end]
+    coordinators_before = list(re.finditer(r"\b(?:and|nor|or)\b", clause_prefix, re.I))
+    coordinator_after = re.search(r"\b(?:and|nor|or)\b", clause_suffix, re.I)
+    direct_prefix = (
+        clause_prefix[coordinators_before[-1].end():]
+        if coordinators_before else clause_prefix
+    )
+    direct_suffix = (
+        clause_suffix[:coordinator_after.start()]
+        if coordinator_after else clause_suffix
+    )
+    post_negation = (
+        r"(?:(?:(?:do|does|did|is|are|was|were|has|have|had)\s+not|"
+        r"(?:don['’]t|doesn['’]t|didn['’]t|isn['’]t|aren['’]t|wasn['’]t|"
+        r"weren['’]t|hasn['’]t|haven['’]t|hadn['’]t)|"
+        r"could\s+not|couldn['’]t)\s+(?:(?:be|been)\s+)?"
+        r"(?:exist|exists|existed|introduced|created|added|present|found|detected|observed|"
+        r"reported|caused|produced|committed|performed|done|occurred)|"
+        r"(?:cannot|can\s+not|can['’]t)\s+(?:be\s+)?"
+        r"(?:exist|exists|found|present|detected|observed|introduced|created|added|reported)|"
+        r"(?:is|are|was|were)\s+absent)"
+        r"|(?:(?:is|are|was|were|has|have|had)\s+never\s+(?:been\s+)?"
+        r"(?:found|detected|observed|reported|introduced|created|added|present))"
+    )
+    finding_subject = (
+        r"(?:duplicate\s+(?:component|implementation|identity)|parallel\s+component|"
+        r"anti[-_ ]?bloat[^.;:,\n]{0,48}(?:fail(?:ed|ure)?|violation|breach|regression))"
+    )
+    # Only short identifier-like labels may sit between a finding noun and its
+    # predicate.  This deliberately does not guess that arbitrary prose is a
+    # shared subject; uncertain grammar remains actionable rather than hidden.
+    nominal_tail = (
+        r"(?:\s+(?:[a-z](?![a-z0-9_-])|\d+(?![a-z0-9_-])|"
+        r"[a-z0-9_-]*\d[a-z0-9_-]*)){0,3}"
+    )
+    direct_prefix_negated = bool(re.search(
+        r"(?:\b(?:neither|no|zero)\s+|\bwithout(?:\s+any)?\s+|\bfree\s+of\s+|"
+        r"\b(?:(?:do|does|did|can|could)\s+not|cannot|"
+        r"(?:don['’]t|doesn['’]t|didn['’]t|can['’]t|couldn['’]t))\s+"
+        r"(?:find|detect|observe|identify|introduce|create|add|report)\s+"
+        r"(?:(?:a|an|any|the)\s+)?|"
+        r"\bwithout\s+(?:ever\s+)?(?:finding|detecting|observing|identifying|"
+        r"introducing|creating|adding|reporting)\s+(?:a|an|any|the)?\s*)$",
+        direct_prefix,
+        re.I,
+    ))
+    matched_text = text[start:end]
+    internal_finding_negated = bool(re.search(
+        r"\b(?:no|zero)\s+(?:task[- ]created\s+)?(?:anti[-_ ]?bloat\s+)?"
+        r"(?:fail(?:ed|ure)?|violation|breach|regression|hard blocker|budget exceeded)\b|"
+        r"\bwithout(?:\s+(?:a|an|any))?\s+(?:task[- ]created\s+)?"
+        r"(?:anti[-_ ]?bloat\s+)?"
+        r"(?:fail(?:ed|ure)?|violation|breach|regression|hard blocker|budget exceeded)\b",
+        matched_text,
+        re.I,
+    ))
+    pre_negated_action = bool(
+        re.search(
+            r"\b(?:(?:do|does|did|is|are|was|were|has|have|had)\s+not|"
+            r"(?:don['’]t|doesn['’]t|didn['’]t|isn['’]t|aren['’]t|wasn['’]t|"
+            r"weren['’]t|hasn['’]t|haven['’]t|hadn['’]t))\s*$",
+            direct_prefix,
+            re.I,
+        )
+        and re.match(
+            r"(?:introduced|created|added|reported|caused|produced|committed|performed|done)\b",
+            matched_text,
+            re.I,
+        )
+    )
+    attached_negative_predicate = (
+        rf"(?:{post_negation}|not\s+(?:found|detected|observed|reported|present))"
+    )
+    direct_suffix_negated = bool(re.match(
+        rf"\s*(?:[:,]\s*)?{nominal_tail}\s*{attached_negative_predicate}\b",
+        direct_suffix,
+        re.I,
+    ))
+    coordinated_post_negated = bool(
+        coordinator_after
+        and re.fullmatch(
+            rf"\s*{nominal_tail}\s*",
+            clause_suffix[:coordinator_after.start()],
+            re.I,
+        )
+        and re.match(
+            rf"\s*{finding_subject}{nominal_tail}\s+{post_negation}\b",
+            clause_suffix[coordinator_after.end():],
+            re.I,
+        )
+    )
+    shared_leading_no = bool(
+        coordinators_before
+        and re.search(
+            rf"\b(?:no|zero)\s+{finding_subject}{nominal_tail}\s+"
+            r"(?:and|nor|or)\s*$",
+            clause_prefix,
+            re.I,
+        )
+    )
+    clause = text[clause_start:clause_end]
+    local_start = start - clause_start
+    local_end = end - clause_start
+    subject_matches = list(re.finditer(
+        rf"{finding_subject}{nominal_tail}", clause, re.I,
+    ))
+    target_index = next((
+        index for index, subject in enumerate(subject_matches)
+        if subject.start() < local_end and local_start < subject.end()
+    ), None)
+    coordinated_subject_negated = False
+    if target_index is not None:
+        def list_gap(value: str) -> bool:
+            cleaned = re.sub(r"\b(?:and|nor|or)\b|[,\s]+", "", value, flags=re.I)
+            return not cleaned and bool(
+                re.search(r",|\n|\b(?:and|nor|or)\b", value, re.I)
+            )
+
+        group_start_index = target_index
+        while group_start_index > 0 and list_gap(
+            clause[
+                subject_matches[group_start_index - 1].end():
+                subject_matches[group_start_index].start()
+            ]
+        ):
+            group_start_index -= 1
+        group_end_index = target_index
+        while group_end_index + 1 < len(subject_matches) and list_gap(
+            clause[
+                subject_matches[group_end_index].end():
+                subject_matches[group_end_index + 1].start()
+            ]
+        ):
+            group_end_index += 1
+        group_prefix = clause[:subject_matches[group_start_index].start()]
+        group_suffix = clause[subject_matches[group_end_index].end():]
+        group_gaps = [
+            clause[subject_matches[index].end():subject_matches[index + 1].start()]
+            for index in range(group_start_index, group_end_index)
+        ]
+        has_explicit_coordinator = any(
+            re.search(r"\b(?:and|nor|or)\b", gap, re.I) for gap in group_gaps
+        )
+        shared_post_negated = bool(re.match(
+            rf"\s*(?:[:,]\s*)?{attached_negative_predicate}\b",
+            group_suffix,
+            re.I,
+        ))
+        shared_pre_negated = bool(re.search(
+            r"(?:\b(?:neither|no|zero)\s+|\bwithout(?:\s+any)?\s+|\bfree\s+of\s+|"
+            r"\b(?:(?:do|does|did|can|could)\s+not|cannot|"
+            r"(?:don't|doesn't|didn't|can't|couldn't))\s+"
+            r"(?:find|detect|observe|identify|introduce|create|add|report)\s+"
+            r"(?:(?:a|an|any|the)\s+)?|"
+            r"\bwithout\s+(?:ever\s+)?(?:finding|detecting|observing|identifying|"
+            r"introducing|creating|adding|reporting)\s+(?:a|an|any|the)?\s*)$",
+            group_prefix,
+            re.I,
+        ))
+        comma_coordinated_clause = any(
+            re.search(r",[^,]*\b(?:and|nor|or)\b|\b(?:and|nor|or)\b[^,]*,", gap, re.I)
+            for gap in group_gaps
+        )
+        independent_two_subject_coordination = bool(
+            group_end_index - group_start_index == 1
+            and comma_coordinated_clause
+            and not shared_post_negated
+        )
+        coordinated_subject_negated = bool(
+            shared_post_negated
+            or shared_pre_negated
+            and not independent_two_subject_coordination
+            and (
+                group_start_index == group_end_index
+                or has_explicit_coordinator
+                or shared_post_negated
+            )
+        )
+    return bool(
+        direct_prefix_negated
+        or internal_finding_negated
+        or pre_negated_action
+        or direct_suffix_negated
+        or coordinated_post_negated
+        or shared_leading_no
+        or coordinated_subject_negated
+    )
 
 
 def _review_finding_analysis(
@@ -1992,6 +2251,27 @@ def _review_finding_analysis(
         text,
     ):
         identities.append("RESEARCH_SAFETY_BOUNDARY")
+    completion_inference_mentions = re.finditer(
+        r"(?:missing|malformed|invalid|unparsed|blocked_local)[^.\n]{0,180}"
+        r"(?:worker|active[- ]unit|result)[^.\n]{0,180}"
+        r"(?:default|infer|represent|become|mark)[^.\n]{0,80}(?:done|complete)",
+        text,
+    )
+    completion_inference_problem = any(
+        not _review_match_negated(text, match.start(), match.end())
+        and not any(
+            _negated(
+                text, match.start() + action.start(), match.start() + action.end(),
+            )
+            for action in re.finditer(
+                r"(?:default|infer|represent|become|mark)[^.\n]{0,80}(?:done|complete)",
+                text[match.start():match.end()],
+            )
+        )
+        for match in completion_inference_mentions
+    )
+    if completion_inference_problem:
+        identities.append("WORKER_RESULT_COMPLETION_INFERENCE")
     anti_bloat = "anti-bloat" in text or "anti_bloat" in text
     baseline_words = re.search(
         r"pre[- ]?existing|inherited|baseline residue|outside (?:this |the )?(?:task|diff)|"
@@ -1999,17 +2279,40 @@ def _review_finding_analysis(
         text,
     )
     task_delta_clean = str(state.get("ANTI_BLOAT_TASK_DELTA", "")).startswith("PASS")
-    task_caused_words = re.search(
+    task_caused_mentions = re.finditer(
         r"task[- ]created|task delta (?:fail|violation)|new (?:task )?violation|"
         r"introduced by (?:this|the) (?:task|diff|change)|created \.venv",
         text,
     )
-    baseline_residue = bool(
-        anti_bloat and baseline_words and task_delta_clean and not task_caused_words
+    task_caused = any(
+        not _review_match_negated(text, match.start(), match.end())
+        for match in task_caused_mentions
     )
-    if anti_bloat and not baseline_residue:
+    baseline_residue = bool(
+        anti_bloat and baseline_words and task_delta_clean and not task_caused
+    )
+    anti_bloat_problem_mentions = re.finditer(
+        r"(?:anti[-_ ]?bloat)[^.\n]{0,120}?"
+        r"(?:fail(?:ed|ure)?|violation|breach|regression|hard blocker|budget exceeded)",
+        text,
+    )
+    anti_bloat_problem = bool(
+        str(state.get("ANTI_BLOAT_TASK_DELTA", "")).startswith("FAIL")
+        or task_caused
+        or any(
+            not _review_match_negated(text, match.start(), match.end())
+            for match in anti_bloat_problem_mentions
+        )
+    )
+    if anti_bloat and anti_bloat_problem and not baseline_residue:
         identities.append("ANTI_BLOAT_TASK_DELTA")
-    if re.search(r"duplicate (?:component|implementation|identity)|parallel component", text):
+    duplicate_mentions = re.finditer(
+        r"duplicate (?:component|implementation|identity)|parallel component", text,
+    )
+    if any(
+        not _review_match_negated(text, match.start(), match.end())
+        for match in duplicate_mentions
+    ):
         identities.append("DUPLICATE_COMPONENT_IDENTITY")
     if re.search(r"assertionerror|syntaxerror|module not found|modulenotfounderror", text):
         identities.append("SOFTWARE_TEST_FAILURE")
@@ -2034,16 +2337,23 @@ def _review_finding_analysis(
 
 def _review_finding_identity(
     state: dict[str, Any], detail: str, relevant_paths: Sequence[str] = (),
+    *, canonical_analysis: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the one canonical identity and signature for reviewer findings."""
-    finding = _review_finding_analysis(state, detail, relevant_paths)
+    finding = (
+        dict(canonical_analysis)
+        if isinstance(canonical_analysis, dict)
+        else _review_finding_analysis(state, detail, relevant_paths)
+    )
     if finding["identities"]:
         identity = "+".join(finding["identities"])
     elif finding["no_output"]:
         required_units = [
             unit for unit in state.get("WORK_UNITS", []) if not unit.get("optional")
         ]
-        if required_units and all(unit.get("status") == "DONE" for unit in required_units):
+        if required_units and all(
+            _done_worker_result_terminal(unit) for unit in required_units
+        ):
             identity = "VALID_ZERO_DIFF_COMPLETION"
         elif finding["incomplete"]:
             identity = "TASK_INCOMPLETE"
@@ -2060,6 +2370,35 @@ def _review_finding_identity(
         f"FINAL_REVIEW:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
     )
     return finding
+
+
+def _review_blocking_identities(finding: dict[str, Any]) -> list[str]:
+    """Return actionable identities from one complete canonical review parse."""
+    identities = [
+        str(identity) for identity in finding.get("identities", [])
+        if str(identity) and not str(identity).startswith("GENERIC_CORRECTNESS|")
+    ]
+    semantic = str(finding.get("identity", ""))
+    if not identities and semantic and not (
+        semantic.startswith("GENERIC_CORRECTNESS|")
+        or semantic in {
+            "PREEXISTING_BASELINE_RESIDUE", "VALID_ZERO_DIFF_COMPLETION",
+        }
+    ):
+        identities.append(semantic)
+    return sorted(set(identities))
+
+
+def _review_has_blocking_language(detail: str) -> bool:
+    """Recognize explicit blocking prose in the complete reviewer message."""
+    text = re.sub(
+        r"\bno blocking (?:finding|findings|issue|issues|defect|defects)\b",
+        "",
+        detail.casefold(),
+    )
+    return bool(re.search(
+        r"\bblocking (?:finding|findings|issue|issues|defect|defects)\b", text,
+    ))
 
 
 def _failure_signature(
@@ -2149,27 +2488,109 @@ def _set_current_task(task_id: str) -> None:
 
 
 def _negated(text: str, start: int, end: int | None = None) -> bool:
-    prefix = text[max(0, start - 48):start].lower()
+    prefix = text[max(0, start - 96):start].lower()
     suffix = text[end if end is not None else start:min(len(text), (end or start) + 40)].lower()
     clause_prefix = re.split(
-        r"[.;\n]+|\b(?:but|however|though|yet)\b", text[:start], flags=re.I,
+        r"[.;\n]+|\b(?:although|but|however|though|while|whereas|yet)\b",
+        text[:start], flags=re.I,
     )[-1].lower()
-    leading_no_governs = bool(
-        re.match(r"\s*(?:[-*]\s*)?no\b", clause_prefix)
-        and re.search(
-            r"\b(?:may|might|can|could|must|shall|should|will|would)\s+"
-            r"(?:not\s+)?(?:be\s+)?",
-            clause_prefix,
-        )
+    safe_bridge = (
+        r"(?:ever|again|actively|automatically|directly|explicitly|further|"
+        r"intentionally|knowingly|materially)"
     )
+    leading_modal = re.search(
+        r"\b(?:may|might|can|could|must|shall|should|will|would)\s+"
+        rf"(?:not\s+)?(?:be\s+)?(?:"
+        rf"(?:{safe_bridge}\s+)*|"
+        r"(?:(?:access|assess|compare|consult|consume|evaluate|examine|inspect|"
+        r"measure|monitor|read|review|test|use|validate)\w*\s+(?:and|or)\s+)+"
+        r")$",
+        clause_prefix,
+    )
+    leading_subject = clause_prefix[:leading_modal.start()] if leading_modal else ""
+    has_subject_coordinator = bool(re.search(
+        r"\b(?:and|nor|or)\b", leading_subject, re.I,
+    ))
+    subject_tokens = set(re.findall(r"[a-z0-9]+", re.sub(
+        r"^\s*(?:[-*]\s*)?no\b", "", leading_subject, flags=re.I,
+    )))
+    protected_subject_tokens = {
+        "2025", "2026", "after", "asset", "assets", "canonical", "complete",
+        "contract", "contracts", "cutoff", "data", "dated", "decision", "economic",
+        "evaluation", "evaluations", "exposed", "feature", "features", "forward",
+        "frozen", "holdout", "information", "input", "inputs", "label", "labels",
+        "later", "ledger", "ledgers", "market", "metric", "metrics", "model", "models",
+        "observation", "observations", "or", "and", "nor", "outcome", "outcomes",
+        "performance", "period", "periods", "post", "prospective", "realized",
+        "repository", "research", "result", "results", "return", "returns", "sample",
+        "samples", "set", "sets", "shadow", "source", "strategy", "target", "targets",
+        "training", "venv",
+    }
+    protected_subject_anchors = {
+        "asset", "assets", "contract", "contracts", "data", "evaluation", "evaluations",
+        "feature", "features", "holdout", "input", "inputs", "label", "labels", "ledger",
+        "ledgers", "metric", "metrics", "model", "models", "observation", "observations",
+        "outcome", "outcomes", "performance", "result", "results", "return", "returns",
+        "sample", "samples", "target", "targets", "venv",
+    }
+    coordinated_protected_subject = bool(
+        has_subject_coordinator
+        and subject_tokens
+        and subject_tokens <= protected_subject_tokens
+        and subject_tokens & protected_subject_anchors
+    )
+    independent_subject_bridge = bool(re.search(
+        r"[:()\u2013\u2014]|\b(?:because|although|but|however|though|while|whereas|yet)\b|"
+        r"\b(?:arise[sn]?|exists?|existed|is|are|was|were|has|have|had|"
+        r"can|could|may|might|must|shall|should|will|would)\b[^,]*,\s*"
+        r"(?:and|nor|or)\b|"
+        r"\b(?:and|or)\s+(?:i|we|you|they|he|she|it|"
+        r"(?:the|this|that|these|those)\s+[a-z][\w-]*|"
+        r"(?:an?\s+)?(?:agent|controller|human|operator|process|reviewer|system|user|worker))\b",
+        leading_subject,
+        re.I,
+    ))
+    leading_no_governs = bool(
+        leading_modal
+        and re.match(r"\s*(?:[-*]\s*)?no\b", leading_subject)
+        and not independent_subject_bridge
+        and ("," not in leading_subject or coordinated_protected_subject)
+        and (not has_subject_coordinator or coordinated_protected_subject)
+    )
+    direct_negation = bool(re.search(
+        rf"(?:"
+        r"(?:(?:do|does|did|must|should|will|would|can|could|may|might|"
+        r"is|are|was|were|has|have|had)\s+not|"
+        r"don't|doesn't|didn't|mustn't|shouldn't|won't|wouldn't|can't|"
+        r"couldn't|mayn't|mightn't|isn't|aren't|wasn't|weren't|hasn't|"
+        r"haven't|hadn't|cannot|never|without)"
+        rf"(?:\s+be)?(?:\s+{safe_bridge})*"
+        rf"(?:\s+(?:attempt|try|plan|intend)\s+to(?:\s+{safe_bridge})*)?|"
+        r"(?:avoid|exclude|reject|forbid|prevent)"
+        r"(?:\s+(?:all|any|further|additional|new|attempts?|actions?|efforts?|to)){0,4}"
+        r")\s*$",
+        prefix,
+        re.I,
+    ))
+    direct_no = bool(re.search(
+        r"\bno(?:\s+(?:additional|feature|further|model|new|parameter|portfolio|"
+        r"threshold)){0,2}\s*$",
+        prefix,
+        re.I,
+    ))
+    governed_negative_action = bool(re.search(
+        r"(?:\b(?:do|does|did|must|should|will|would|can|could|may|might)\s+not|"
+        r"\b(?:don't|doesn't|didn't|mustn't|shouldn't|won't|wouldn't|can't|"
+        r"couldn't|cannot))\s+"
+        r"(?:conduct|continue|execute|perform|run|start|undertake)\s+"
+        r"(?:(?:a|an|any|the|additional|model|quantitative|research|training)\s+){0,3}$",
+        prefix,
+        re.I,
+    ))
     return bool(
-        re.search(
-            r"(?:(?:do(?:es|ne)?|did|must|should|will|can(?:not)?|is|are|was|were)\s+not(?:\s+be)?|"
-            r"don't|can't|cannot|never|without|avoid|exclude|reject|forbid|prevent)"
-            r"\s+(?:[a-z][\w-]*\s+){0,3}$|"
-            r"\bno(?:\s+[a-z][\w-]*){0,2}\s*$",
-            prefix,
-        )
+        direct_negation
+        or direct_no
+        or governed_negative_action
         or re.match(r"\s+(?:is|are|was|were)\s+(?:not\s+required|prohibited|forbidden|disallowed|out\s+of\s+scope)\b", suffix)
         or leading_no_governs
     )
@@ -2706,6 +3127,34 @@ def _git(args: Sequence[str], cwd: Path = REPO, timeout: int = 30) -> subprocess
     return _run([_required_executable("git"), *args], cwd, timeout)
 
 
+def _capture_start_repo_identity() -> tuple[str, str]:
+    head_result = _git(["rev-parse", "HEAD"], REPO)
+    head = head_result.stdout.strip()
+    if head_result.returncode or not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", head):
+        detail = head_result.stderr.strip() or head_result.stdout.strip() or "empty result"
+        raise HarnessError(f"START_REPO_HEAD_UNAVAILABLE:{detail}")
+    toplevel_result = _git(["rev-parse", "--show-toplevel"], REPO)
+    toplevel = toplevel_result.stdout.strip()
+    if toplevel_result.returncode or not toplevel:
+        detail = toplevel_result.stderr.strip() or toplevel_result.stdout.strip() or "empty result"
+        raise HarnessError(f"START_REPO_TOPLEVEL_UNAVAILABLE:{detail}")
+    if Path(toplevel).resolve() != REPO.resolve():
+        raise HarnessError(
+            f"START_REPO_TOPLEVEL_MISMATCH:observed={toplevel};expected={REPO.resolve()}"
+        )
+    return head, toplevel
+
+
+def _git_common_dir(repo: Path) -> Path:
+    result = _git(["rev-parse", "--git-common-dir"], repo)
+    value = result.stdout.strip()
+    if result.returncode or not value:
+        detail = result.stderr.strip() or result.stdout.strip() or "empty result"
+        raise HarnessError(f"GIT_COMMON_DIR_UNAVAILABLE:{repo}:{detail}")
+    path = Path(value)
+    return (path if path.is_absolute() else repo / path).resolve()
+
+
 def _repo_status_fingerprint(repo: Path) -> dict[str, Any]:
     result = _git(["status", "--porcelain=v1", "-z"], repo)
     raw = result.stdout.encode("utf-8", errors="replace")
@@ -2901,9 +3350,47 @@ def _create_worktree(task_id: str) -> tuple[Path, str, str]:
     if path.exists():
         raise HarnessError(f"WORKTREE_PATH_ALREADY_EXISTS_PRESERVE_FOR_REVIEW:{path}")
     branch = f"harness-task-{task_id}"
-    head = _git(["rev-parse", "HEAD"], REPO).stdout.strip()
-    if not head:
-        raise HarnessError("PRIMARY_HEAD_UNAVAILABLE")
+    state = load_state(task_id)
+    start_head = str(state.get("START_REPO_HEAD", "")).strip()
+    start_toplevel = str(state.get("START_REPO_TOPLEVEL", "")).strip()
+    verified_base_head = ""
+
+    def reject(detail: str, actual_head: str = "") -> None:
+        created = path.is_dir()
+        updates = {
+            "WORKTREE_BASE_HEAD": verified_base_head or start_head,
+            "WORKTREE_ACTUAL_HEAD": actual_head,
+            "BASE_HEAD_IDENTITY_STATUS": "BLOCKED_HARNESS_BASE_HEAD_MISMATCH",
+            "BASE_HEAD": verified_base_head or start_head,
+        }
+        if created:
+            updates.update({"WORKTREE": str(path), "BASE_BRANCH": branch})
+        update_task(
+            task_id, updates, event="WORKTREE_BASE_HEAD_IDENTITY_REJECTED",
+            detail=detail[:2_000],
+        )
+        raise HarnessError(f"BLOCKED_HARNESS_BASE_HEAD_MISMATCH:{detail}")
+
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", start_head):
+        reject(f"START_REPO_HEAD_INVALID:{start_head or 'MISSING'}")
+    if not start_toplevel:
+        reject("START_REPO_TOPLEVEL_MISSING")
+    current_toplevel = _git(["rev-parse", "--show-toplevel"], REPO)
+    current_toplevel_value = current_toplevel.stdout.strip()
+    if (
+        current_toplevel.returncode
+        or not current_toplevel_value
+        or Path(current_toplevel_value).resolve() != Path(start_toplevel).resolve()
+        or Path(start_toplevel).resolve() != REPO.resolve()
+    ):
+        reject(
+            "START_REPO_TOPLEVEL_IDENTITY_MISMATCH:"
+            f"start={start_toplevel};current={current_toplevel_value};expected={REPO.resolve()}"
+        )
+    commit_check = _git(["rev-parse", "--verify", f"{start_head}^{{commit}}"], REPO)
+    verified_base_head = commit_check.stdout.strip()
+    if commit_check.returncode or verified_base_head != start_head:
+        reject(f"START_REPO_HEAD_NOT_COMMIT:{start_head}")
     existing = _git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], REPO)
     if existing.returncode == 0:
         raise HarnessError(f"WORKTREE_BRANCH_ALREADY_EXISTS_PRESERVE_FOR_REVIEW:{branch}")
@@ -2911,10 +3398,41 @@ def _create_worktree(task_id: str) -> tuple[Path, str, str]:
         root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise HarnessError(f"EXTERNAL_WORKTREE_ROOT_UNAVAILABLE:{type(exc).__name__}:{exc}") from exc
-    result = _git(["worktree", "add", "-b", branch, str(path), head], REPO, 120)
+    result = _git(["worktree", "add", "-b", branch, str(path), start_head], REPO, 120)
     if result.returncode or not path.is_dir():
         raise HarnessError(_worktree_create_failure(result.stderr.strip() or result.stdout.strip()))
-    return path, branch, head
+    actual_result = _git(["rev-parse", "HEAD"], path)
+    actual_head = actual_result.stdout.strip()
+    if actual_result.returncode or not actual_head:
+        reject(f"WORKTREE_ACTUAL_HEAD_UNAVAILABLE:{actual_result.stderr.strip()}")
+    try:
+        assert_registered_isolated_worktree(path)
+        primary_common_dir = _git_common_dir(REPO)
+        worktree_common_dir = _git_common_dir(path)
+    except HarnessError as exc:
+        reject(f"WORKTREE_REPOSITORY_IDENTITY_MISMATCH:{exc}", actual_head)
+    if primary_common_dir != worktree_common_dir:
+        reject(
+            "WORKTREE_GIT_COMMON_DIR_MISMATCH:"
+            f"primary={primary_common_dir};worktree={worktree_common_dir}",
+            actual_head,
+        )
+    if not (start_head == verified_base_head == actual_head):
+        reject(
+            f"HEAD_INVARIANT_FAILED:start={start_head};base={verified_base_head};actual={actual_head}",
+            actual_head,
+        )
+    update_task(task_id, {
+        "WORKTREE": str(path),
+        "BASE_BRANCH": branch,
+        "BASE_HEAD": verified_base_head,
+        "WORKTREE_BASE_HEAD": verified_base_head,
+        "WORKTREE_ACTUAL_HEAD": actual_head,
+        "BASE_HEAD_IDENTITY_STATUS": "PASS",
+    }, event="WORKTREE_BASE_HEAD_IDENTITY_VERIFIED", detail=(
+        f"start={start_head};base={verified_base_head};actual={actual_head}"
+    ))
+    return path, branch, verified_base_head
 
 
 def _git_changes(worktree: Path) -> dict[str, Any]:
@@ -3167,7 +3685,7 @@ Do not use 2026+ outcomes for fitting, feature/parameter/threshold/portfolio-rul
 
 Complete as many closely related active units as practical in this turn. Run focused tests and inspect the diff. Only report PROTECTED_PERMISSION when the goal truly requires writing a protected/frozen/canonical asset, no authorized alternative exists, and actual permission-boundary expansion is required. An ordinary unwritable path is a local blocker. A local source/quota/coverage/test/permission failure blocks only its unit; continue another unit in this batch when independent. If context ends, checkpoint honestly. Never claim a test passed when it did not. If pytest is blocked by the known nested temporary-path WinError, preserve exact evidence for Controller classification. A negative research result is valid; never tune against exposed holdout feedback.
 
-End with these concise markers. JSON values must be compact single-line JSON. Each WORK_UNIT_RESULTS_JSON object uses id, status (DONE|RETRY|BLOCKED_LOCAL|DEFERRED|SKIPPED_WITH_REASON), produced_outputs, validation_state, blocker, last_checkpoint, next_action, reuse_decision, reuse_evidence.
+End with these concise markers. JSON values must be compact single-line JSON. Each WORK_UNIT_RESULTS_JSON object uses id, status (DONE|RETRY|BLOCKED_LOCAL|DEFERRED|SKIPPED_WITH_REASON), produced_outputs, validation_state, blocker, last_checkpoint, next_action, reuse_decision, reuse_evidence. A DONE row requires validation_state exactly PASS, a positively completed last_checkpoint such as IMPLEMENTATION_COMPLETE or VALIDATED, and a next_action that explicitly says no further worker work or action remains. Blank, running, in-progress, working, waiting, checkpoint-only, retry, validation-handoff, or remaining-work evidence invalidates DONE.
 TASK_RESULT=COMPLETED|SOFTWARE_FAILURE|RESEARCH_FAILURE|WAITING_HUMAN|BLOCKED
 TESTS_RUN=<commands and outcomes, or NONE>
 VALIDATION_STATUS=PASS|FAIL|NOT_RUN
@@ -3216,47 +3734,651 @@ def _parse_json_marker(text: str, key: str, default: Any) -> Any:
         return default
 
 
+def _strict_marker_value(text: str, key: str) -> tuple[str, int]:
+    """Return a marker only when the complete message contains it exactly once."""
+    pattern = re.compile(
+        rf"^[ \t]*{re.escape(key)}[ \t]*=[ \t]*(.*?)[ \t]*$",
+        re.I | re.M,
+    )
+    matches = list(pattern.finditer(text))
+    if len(matches) != 1:
+        return "", len(matches)
+    return matches[0].group(1).strip(), 1
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"DUPLICATE_JSON_KEY:{key}")
+        result[key] = value
+    return result
+
+
+def _parse_worker_result_rows(text: str) -> Any:
+    """Parse one unambiguous structured work-unit result marker."""
+    matches = list(WORKER_RESULT_MARKER_RE.finditer(text))
+    if len(matches) != 1:
+        return []
+
+    try:
+        return json.loads(
+            matches[0].group(1).strip(), object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except (json.JSONDecodeError, ValueError):
+        return []
+
+
+def _invalid_worker_result(
+    unit_id: str,
+    unit: dict[str, Any] | None,
+    *,
+    code: str,
+    detail: str,
+) -> dict[str, Any]:
+    source = unit or {}
+    return {
+        "id": unit_id,
+        "status": "RETRY",
+        "produced_outputs": [],
+        "validation_state": code,
+        "blocker": {
+            "code": code,
+            "detail": detail,
+        },
+        "last_checkpoint": code,
+        "next_action": "Return a valid structured result for this active work unit before Controller acceptance",
+        "reuse_decision": str(source.get("reuse_decision", "UNKNOWN")).upper(),
+        "reuse_evidence": list(source.get("reuse_evidence", []))[:20],
+    }
+
+
+def _missing_worker_result(unit_id: str, unit: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _invalid_worker_result(
+        unit_id,
+        unit,
+        code="WORKER_RESULT_MISSING",
+        detail="Active work unit had no valid structured result row; completion was not inferred.",
+    )
+
+
+def _valid_worker_result_row(row: Any, expected_id: str | None = None) -> bool:
+    """Require the complete worker-result contract before accepting any status."""
+    if not isinstance(row, dict):
+        return False
+    if set(row) - WORKER_RESULT_REQUIRED_FIELDS - WORKER_RESULT_OPTIONAL_EVIDENCE_FIELDS:
+        return False
+    required_string_fields = (
+        "id", "status", "validation_state", "last_checkpoint", "next_action",
+        "reuse_decision",
+    )
+    if any(not isinstance(row.get(field), str) for field in required_string_fields):
+        return False
+    if expected_id is not None and row["id"] != expected_id:
+        return False
+    if (
+        not row["id"]
+        or not row["validation_state"].strip()
+        or row["status"].upper() not in WORK_UNIT_STATUSES - {"READY", "RUNNING"}
+    ):
+        return False
+    if not isinstance(row.get("blocker"), dict):
+        return False
+    if "blockers" in row and not isinstance(row["blockers"], (dict, list, tuple)):
+        return False
+    for field in ("produced_outputs", "reuse_evidence"):
+        values = row.get(field)
+        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
+            return False
+    return True
+
+
+def _failed_validation_evidence(value: Any) -> bool:
+    normalized = re.sub(r"[^A-Z0-9]+", "_", str(value).upper()).strip("_")
+    failure_tokens = {
+        "BLOCKED", "DEFERRED", "ERROR", "FAIL", "FAILED", "FAILURE", "INCOMPLETE",
+        "INVALID", "PENDING", "REJECTED", "RETRY", "SKIPPED", "UNSAFE",
+        "UNSUCCESSFUL", "UNVALIDATED",
+    }
+    failure_phrases = {"NOT_RUN", "NOT_VALIDATED"}
+    padded = f"_{normalized}_"
+    return bool(
+        normalized
+        and (
+            bool(set(normalized.split("_")) & failure_tokens)
+            or any(f"_{phrase}_" in padded for phrase in failure_phrases)
+            or re.search(r"(?:^|_)NOT(?:_[A-Z0-9]+){0,2}_PASS(?:ED)?(?:_|$)", normalized)
+        )
+    )
+
+
+def _done_worker_result_terminal(row: Any) -> bool:
+    """Accept DONE only when every structured field describes terminal success."""
+    if not isinstance(row, dict) or str(row.get("status", "")).upper() != "DONE":
+        return False
+    if row.get("blocker") or row.get("blockers") or any(
+        row.get(field)
+        for field in (
+            "failed_tests", "test_errors", "test_failures", "validation_errors",
+            "validation_failures",
+        )
+    ):
+        return False
+
+    if row.get("validation_state") != CANONICAL_DONE_VALIDATION_STATE:
+        return False
+    for field in (
+        "validation_passed", "validation_success", "validation_ok", "tests_passed",
+    ):
+        if field not in row:
+            continue
+        evidence = row[field]
+        normalized = str(evidence).strip().casefold()
+        if not (
+            evidence is True
+            or evidence == 1
+            or normalized in {"true", "yes", "pass", "passed", "success", "successful"}
+        ):
+            return False
+    for field in (
+        "failed_validation", "test_failure", "tests_failed",
+        "validation_failed", "validation_failure",
+    ):
+        if field not in row:
+            continue
+        evidence = row[field]
+        normalized = str(evidence).strip().casefold()
+        if not (
+            evidence is False
+            or evidence == 0
+            or normalized in {"false", "no", "none", "0"}
+        ):
+            return False
+    for field in ("validation_result", "test_result", "tests_status"):
+        if field not in row:
+            continue
+        normalized = re.sub(
+            r"[^A-Z0-9]+", "_", str(row[field]).upper(),
+        ).strip("_")
+        if normalized != CANONICAL_DONE_VALIDATION_STATE:
+            return False
+
+    checkpoint = re.sub(
+        r"[^A-Z0-9]+", "_", str(row.get("last_checkpoint", "")).upper(),
+    ).strip("_")
+    next_action = re.sub(
+        r"[^A-Z0-9]+", "_", str(row.get("next_action", "")).upper(),
+    ).strip("_")
+    if not checkpoint or not next_action:
+        return False
+    nonterminal_tokens = {
+        "ACTIVE", "CONTINUE", "CONTINUING", "ONGOING", "OPEN", "PARTIAL",
+        "READY", "REMAINING", "RETRY", "RUNNING", "STARTED", "STARTING", "TODO",
+        "UNFINISHED", "WAIT", "WAITING", "WORKING", "AWAITING",
+    }
+    nonterminal_phrases = {
+        "IN_PROGRESS", "MORE_WORK_REQUIRED", "NOT_COMPLETE", "NOT_COMPLETED",
+        "WORK_REMAINS",
+    }
+    checkpoint_tokens = set(checkpoint.split("_"))
+    checkpoint_padded = f"_{checkpoint}_"
+    checkpoint_nonterminal_tokens = nonterminal_tokens | {
+        "NEED", "NEEDED", "NEEDS", "REQUIRE", "REQUIRED", "REQUIRES",
+    }
+    checkpoint_nonterminal_phrases = nonterminal_phrases | {
+        "ADDITIONAL_WORK", "FURTHER_WORK", "MORE_WORK", "WORK_LEFT",
+    }
+    if (
+        _failed_validation_evidence(checkpoint)
+        or "NOT" in checkpoint_tokens
+        or checkpoint_tokens & checkpoint_nonterminal_tokens
+        or any(
+            f"_{phrase}_" in checkpoint_padded
+            for phrase in checkpoint_nonterminal_phrases
+        )
+        or not checkpoint_tokens & {
+            "CLOSED", "COMPLETE", "COMPLETED", "COMPLETION", "DONE", "FINISHED",
+            "RESOLVED", "SUCCESS", "SUCCESSFUL", "VALIDATED",
+        }
+    ):
+        return False
+
+    next_tokens = set(next_action.split("_"))
+    next_padded = f"_{next_action}_"
+    no_more_worker_work = bool(re.fullmatch(
+        r"NO_(?:FURTHER|MORE)_(?:WORKER_)?(?:ACTION|WORK)"
+        r"(?:_(?:IS_)?(?:NEEDED|REMAINS|REQUIRED))?",
+        next_action,
+    ))
+    if (
+        _failed_validation_evidence(next_action)
+        or "NOT" in next_tokens
+        or next_tokens & nonterminal_tokens
+        or not no_more_worker_work
+        and any(f"_{phrase}_" in next_padded for phrase in nonterminal_phrases)
+    ):
+        return False
+    explicitly_terminal = next_action in {
+        "COMPLETED", "DONE", "NONE", "NO_ACTION",
+    }
+    return no_more_worker_work or explicitly_terminal
+
+
+def _reconcile_worker_result_rows(
+    state: dict[str, Any], raw_rows: Any,
+) -> list[dict[str, Any]]:
+    """Return one fail-closed structured result per active unit, in active order."""
+    active_ids = list(dict.fromkeys(
+        str(unit_id) for unit_id in state.get("ACTIVE_WORK_UNIT_IDS", []) if str(unit_id)
+    ))
+    by_id = {str(unit.get("id", "")): unit for unit in state.get("WORK_UNITS", [])}
+    rows = raw_rows if isinstance(raw_rows, list) else []
+    id_counts: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+            continue
+        unit_id = row["id"]
+        id_counts[unit_id] = id_counts.get(unit_id, 0) + 1
+    duplicates = sorted(unit_id for unit_id, count in id_counts.items() if count > 1)
+    if duplicates:
+        detail = (
+            "Structured worker result set contained duplicate work_unit_id rows "
+            f"({', '.join(duplicates[:10])}); no row was selected and completion was not inferred."
+        )
+        return [
+            _invalid_worker_result(
+                unit_id, by_id.get(unit_id), code="WORKER_RESULT_DUPLICATE", detail=detail,
+            )
+            for unit_id in active_ids
+        ]
+
+    reconciled_by_id: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if not _valid_worker_result_row(row):
+            continue
+        unit_id = row["id"]
+        if unit_id not in by_id or unit_id not in active_ids:
+            continue
+        if (
+            str(row.get("status", "")).upper() == "DONE"
+            and not _done_worker_result_terminal(row)
+        ):
+            reconciled_by_id[unit_id] = _invalid_worker_result(
+                unit_id,
+                by_id.get(unit_id),
+                code="WORKER_RESULT_CONTRADICTORY",
+                detail=(
+                    "DONE contradicted validation, blocker, or terminal checkpoint/action "
+                    "evidence; completion was not inferred."
+                ),
+            )
+            continue
+        reconciled_by_id[unit_id] = {
+            "id": unit_id,
+            "status": str(row["status"]).upper(),
+            "produced_outputs": list(row["produced_outputs"])[:30],
+            "validation_state": str(row["validation_state"])[:100],
+            "blocker": dict(row["blocker"]),
+            "last_checkpoint": str(row["last_checkpoint"])[:500],
+            "next_action": str(row["next_action"])[:1_000],
+            "reuse_decision": str(row["reuse_decision"]).upper(),
+            "reuse_evidence": list(row["reuse_evidence"])[:20],
+        }
+    return [
+        reconciled_by_id.get(unit_id, _missing_worker_result(unit_id, by_id.get(unit_id)))
+        for unit_id in active_ids
+    ]
+
+
 def _pending_unit_results(
     state: dict[str, Any], message: str | None = None,
 ) -> list[dict[str, Any]]:
-    raw = _parse_json_marker(
-        state.get("WORKER_FINDINGS", "") if message is None else message,
-        "WORK_UNIT_RESULTS_JSON", [],
+    if message is None:
+        evidence = state.get("WORKER_COMPLETION_EVIDENCE", {})
+        raw = evidence.get("work_unit_results", []) if isinstance(evidence, dict) else []
+    else:
+        raw = _parse_worker_result_rows(message)
+    return _reconcile_worker_result_rows(state, raw)
+
+
+def _ingest_worker_completion_evidence(
+    state: dict[str, Any], authoritative_message: str,
+) -> dict[str, Any]:
+    """Validate completion authority from one complete, untruncated worker message."""
+    validation_issues: list[str] = []
+    task_result_raw, task_result_count = _strict_marker_value(
+        authoritative_message, "TASK_RESULT",
     )
-    if not isinstance(raw, list):
-        raw = []
-    by_id = {unit.get("id"): unit for unit in state.get("WORK_UNITS", [])}
-    results: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    allowed = WORK_UNIT_STATUSES - {"READY", "RUNNING"}
-    for row in raw:
-        if not isinstance(row, dict):
-            continue
-        unit_id = str(row.get("id", ""))
-        status = str(row.get("status", "")).upper()
-        if unit_id not in by_id or unit_id in seen or status not in allowed:
-            continue
-        seen.add(unit_id)
-        results.append({
-            "id": unit_id,
-            "status": status,
-            "produced_outputs": list(row.get("produced_outputs", []))[:30],
-            "validation_state": str(row.get("validation_state", "NOT_RUN"))[:100],
-            "blocker": row.get("blocker", {}) if isinstance(row.get("blocker", {}), dict) else {"detail": str(row.get("blocker", ""))[:1_000]},
-            "last_checkpoint": str(row.get("last_checkpoint", "WORKER_REPORTED"))[:500],
-            "next_action": str(row.get("next_action", ""))[:1_000],
-            "reuse_decision": str(row.get("reuse_decision", "UNKNOWN")).upper(),
-            "reuse_evidence": list(row.get("reuse_evidence", []))[:20],
-        })
-    for unit_id in state.get("ACTIVE_WORK_UNIT_IDS", []):
-        if unit_id not in seen:
-            results.append({
-                "id": unit_id, "status": "DONE", "produced_outputs": [],
-                "validation_state": "WORKER_REPORTED_COMPLETE", "blocker": {},
-                "last_checkpoint": "WORKER_TURN_COMPLETED", "next_action": "Controller validation",
-                "reuse_decision": "UNKNOWN", "reuse_evidence": [],
-            })
-    return results
+    allowed_task_results = {
+        "COMPLETED", "SOFTWARE_FAILURE", "RESEARCH_FAILURE", "WAITING_HUMAN", "BLOCKED",
+    }
+    task_result = task_result_raw.upper()
+    if task_result_count != 1 or task_result not in allowed_task_results:
+        task_result = "RETRY"
+        validation_issues.append("INVALID_TASK_RESULT_MARKER")
+
+    contamination_raw, contamination_count = _strict_marker_value(
+        authoritative_message, "HOLDOUT_CONTAMINATION_RISK",
+    )
+    if contamination_count > 1:
+        contamination = "AMBIGUOUS_HOLDOUT_CONTAMINATION_RISK_MARKER"
+        validation_issues.append("AMBIGUOUS_HOLDOUT_CONTAMINATION_RISK_MARKER")
+    elif contamination_count == 1:
+        contamination = (
+            "NONE" if contamination_raw.upper() == "NONE"
+            else contamination_raw
+        )
+        if not contamination_raw:
+            validation_issues.append("INVALID_HOLDOUT_CONTAMINATION_RISK_MARKER")
+    else:
+        contamination = ""
+        validation_issues.append("MISSING_HOLDOUT_CONTAMINATION_RISK_MARKER")
+
+    blocker_raw, blocker_count = _strict_marker_value(authoritative_message, "BLOCKER_KIND")
+    allowed_blockers = {
+        "NONE", "LOCAL", "AUTHORIZATION", "SAFETY", "DESTRUCTIVE", "PROTECTED_PERMISSION",
+    }
+    blocker_kind = blocker_raw.upper()
+    if blocker_count != 1 or blocker_kind not in allowed_blockers:
+        blocker_kind = "UNKNOWN"
+        validation_issues.append("INVALID_BLOCKER_KIND_MARKER")
+
+    changed_raw, changed_count = _strict_marker_value(authoritative_message, "CHANGED_PATHS_JSON")
+    changed_paths: list[str] = []
+    changed_paths_valid = False
+    if changed_count == 1:
+        try:
+            decoded_paths = json.loads(
+                changed_raw, object_pairs_hook=_reject_duplicate_json_keys,
+            )
+        except (json.JSONDecodeError, ValueError):
+            decoded_paths = []
+        if isinstance(decoded_paths, list) and all(
+            isinstance(path, str) for path in decoded_paths
+        ):
+            changed_paths = list(dict.fromkeys(decoded_paths))
+            changed_paths_valid = True
+    if not changed_paths_valid:
+        validation_issues.append("INVALID_CHANGED_PATHS_JSON_MARKER")
+
+    justification_raw, justification_count = _strict_marker_value(
+        authoritative_message, "NEW_COMPONENT_JUSTIFICATION",
+    )
+    justification = justification_raw if justification_count == 1 else ""
+    if justification_count != 1 or not justification_raw:
+        validation_issues.append("INVALID_NEW_COMPONENT_JUSTIFICATION_MARKER")
+
+    work_unit_marker_count = len(
+        list(WORKER_RESULT_MARKER_RE.finditer(authoritative_message))
+    )
+    raw_work_unit_results = _parse_worker_result_rows(authoritative_message)
+    work_unit_marker_valid = bool(
+        work_unit_marker_count == 1 and isinstance(raw_work_unit_results, list)
+    )
+    if work_unit_marker_count == 1 and raw_work_unit_results == []:
+        marker = next(WORKER_RESULT_MARKER_RE.finditer(authoritative_message))
+        try:
+            decoded_rows = json.loads(
+                marker.group(1).strip(), object_pairs_hook=_reject_duplicate_json_keys,
+            )
+            work_unit_marker_valid = isinstance(decoded_rows, list)
+        except (json.JSONDecodeError, ValueError):
+            work_unit_marker_valid = False
+    if work_unit_marker_valid:
+        active_ids = {
+            str(unit_id) for unit_id in state.get("ACTIVE_WORK_UNIT_IDS", [])
+            if str(unit_id)
+        }
+        reported_ids = [
+            str(row.get("id", "")) for row in raw_work_unit_results
+            if isinstance(row, dict)
+        ]
+        work_unit_marker_valid = bool(
+            len(reported_ids) == len(raw_work_unit_results)
+            and len(reported_ids) == len(set(reported_ids))
+            and set(reported_ids) == active_ids
+            and all(
+                _valid_worker_result_row(row)
+                and (
+                    str(row.get("status", "")).upper() != "DONE"
+                    or _done_worker_result_terminal(row)
+                )
+                for row in raw_work_unit_results
+            )
+        )
+    if not work_unit_marker_valid:
+        validation_issues.append("INVALID_WORK_UNIT_RESULTS_JSON_MARKER")
+    work_unit_results = _reconcile_worker_result_rows(
+        state, raw_work_unit_results if work_unit_marker_valid else [],
+    )
+
+    human_boundary = bool(
+        contamination_count == 1
+        and contamination_raw
+        and contamination_raw.upper() != "NONE"
+        or blocker_count == 1 and blocker_kind in HUMAN_BOUNDARY_KINDS
+    )
+    if (
+        task_result == "WAITING_HUMAN"
+        and blocker_kind not in HUMAN_BOUNDARY_KINDS
+        or task_result == "BLOCKED" and blocker_kind == "NONE"
+        or task_result == "COMPLETED" and blocker_kind != "NONE"
+    ):
+        validation_issues.append("CONTRADICTORY_TASK_RESULT_AND_BLOCKER_KIND")
+    if validation_issues:
+        task_result = "BLOCKED" if human_boundary else "RETRY"
+        work_unit_results = _reconcile_worker_result_rows(state, [])
+    elif human_boundary:
+        # Safety/authority evidence dominates a contradictory completion marker
+        # and cannot be applied as an otherwise-valid DONE checkpoint.
+        task_result = "BLOCKED"
+        work_unit_results = _reconcile_worker_result_rows(state, [])
+    elif task_result == "COMPLETED" and any(
+        str(row.get("status", "")).upper() == "RETRY"
+        for row in work_unit_results
+    ):
+        task_result = "RETRY"
+    # Only bound state/display copies after every structured marker in the
+    # complete authoritative message has been parsed and strictly reconciled.
+    if contamination not in {"", "NONE"}:
+        contamination = _bounded_state_text(contamination, 2_000)[0]
+    if justification:
+        justification = _bounded_state_text(justification, 2_000)[0]
+    return {
+        "schema_version": 1,
+        "message_sha256": hashlib.sha256(authoritative_message.encode("utf-8")).hexdigest(),
+        "task_result": task_result,
+        "holdout_contamination_risk": contamination,
+        "blocker_kind": blocker_kind,
+        "changed_paths": changed_paths,
+        "new_component_justification": justification,
+        "work_unit_results": work_unit_results,
+        "structured_contract_valid": not validation_issues,
+        "requires_human_boundary": human_boundary,
+        "validation_issues": validation_issues,
+        "marker_counts": {
+            "TASK_RESULT": task_result_count,
+            "HOLDOUT_CONTAMINATION_RISK": contamination_count,
+            "BLOCKER_KIND": blocker_count,
+            "WORK_UNIT_RESULTS_JSON": work_unit_marker_count,
+            "CHANGED_PATHS_JSON": changed_count,
+            "NEW_COMPONENT_JUSTIFICATION": justification_count,
+        },
+    }
+
+
+def _worker_completion_state_fields(evidence: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "WORKER_COMPLETION_EVIDENCE": evidence,
+        "PENDING_UNIT_RESULTS": list(evidence.get("work_unit_results", [])),
+        "WORKER_REPORTED_CHANGED_PATHS": (
+            list(evidence.get("changed_paths", []))
+            if evidence.get("structured_contract_valid") else []
+        ),
+    }
+
+
+def _canonical_worker_boundary(evidence: Any) -> tuple[str, str] | None:
+    """Return a preserved human boundary only from a canonical full-message receipt."""
+    if not (
+        isinstance(evidence, dict)
+        and evidence.get("schema_version") == 1
+        and re.fullmatch(r"[a-f0-9]{64}", str(evidence.get("message_sha256", "")))
+    ):
+        return None
+    contamination = str(evidence.get("holdout_contamination_risk", ""))
+    blocker_kind = str(evidence.get("blocker_kind", "UNKNOWN")).upper()
+    requires_human = bool(
+        evidence.get("requires_human_boundary")
+        or contamination and contamination.upper() != "NONE"
+        or blocker_kind in HUMAN_BOUNDARY_KINDS
+    )
+    if not requires_human:
+        return None
+    if contamination and contamination.upper() != "NONE":
+        return "SAFETY", contamination
+    boundary_kind = (
+        blocker_kind
+        if blocker_kind in HUMAN_BOUNDARY_KINDS - {"PAUSE", "EXHAUSTED"}
+        else "AUTHORIZATION"
+    )
+    return boundary_kind, f"Canonical worker completion blocker: {blocker_kind}"
+
+
+def _persist_returned_worker_completion(
+    task_id: str, result: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist a turn's canonical receipt; injected test turns must return the full message."""
+    state = load_state(task_id)
+    evidence = result.get("completion_evidence")
+    if not isinstance(evidence, dict) or evidence.get("schema_version") != 1:
+        evidence = _ingest_worker_completion_evidence(
+            state, str(result.get("message", "")),
+        )
+        result["completion_evidence"] = evidence
+    fields = _worker_completion_state_fields(evidence)
+    if any(state.get(key) != value for key, value in fields.items()):
+        update_task(
+            task_id, fields, event="WORKER_COMPLETION_EVIDENCE_INGESTED",
+            detail=f"sha256={evidence.get('message_sha256', '')}",
+        )
+    return evidence
+
+
+def _ingest_review_authority_evidence(
+    state: dict[str, Any], authoritative_message: str,
+) -> dict[str, Any]:
+    """Reduce one complete reviewer message before any display truncation."""
+    reported_status, marker_count = _strict_marker_value(
+        authoritative_message, "REVIEW_STATUS",
+    )
+    reported_status = reported_status.upper()
+    finding = _review_finding_identity(
+        state, authoritative_message, state.get("FILES_CHANGED", []),
+    )
+    blocking_identities = _review_blocking_identities(finding)
+    blocking_language = _review_has_blocking_language(authoritative_message)
+    return {
+        "schema_version": 1,
+        "message_sha256": hashlib.sha256(
+            authoritative_message.encode("utf-8")
+        ).hexdigest(),
+        "review_status_marker_count": marker_count,
+        "reported_status": reported_status,
+        "classification": "PENDING_EXIT_STATUS",
+        "requires_human_boundary": _explicit_human_boundary_evidence(
+            authoritative_message
+        ),
+        "contract_deficit_code": _contract_deficit_code(
+            state, authoritative_message,
+        ),
+        "blocking_identities": blocking_identities,
+        "blocking_language": blocking_language,
+        "has_blocking_finding": bool(blocking_identities or blocking_language),
+        "finding_analysis": finding,
+    }
+
+
+def _valid_review_authority_evidence(evidence: Any) -> bool:
+    if not isinstance(evidence, dict) or evidence.get("schema_version") != 1:
+        return False
+    analysis = evidence.get("finding_analysis")
+    return bool(
+        re.fullmatch(r"[a-f0-9]{64}", str(evidence.get("message_sha256", "")))
+        and isinstance(evidence.get("review_status_marker_count"), int)
+        and isinstance(evidence.get("reported_status"), str)
+        and isinstance(evidence.get("classification"), str)
+        and isinstance(evidence.get("requires_human_boundary"), bool)
+        and isinstance(evidence.get("contract_deficit_code"), str)
+        and isinstance(evidence.get("blocking_identities"), list)
+        and all(
+            isinstance(identity, str)
+            for identity in evidence.get("blocking_identities", [])
+        )
+        and isinstance(evidence.get("blocking_language"), bool)
+        and isinstance(evidence.get("has_blocking_finding"), bool)
+        and evidence.get("has_blocking_finding") == bool(
+            evidence.get("blocking_identities") or evidence.get("blocking_language")
+        )
+        and isinstance(analysis, dict)
+        and evidence.get("blocking_identities") == _review_blocking_identities(analysis)
+        and isinstance(analysis.get("identities"), list)
+        and isinstance(analysis.get("paths"), list)
+        and isinstance(analysis.get("baseline_residue"), bool)
+        and isinstance(analysis.get("incomplete"), bool)
+        and isinstance(analysis.get("no_output"), bool)
+    )
+
+
+def _review_classification_with_authority(
+    classification: str, evidence: Any,
+) -> str:
+    """Let one complete canonical receipt dominate status and display prose."""
+    allowed = {"PASS", "PASS_WITH_WARNINGS", "FIX_REQUIRED", "HUMAN_DECISION_REQUIRED"}
+    if not _valid_review_authority_evidence(evidence):
+        return "HUMAN_DECISION_REQUIRED"
+    if evidence.get("requires_human_boundary"):
+        return "HUMAN_DECISION_REQUIRED"
+    reported = str(evidence.get("reported_status", "")).upper()
+    if evidence.get("review_status_marker_count") != 1 or reported not in allowed:
+        return "HUMAN_DECISION_REQUIRED"
+    classification = str(classification).upper()
+    if classification == "HUMAN_DECISION_REQUIRED":
+        return classification
+    expected = (
+        "FIX_REQUIRED"
+        if reported in {"PASS", "PASS_WITH_WARNINGS"}
+        and evidence.get("has_blocking_finding")
+        else reported
+    )
+    if classification not in {reported, expected}:
+        return "HUMAN_DECISION_REQUIRED"
+    return expected
+
+
+def _canonical_persisted_review_classification(state: dict[str, Any]) -> str:
+    """Read persisted reviewer authority without consulting bounded findings text."""
+    evidence = state.get("REVIEW_AUTHORITY_EVIDENCE", {})
+    if not _valid_review_authority_evidence(evidence):
+        return ""
+    return _review_classification_with_authority(
+        str(evidence.get("classification", "")), evidence,
+    )
+
+
+def _canonical_review_resume_code(state: dict[str, Any], next_code: str) -> str:
+    """Prevent pause or recovery from resuming finalization past a blocker."""
+    classification = _canonical_persisted_review_classification(state)
+    persisted_status = str(state.get("LAST_REVIEW_STATUS", ""))
+    if next_code == "FINALIZE" and (
+        classification in {"FIX_REQUIRED", "HUMAN_DECISION_REQUIRED"}
+        or not classification and persisted_status in {
+            "PASS", "PASS_WITH_WARNINGS", "FIX_REQUIRED",
+            "HUMAN_DECISION_REQUIRED",
+        }
+    ):
+        return "FINAL_REVIEW"
+    return next_code
 
 
 def _phase_from_command(command: str) -> str | None:
@@ -3328,7 +4450,9 @@ def _command_event_output(item: dict[str, Any]) -> str:
         if value in (None, ""):
             continue
         chunks.append(value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str))
-    return "\n".join(chunks)[-4_000:]
+    # Classification must see the complete command evidence.  Callers bound
+    # only the later display/state copy after safety classification.
+    return "\n".join(chunks)
 
 
 def _classify_worker_test_execution(
@@ -3418,7 +4542,10 @@ def _run_codex_turn(
     )
 
     tail: deque[str] = deque(maxlen=20)
+    authoritative_message = ""
     final_message = ""
+    completion_evidence: dict[str, Any] | None = None
+    review_authority_evidence: dict[str, Any] | None = None
     tests: list[str] = []
     test_results: list[dict[str, Any]] = []
     seen_phase = ""
@@ -3443,13 +4570,16 @@ def _run_codex_turn(
             update_task(task_id, fields, event=f"{kind}_THREAD_READY", detail=thread_id)
         item = event.get("item") if isinstance(event.get("item"), dict) else {}
         if event.get("type") == "item.completed" and item.get("type") == "agent_message":
-            final_message = str(item.get("text", ""))[-MAX_TEXT:]
-            if mutating_worker and _parse_marker(final_message, "WORK_UNIT_RESULTS_JSON"):
+            authoritative_message = str(item.get("text", ""))
+            if mutating_worker:
                 checkpoint_state = load_state(task_id)
-                checkpoint_results = _pending_unit_results(checkpoint_state, final_message)
+                completion_evidence = _ingest_worker_completion_evidence(
+                    checkpoint_state, authoritative_message,
+                )
+                checkpoint_results = list(completion_evidence["work_unit_results"])
 
                 def persist_checkpoint(value: dict[str, Any]) -> None:
-                    value["PENDING_UNIT_RESULTS"] = checkpoint_results
+                    value.update(_worker_completion_state_fields(completion_evidence or {}))
                     value["LAST_CHECKPOINT"] = "WORKER_STRUCTURED_CHECKPOINT"
                     for result_row in checkpoint_results:
                         unit = _unit_by_id(value, str(result_row.get("id", "")))
@@ -3461,6 +4591,11 @@ def _run_codex_turn(
                     detail=f"units={','.join(str(row.get('id')) for row in checkpoint_results)}",
                     mutate=persist_checkpoint,
                 )
+            elif kind == "REVIEW":
+                review_authority_evidence = _ingest_review_authority_evidence(
+                    load_state(task_id), authoritative_message,
+                )
+            final_message = authoritative_message[-MAX_TEXT:]
         if event.get("type") in {"error", "turn.failed"}:
             tail.append(json.dumps(event, ensure_ascii=False, default=str)[:2_000])
         if item.get("type") == "command_execution":
@@ -3491,13 +4626,33 @@ def _run_codex_turn(
     exit_code = process.wait()
     if not final_message and tail:
         final_message = "\n".join(tail)[-MAX_TEXT:]
+    if mutating_worker and completion_evidence is None:
+        completion_evidence = _ingest_worker_completion_evidence(
+            load_state(task_id), authoritative_message,
+        )
+    review_classification = (
+        _review_classification(authoritative_message, exit_code)
+        if kind == "REVIEW" else "NOT_APPLICABLE"
+    )
+    if kind == "REVIEW":
+        if review_authority_evidence is None:
+            review_authority_evidence = _ingest_review_authority_evidence(
+                load_state(task_id), authoritative_message,
+            )
+        review_classification = _review_classification_with_authority(
+            review_classification, review_authority_evidence,
+        )
+        review_authority_evidence["classification"] = review_classification
     worker_test_status, worker_test_limitation, worker_test_evidence = _classify_worker_test_execution(
         test_results, final_message, exit_code,
     )
     history = load_state(task_id).get("TESTS_RUN", [])
     combined_tests = (history + tests)[-MAX_LIST_ITEMS:]
     if mutating_worker:
-        _refresh_changes(task_id, worker_findings=final_message)
+        _refresh_changes(
+            task_id, worker_findings=final_message,
+            worker_completion_evidence=completion_evidence,
+        )
     turn_ended = time.monotonic()
     for command_started, started_kind in excluded_commands.values():
         excluded_seconds[started_kind] += max(0.0, turn_ended - command_started)
@@ -3519,9 +4674,12 @@ def _run_codex_turn(
     }
     if kind == "REVIEW":
         completed_fields["REVIEW_FINDINGS"] = final_message
+        completed_fields["REVIEW_AUTHORITY_EVIDENCE"] = review_authority_evidence or {}
+        completed_fields["REVIEW_CLASSIFICATION"] = review_classification
     elif kind == "PLANNER":
         completed_fields["PLANNER_FINDINGS"] = final_message
     else:
+        completed_fields.update(_worker_completion_state_fields(completion_evidence or {}))
         completed_fields["TEST_HISTORY_START_INDEX"] = max(0, len(combined_tests) - min(len(tests), MAX_LIST_ITEMS))
         completed_fields["WORKER_TEST_STATUS"] = worker_test_status
         completed_fields["WORKER_TEST_LIMITATION"] = worker_test_limitation
@@ -3551,7 +4709,14 @@ def _run_codex_turn(
     )
     if exit_code and re.search(r"failed to initialize (?:in-process )?app-server|not logged in|authentication required|usage limit|rate limit", final_message, re.I):
         raise HarnessError(f"CODEX_INTERFACE_UNAVAILABLE:{final_message[-2_000:]}")
-    return {"exit_code": exit_code, "message": final_message, "tests": tests}
+    return {
+        "exit_code": exit_code,
+        "message": final_message,
+        "tests": tests,
+        "completion_evidence": completion_evidence,
+        "review_authority_evidence": review_authority_evidence,
+        "review_classification": review_classification,
+    }
 
 
 def _valid_component_justification(value: str) -> bool:
@@ -3648,13 +4813,24 @@ def _legacy_justified_created_paths(
     return set()
 
 
-def _refresh_changes(task_id: str, *, worker_findings: str | None = None) -> dict[str, Any]:
+def _refresh_changes(
+    task_id: str, *, worker_findings: str | None = None,
+    worker_completion_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     state = load_state(task_id)
     changes = _git_changes(Path(state["WORKTREE"]))
     prior_justification = str(state.get("NEW_COMPONENT_JUSTIFICATION", ""))
+    evidence = (
+        worker_completion_evidence
+        if isinstance(worker_completion_evidence, dict)
+        else state.get("WORKER_COMPLETION_EVIDENCE", {})
+    )
     reported_justification = (
-        _parse_marker(worker_findings, "NEW_COMPONENT_JUSTIFICATION")
-        if worker_findings is not None else ""
+        str(evidence.get("new_component_justification", ""))
+        if isinstance(evidence, dict)
+        and evidence.get("structured_contract_valid")
+        and not evidence.get("requires_human_boundary")
+        else ""
     )
     justified = {str(path) for path in state.get("JUSTIFIED_CREATED_PATHS", [])}
     if "JUSTIFIED_CREATED_PATHS" not in state:
@@ -3865,14 +5041,51 @@ def _control_checkpoint(task_id: str) -> bool:
             "HUMAN_ATTENTION_REQUIRED": True,
         }, new_state="STOPPED", event="TASK_STOPPED", detail="No new autonomous action dispatched")
         return True
-    if state["PAUSE_REQUESTED"]:
+    boundary = _canonical_worker_boundary(state.get("WORKER_COMPLETION_EVIDENCE", {}))
+    if state["PAUSE_REQUESTED"] and boundary:
+        boundary_kind, boundary_detail = boundary
+
+        def preserve_boundary(value: dict[str, Any]) -> None:
+            _append_active_blocker(
+                value, "WORKER_CANONICAL_BOUNDARY_AT_PAUSE",
+                boundary_detail, boundary_kind,
+            )
+            _close_active_plan(value, "PENDING")
+            value["WAITING_STARTED_AT"] = utc_now()
+
         update_task(task_id, {
+            "CURRENT_PHASE": "WAITING_HUMAN",
+            "CURRENT_ACTION": "Worker reached a canonical human boundary at the pause checkpoint",
+            "WHY_CURRENT_ACTION": boundary_detail,
+            "NEXT_ACTION": "Human inspects the preserved completion receipt and worktree",
+            "WHY_NEXT_ACTION": "A cooperative pause cannot erase worker safety or authorization authority.",
+            "HUMAN_ATTENTION_REQUIRED": True,
+            "WORKER_STATUS": "WAITING_HUMAN",
+        }, new_state="WAITING_HUMAN", event="PAUSE_CHECKPOINT_HUMAN_BOUNDARY",
+            detail=f"kind={boundary_kind};{boundary_detail}", mutate=preserve_boundary)
+        return True
+    if state["PAUSE_REQUESTED"]:
+        canonical_review = _canonical_persisted_review_classification(state)
+        resume_code = _canonical_review_resume_code(
+            state, str(state.get("NEXT_ACTION_CODE", "")),
+        )
+        pause_fields = {
             "CURRENT_PHASE": "PAUSED",
             "CURRENT_ACTION": "Paused at a safe dispatch checkpoint",
             "WHY_CURRENT_ACTION": "Human pause prevents dispatch of the next autonomous action.",
             "NEXT_ACTION": state.get("NEXT_ACTION", "Resume from authoritative state"),
             "WHY_NEXT_ACTION": "Resume continues from NEXT_ACTION_CODE without discarding the worktree.",
-        }, new_state="PAUSED", event="TASK_PAUSED", detail=f"resume_point={state.get('NEXT_ACTION_CODE')}")
+            "NEXT_ACTION_CODE": resume_code,
+        }
+        if canonical_review:
+            pause_fields.update({
+                "LAST_REVIEW_STATUS": canonical_review,
+                "REVIEW_CLASSIFICATION": canonical_review,
+            })
+        update_task(
+            task_id, pause_fields, new_state="PAUSED", event="TASK_PAUSED",
+            detail=f"resume_point={resume_code}",
+        )
         return True
     return False
 
@@ -3973,7 +5186,7 @@ def _reconsider_dependency_deferred_units(state: dict[str, Any]) -> int:
         if unit.get("status") != "DEFERRED" or unit.get("blocker", {}).get("code") != "DEPENDENCY_UNAVAILABLE":
             continue
         dependencies = [by_id.get(value) for value in unit.get("dependencies", [])]
-        if dependencies and all(dependency and dependency.get("status") == "DONE" for dependency in dependencies):
+        if dependencies and all(_dependency_satisfied(dependency) for dependency in dependencies):
             unit["status"] = "READY"
             unit["blocker"] = {}
             unit["last_checkpoint"] = "DEPENDENCY_RESOLVED"
@@ -3983,6 +5196,8 @@ def _reconsider_dependency_deferred_units(state: dict[str, Any]) -> int:
 
 
 def _reconcile_correction_parents(state: dict[str, Any], correction: dict[str, Any]) -> int:
+    if not _done_worker_result_terminal(correction):
+        return 0
     resolved = 0
     correction_id = str(correction.get("id", ""))
     parent_ids = list(dict.fromkeys([
@@ -3993,14 +5208,18 @@ def _reconcile_correction_parents(state: dict[str, Any], correction: dict[str, A
         parent = _unit_by_id(state, str(parent_id))
         if parent is None or parent.get("status") == "DONE":
             continue
-        parent.update({
+        candidate = {
+            **parent,
             "status": "DONE",
             "validation_state": "PASS",
             "blocker": {},
             "resolved_by": correction_id,
             "last_checkpoint": "RESOLVED_BY_VALIDATED_CORRECTION",
-            "next_action": "No further action; objective satisfied by validated correction",
-        })
+            "next_action": "No further action",
+        }
+        if not _done_worker_result_terminal(candidate):
+            continue
+        parent.update(candidate)
         state["LOCAL_BLOCKED_WORK"] = [
             row for row in state.get("LOCAL_BLOCKED_WORK", [])
             if row.get("work_unit_id") != parent_id
@@ -4020,8 +5239,9 @@ def _reconcile_correction_parents(state: dict[str, Any], correction: dict[str, A
 
 
 def _apply_validated_unit_results(state: dict[str, Any], progress_hash: str = "") -> None:
-    pending = state.get("PENDING_UNIT_RESULTS", []) or _pending_unit_results(state)
     active_ids = set(state.get("ACTIVE_WORK_UNIT_IDS", []))
+    pending_rows = state.get("PENDING_UNIT_RESULTS", [])
+    pending = _reconcile_worker_result_rows(state, pending_rows)
     completed = 0
     reuse_hits = 0
     newly_local_blocked = 0
@@ -4033,8 +5253,8 @@ def _apply_validated_unit_results(state: dict[str, Any], progress_hash: str = ""
         if unit is None:
             continue
         prior_status = unit.get("status")
-        status = str(result.get("status", "DONE"))
-        unit.update({
+        status = str(result["status"]).upper()
+        candidate = {**unit, **{
             "status": status,
             "produced_outputs": list(dict.fromkeys([
                 *unit.get("produced_outputs", []), *result.get("produced_outputs", []),
@@ -4045,13 +5265,34 @@ def _apply_validated_unit_results(state: dict[str, Any], progress_hash: str = ""
             "next_action": result.get("next_action", "") or (
                 "No further action" if status == "DONE" else "Reconsider when prerequisites change"
             ),
-        })
+        }}
         reuse_decision = str(result.get("reuse_decision", "UNKNOWN")).upper()
         if reuse_decision in {"REUSE", "EXTEND", "CREATE", "UNKNOWN"}:
-            unit["reuse_decision"] = reuse_decision
-        unit["reuse_evidence"] = list(dict.fromkeys([
+            candidate["reuse_decision"] = reuse_decision
+        candidate["reuse_evidence"] = list(dict.fromkeys([
             *unit.get("reuse_evidence", []), *result.get("reuse_evidence", []),
         ]))[:20]
+        if status == "DONE" and not _done_worker_result_terminal(candidate):
+            result = _invalid_worker_result(
+                str(result["id"]), unit,
+                code="WORKER_RESULT_CONTRADICTORY",
+                detail=(
+                    "Validated DONE result contradicted retained unit failure evidence; "
+                    "completion was not inferred."
+                ),
+            )
+            status = str(result["status"]).upper()
+            candidate.update({
+                "status": status,
+                "produced_outputs": list(result["produced_outputs"]),
+                "validation_state": result["validation_state"],
+                "blocker": dict(result["blocker"]),
+                "last_checkpoint": result["last_checkpoint"],
+                "next_action": result["next_action"],
+                "reuse_decision": result["reuse_decision"],
+                "reuse_evidence": list(result["reuse_evidence"]),
+            })
+        unit.update(candidate)
         if prior_status != "DONE" and status == "DONE":
             completed += 1
             if str(unit.get("id", "")).startswith("FIX-"):
@@ -4342,10 +5583,13 @@ def _guard_contract_continuation_dispatch(
 
 def _queue_correction_work_unit(
     state: dict[str, Any], source: str, detail: str, progress_hash: str,
-    relevant_paths: Sequence[str] = (),
+    relevant_paths: Sequence[str] = (), *,
+    review_analysis: dict[str, Any] | None = None,
 ) -> bool:
     finding = (
-        _review_finding_identity(state, detail, relevant_paths)
+        _review_finding_identity(
+            state, detail, relevant_paths, canonical_analysis=review_analysis,
+        )
         if source == "FINAL_REVIEW" else None
     )
     analysis = finding if finding is not None else {
@@ -4540,9 +5784,10 @@ def _request_correction(task_id: str, source: str, detail: str) -> None:
 
 
 def _review_classification(message: str, exit_code: int) -> str:
-    value = _parse_marker(message, "REVIEW_STATUS").upper()
+    value, marker_count = _strict_marker_value(message, "REVIEW_STATUS")
+    value = value.upper()
     allowed = {"PASS", "PASS_WITH_WARNINGS", "FIX_REQUIRED", "HUMAN_DECISION_REQUIRED"}
-    if exit_code != 0:
+    if exit_code != 0 or marker_count != 1:
         return "HUMAN_DECISION_REQUIRED"
     return value if value in allowed else "HUMAN_DECISION_REQUIRED"
 
@@ -4569,7 +5814,24 @@ def _perform_review(task_id: str) -> str:
     if before != after:
         _block(task_id, "READ_ONLY_REVIEW_MUTATED_WORKTREE", f"before={before};after={after}")
         return "HUMAN_DECISION_REQUIRED"
-    classification = _review_classification(result["message"], result["exit_code"])
+    review_authority = result.get("review_authority_evidence")
+    if not isinstance(review_authority, dict) or review_authority.get("schema_version") != 1:
+        authoritative_review_message = str(result.get("message", ""))
+        review_authority = _ingest_review_authority_evidence(
+            load_state(task_id), authoritative_review_message,
+        )
+        review_authority["classification"] = _review_classification_with_authority(
+            _review_classification(
+                authoritative_review_message, int(result.get("exit_code", 1)),
+            ),
+            review_authority,
+        )
+    classification = _review_classification_with_authority(str(
+        review_authority.get(
+            "classification",
+            result.get("review_classification", "HUMAN_DECISION_REQUIRED"),
+        )
+    ), review_authority)
     if classification in {"PASS", "PASS_WITH_WARNINGS"}:
         next_action = "Finalize and preserve the reviewed worktree"
         why_next = "The independent review accepted the bounded change."
@@ -4594,6 +5856,8 @@ def _perform_review(task_id: str) -> str:
         "CURRENT_ACTION": f"Independent review completed with {classification}",
         "WHY_CURRENT_ACTION": "The read-only review turn ended and its explicit classification was recorded.",
         "LAST_REVIEW_STATUS": classification,
+        "REVIEW_AUTHORITY_EVIDENCE": review_authority,
+        "REVIEW_CLASSIFICATION": classification,
         "LAST_REVIEW_PROGRESS_HASH": progress_hash,
         "REVIEW_REQUESTED": False,
         "LAST_COMPLETED": "INDEPENDENT_REVIEW_COMPLETED",
@@ -4605,16 +5869,26 @@ def _perform_review(task_id: str) -> str:
 
 
 def _worker_result(state: dict[str, Any], exit_code: int) -> str:
+    evidence = state.get("WORKER_COMPLETION_EVIDENCE", {})
+    if isinstance(evidence, dict) and evidence.get("requires_human_boundary"):
+        return "BLOCKED"
     if exit_code != 0:
         return "SOFTWARE_FAILURE"
-    value = _parse_marker(state.get("WORKER_FINDINGS", ""), "TASK_RESULT").upper()
+    value = str(evidence.get("task_result", "RETRY")).upper() if isinstance(evidence, dict) else "RETRY"
     allowed = {"COMPLETED", "SOFTWARE_FAILURE", "RESEARCH_FAILURE", "WAITING_HUMAN", "BLOCKED"}
-    return value if value in allowed else "COMPLETED"
+    return value if value in allowed else "RETRY"
 
 
 def _worker_test_environment_delegation_allowed(
     state: dict[str, Any], worker_exit_code: int,
 ) -> tuple[bool, str]:
+    completion = state.get("WORKER_COMPLETION_EVIDENCE", {})
+    if isinstance(completion, dict) and (
+        completion.get("requires_human_boundary")
+        or str(completion.get("task_result", "")).upper()
+        in {"WAITING_HUMAN", "BLOCKED"}
+    ):
+        return False, "CANONICAL_WORKER_BOUNDARY_PRECEDES_TEST_DELEGATION"
     if state.get("WORKER_TEST_STATUS") != "ENVIRONMENT_LIMITED":
         return False, "WORKER_TEST_STATUS_NOT_ENVIRONMENT_LIMITED"
     if state.get("WORKER_TEST_LIMITATION") != WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION:
@@ -4689,8 +5963,14 @@ def _run_unit_validation(task_id: str) -> tuple[bool, str]:
     changes = _refresh_changes(task_id)
     _refresh_reuse_discovery_for_changes(task_id, changes, state.get("ACTIVE_WORK_UNIT_IDS", []))
     state = load_state(task_id)
-    reported_paths = _parse_json_marker(state.get("WORKER_FINDINGS", ""), "CHANGED_PATHS_JSON", [])
-    if not isinstance(reported_paths, list):
+    evidence = state.get("WORKER_COMPLETION_EVIDENCE", {})
+    reported_paths = (
+        evidence.get("changed_paths", []) if isinstance(evidence, dict) else []
+    )
+    if (
+        not isinstance(reported_paths, list)
+        or not evidence.get("structured_contract_valid")
+    ):
         reported_paths = []
     targeted_paths = list(dict.fromkeys([
         *(str(path) for path in reported_paths),
@@ -4719,7 +5999,6 @@ def _run_unit_validation(task_id: str) -> tuple[bool, str]:
     elapsed = max(0.0, time.monotonic() - started)
 
     def record(value: dict[str, Any]) -> None:
-        value["PENDING_UNIT_RESULTS"] = _pending_unit_results(value)
         value["CONTROLLER_VALIDATION_STATUS"] = "FAIL" if problems else "PASS"
         value["VALIDATION_RESULTS"] = [
             *value.get("VALIDATION_RESULTS", []),
@@ -4896,6 +6175,12 @@ def _dispatch_r2_compat(task_id: str) -> None:
             try:
                 path, branch, head = _create_worktree(task_id)
             except HarnessError as exc:
+                if str(exc).startswith("BLOCKED_HARNESS_BASE_HEAD_MISMATCH:"):
+                    _block(
+                        task_id, "BLOCKED_HARNESS_BASE_HEAD_MISMATCH",
+                        str(exc).split(":", 1)[1],
+                    )
+                    return
                 _block(task_id, "AUTONOMOUS_MUTATION_WORKTREE_UNAVAILABLE", str(exc))
                 return
             isolated_preflight = _run_preflight_for(task_id, path, baseline_checkpoint=True)
@@ -4928,6 +6213,9 @@ def _dispatch_r2_compat(task_id: str) -> None:
             update_task(task_id, {
                 "CURRENT_PHASE": "IMPLEMENT", "CURRENT_ACTION": "Dispatching the bounded implementation worker",
                 "WHY_CURRENT_ACTION": "Only the authorized task may be changed in the isolated worktree.",
+                "WORKER_COMPLETION_EVIDENCE": {},
+                "PENDING_UNIT_RESULTS": [],
+                "WORKER_REPORTED_CHANGED_PATHS": [],
             }, new_state="RUNNING")
             try:
                 result = _run_codex_turn(task_id, _worker_prompt(load_state(task_id), correction))
@@ -4935,11 +6223,16 @@ def _dispatch_r2_compat(task_id: str) -> None:
                 code = "WORKER_TEMP_RUNTIME_UNAVAILABLE" if str(exc).startswith("WORKER_TEMP_RUNTIME_UNAVAILABLE:") else "CODEX_WORKER_INTERFACE_FAILURE"
                 _wait_human(task_id, code, str(exc))
                 return
+            _persist_returned_worker_completion(task_id, result)
             if _control_checkpoint(task_id):
                 return
             state = load_state(task_id)
             outcome = _worker_result(state, result["exit_code"])
-            contamination = _parse_marker(state.get("WORKER_FINDINGS", ""), "HOLDOUT_CONTAMINATION_RISK")
+            completion = state.get("WORKER_COMPLETION_EVIDENCE", {})
+            contamination = (
+                str(completion.get("holdout_contamination_risk", ""))
+                if isinstance(completion, dict) else ""
+            )
             if contamination and contamination.upper() != "NONE":
                 _wait_human(task_id, "HOLDOUT_CONTAMINATION_RISK", contamination)
                 return
@@ -4969,12 +6262,16 @@ def _dispatch_r2_compat(task_id: str) -> None:
             if outcome in {"WAITING_HUMAN", "BLOCKED"}:
                 _wait_human(task_id, f"WORKER_{outcome}", load_state(task_id).get("WORKER_FINDINGS", ""))
                 return
-            if outcome == "SOFTWARE_FAILURE":
+            if outcome in {"SOFTWARE_FAILURE", "RETRY"}:
                 state = load_state(task_id)
                 if state["CORRECTION_ATTEMPTS"] >= state["MAX_CORRECTION_ATTEMPTS"]:
                     _wait_human(task_id, "BOUNDED_CORRECTION_LIMIT_REACHED", f"attempts={state['CORRECTION_ATTEMPTS']}")
                     return
-                _request_correction(task_id, "SOFTWARE", "Worker reported software failure")
+                detail = (
+                    "Worker result marker was absent, malformed, or nonterminal"
+                    if outcome == "RETRY" else "Worker reported software failure"
+                )
+                _request_correction(task_id, "SOFTWARE", detail)
             else:
                 update_task(task_id, {
                     "CURRENT_PHASE": "IMPLEMENT",
@@ -5068,6 +6365,30 @@ def _dispatch_r2_compat(task_id: str) -> None:
                 _wait_human(task_id, "REVIEW_HUMAN_DECISION_REQUIRED", load_state(task_id).get("REVIEW_FINDINGS", ""))
                 return
         elif action == "FINALIZE":
+            state = load_state(task_id)
+            structured_units = state.get("WORK_UNITS", [])
+            invalid_done = [
+                unit for unit in structured_units
+                if unit.get("status") == "DONE"
+                and not _done_worker_result_terminal(unit)
+            ]
+            required_nonterminal = [
+                unit for unit in structured_units
+                if not unit.get("optional")
+                and not _done_worker_result_terminal(unit)
+            ]
+            if invalid_done or required_nonterminal:
+                affected = sorted({
+                    str(unit.get("id", "<unknown>"))
+                    for unit in [*invalid_done, *required_nonterminal]
+                })
+                _block(
+                    task_id,
+                    "INCOMPLETE_REQUIRED_WORK_UNITS",
+                    "Compatibility finalization rejected noncanonical structured work units: "
+                    + ", ".join(affected[:MAX_WORK_UNITS]),
+                )
+                return
             changes = _refresh_changes(task_id)
             try:
                 _cleanup_task_temp_runtime(task_id)
@@ -5532,6 +6853,12 @@ def _dispatch_r3(task_id: str) -> None:
             try:
                 path, branch, head = _create_worktree(task_id)
             except HarnessError as exc:
+                if str(exc).startswith("BLOCKED_HARNESS_BASE_HEAD_MISMATCH:"):
+                    _block(
+                        task_id, "BLOCKED_HARNESS_BASE_HEAD_MISMATCH",
+                        str(exc).split(":", 1)[1],
+                    )
+                    return
                 _wait_human(
                     task_id, "AUTONOMOUS_MUTATION_WORKTREE_UNAVAILABLE", str(exc),
                     boundary_kind="EXHAUSTED",
@@ -5693,6 +7020,34 @@ def _dispatch_r3(task_id: str) -> None:
                 )
             except HarnessError as exc:
                 detail = f"{type(exc).__name__}:{exc}"
+                checkpoint_state = load_state(task_id)
+                boundary = _canonical_worker_boundary(
+                    checkpoint_state.get("WORKER_COMPLETION_EVIDENCE", {}),
+                )
+                if boundary:
+                    boundary_kind, boundary_detail = boundary
+
+                    def preserve_failed_turn_boundary(value: dict[str, Any]) -> None:
+                        _append_active_blocker(
+                            value, "WORKER_CANONICAL_BOUNDARY_AFTER_PROCESS_ERROR",
+                            boundary_detail, boundary_kind,
+                        )
+                        _close_active_plan(value, "PENDING")
+                        value["WAITING_STARTED_AT"] = utc_now()
+
+                    update_task(task_id, {
+                        "CURRENT_PHASE": "WAITING_HUMAN",
+                        "CURRENT_ACTION": "Worker boundary preserved despite a later process error",
+                        "WHY_CURRENT_ACTION": boundary_detail,
+                        "NEXT_ACTION": "Human inspects the canonical completion receipt and preserved worker identity",
+                        "WHY_NEXT_ACTION": "Later bookkeeping or interface failure cannot overwrite safety authority.",
+                        "HUMAN_ATTENTION_REQUIRED": True,
+                        "WORKER_STATUS": "WAITING_HUMAN",
+                    }, new_state="WAITING_HUMAN",
+                        event="WORKER_PROCESS_ERROR_AFTER_HUMAN_BOUNDARY",
+                        detail=f"kind={boundary_kind};{detail[:500]}",
+                        mutate=preserve_failed_turn_boundary)
+                    return
                 progress_hash = _worktree_progress_hash(worktree)
 
                 def failed_launch(value: dict[str, Any]) -> None:
@@ -5705,11 +7060,16 @@ def _dispatch_r3(task_id: str) -> None:
 
                 update_task(task_id, event="WORKER_PROCESS_FAILURE_RETRY", detail=detail, mutate=failed_launch)
                 continue
+            _persist_returned_worker_completion(task_id, result)
             if _control_checkpoint(task_id):
                 return
             state = load_state(task_id)
             outcome = _worker_result(state, result["exit_code"])
-            contamination = _parse_marker(state.get("WORKER_FINDINGS", ""), "HOLDOUT_CONTAMINATION_RISK")
+            completion = state.get("WORKER_COMPLETION_EVIDENCE", {})
+            contamination = (
+                str(completion.get("holdout_contamination_risk", ""))
+                if isinstance(completion, dict) else ""
+            )
             if contamination and contamination.upper() != "NONE":
                 _wait_human(task_id, "HOLDOUT_CONTAMINATION_RISK", contamination, boundary_kind="SAFETY")
                 return
@@ -5742,8 +7102,14 @@ def _dispatch_r3(task_id: str) -> None:
                 }, event="WORKER_TEST_ENVIRONMENT_LIMITATION_DELEGATED", detail=delegation_detail)
                 state = load_state(task_id)
             progress_hash = _worktree_progress_hash(worktree)
-            blocker_kind = _parse_marker(state.get("WORKER_FINDINGS", ""), "BLOCKER_KIND").upper() or "NONE"
-            if state.get("WORKER_TEST_STATUS") == "REAL_TEST_FAILURE" or outcome == "SOFTWARE_FAILURE":
+            blocker_kind = (
+                str(completion.get("blocker_kind", "UNKNOWN")).upper()
+                if isinstance(completion, dict) else "UNKNOWN"
+            )
+            if (
+                state.get("WORKER_TEST_STATUS") == "REAL_TEST_FAILURE"
+                or outcome in {"SOFTWARE_FAILURE", "RETRY"}
+            ):
                 if state.get("PENDING_UNIT_RESULTS"):
                     update_task(task_id, {
                         "NEXT_ACTION_CODE": "UNIT_VALIDATE",
@@ -5763,7 +7129,11 @@ def _dispatch_r3(task_id: str) -> None:
             if outcome in {"WAITING_HUMAN", "BLOCKED"}:
                 detail = state.get("WORKER_FINDINGS", "")
                 deficit_code = _contract_deficit_code(state, detail)
-                if _requires_human_boundary(blocker_kind, detail, state):
+                if (
+                    isinstance(completion, dict)
+                    and completion.get("requires_human_boundary")
+                    or blocker_kind in HUMAN_BOUNDARY_KINDS
+                ):
                     boundary_kind = (
                         blocker_kind
                         if blocker_kind in HUMAN_BOUNDARY_KINDS - {"EXHAUSTED", "PAUSE"}
@@ -5816,8 +7186,8 @@ def _dispatch_r3(task_id: str) -> None:
                     _record_local_blocker(task_id, unit_ids, "WORKER_LOCAL_BLOCKER", detail, progress_hash=progress_hash)
                     update_task(task_id, {"NEXT_ACTION_CODE": "SELECT_WORK"})
                 continue
-            pending = _pending_unit_results(state)
-            changed_paths = _parse_json_marker(state.get("WORKER_FINDINGS", ""), "CHANGED_PATHS_JSON", [])
+            pending = list(state.get("PENDING_UNIT_RESULTS", []))
+            changed_paths = list(state.get("WORKER_REPORTED_CHANGED_PATHS", []))
             update_task(task_id, {
                 "PENDING_UNIT_RESULTS": pending,
                 "WORKER_REPORTED_CHANGED_PATHS": changed_paths if isinstance(changed_paths, list) else [],
@@ -6003,29 +7373,45 @@ def _dispatch_r3(task_id: str) -> None:
             update_task(task_id, {"LAST_REVIEW_PROGRESS_HASH": review_progress})
             if _control_checkpoint(task_id):
                 return
+            review_state = load_state(task_id)
+            findings = str(review_state.get("REVIEW_FINDINGS", ""))
+            review_authority = review_state.get("REVIEW_AUTHORITY_EVIDENCE", {})
+            canonical_review = _valid_review_authority_evidence(review_authority)
+            classification = _review_classification_with_authority(
+                classification, review_authority,
+            )
+            review_requires_human = (
+                bool(review_authority.get("requires_human_boundary"))
+                if canonical_review else True
+            )
+            review_deficit_code = (
+                str(review_authority.get("contract_deficit_code", ""))
+                if canonical_review else ""
+            )
+            review_analysis = (
+                review_authority.get("finding_analysis")
+                if canonical_review else {
+                    "identities": [], "paths": [], "baseline_residue": False,
+                    "incomplete": False, "no_output": False,
+                }
+            )
+            if review_requires_human:
+                _wait_human(
+                    task_id, "FINAL_REVIEW_AUTHORIZATION_BOUNDARY", findings,
+                    boundary_kind="AUTHORIZATION",
+                )
+                return
             if classification == "FIX_REQUIRED":
-                state = load_state(task_id)
-                findings = state.get("REVIEW_FINDINGS", "")
-                if _explicit_human_boundary_evidence(findings):
-                    _wait_human(
-                        task_id, "FINAL_REVIEW_AUTHORIZATION_BOUNDARY", findings,
-                        boundary_kind="AUTHORIZATION",
-                    )
-                    return
                 queued = {"value": False}
                 def review_correction(value: dict[str, Any]) -> None:
-                    deficit_code = _contract_deficit_code(value, findings)
-                    analysis = _review_finding_analysis(
-                        value, findings, value.get("FILES_CHANGED", []),
-                    )
                     non_contract_identities = [
-                        identity for identity in analysis["identities"]
+                        identity for identity in review_analysis["identities"]
                         if identity not in AUTONOMOUS_CONTRACT_DEFICITS
                     ]
                     disposition = "NOT_APPLICABLE"
-                    if deficit_code and not non_contract_identities:
+                    if review_deficit_code and not non_contract_identities:
                         disposition = _queue_contract_continuation_work_unit(
-                            value, "FINAL_REVIEW", deficit_code, findings, progress_hash,
+                            value, "FINAL_REVIEW", review_deficit_code, findings, progress_hash,
                             value.get("FILES_CHANGED", []),
                         )
                         queued["value"] = disposition in {"QUEUED", "RUNNABLE"}
@@ -6033,6 +7419,7 @@ def _dispatch_r3(task_id: str) -> None:
                         queued["value"] = _queue_correction_work_unit(
                             value, "FINAL_REVIEW", findings, progress_hash,
                             value.get("FILES_CHANGED", []),
+                            review_analysis=review_analysis,
                         )
                     if queued["value"]:
                         value["NEXT_ACTION_CODE"] = "SELECT_WORK"
@@ -6048,16 +7435,9 @@ def _dispatch_r3(task_id: str) -> None:
                     )
                 continue
             if classification == "HUMAN_DECISION_REQUIRED":
-                findings = load_state(task_id).get("REVIEW_FINDINGS", "")
-                if _explicit_human_boundary_evidence(findings):
-                    _wait_human(
-                        task_id, "FINAL_REVIEW_HUMAN_BOUNDARY", findings,
-                        boundary_kind="AUTHORIZATION",
-                    )
-                    return
                 current = load_state(task_id)
-                deficit_code = _contract_deficit_code(current, findings)
-                if deficit_code and not _explicit_human_boundary_evidence(findings):
+                deficit_code = review_deficit_code
+                if deficit_code:
                     queued = {"value": False}
                     def autonomous_review_continuation(value: dict[str, Any]) -> None:
                         disposition = _queue_contract_continuation_work_unit(
@@ -6118,13 +7498,26 @@ def _dispatch_r3(task_id: str) -> None:
                 return
             changes = _refresh_changes(task_id)
             state = load_state(task_id)
-            reconciled_done, reconciled_deferred = _reconcile_terminal_local_environment_units(state)
+            raw_work_units = state.get("WORK_UNITS", [])
+            work_unit_evidence_missing = bool(
+                not isinstance(raw_work_units, list)
+                or not raw_work_units
+                or any(not isinstance(unit, dict) for unit in raw_work_units)
+            )
+            structured_units = raw_work_units if not work_unit_evidence_missing else []
+            if work_unit_evidence_missing:
+                reconciled_done, reconciled_deferred = 0, 0
+            else:
+                reconciled_done, reconciled_deferred = (
+                    _reconcile_terminal_local_environment_units(state)
+                )
+            canonical_review_status = _canonical_persisted_review_classification(state)
             review_accepted = _accepted_nonblocking_review(state)
             local_deferral_accepted = (
                 state.get("CONTROLLER_VALIDATION_STATUS") == "PASS" and review_accepted
             )
             deferred = [
-                unit for unit in state.get("WORK_UNITS", [])
+                unit for unit in structured_units
                 if unit.get("status") in {"BLOCKED_LOCAL", "DEFERRED"}
             ]
             deferable_local = [
@@ -6142,19 +7535,43 @@ def _dispatch_r3(task_id: str) -> None:
                 if not unit.get("optional") and unit.get("status") == "BLOCKED_LOCAL"
             ]
             invalid_required_outputs = [
-                unit for unit in state.get("WORK_UNITS", [])
+                unit for unit in structured_units
                 if not unit.get("optional") and _invalid_required_output(unit)
             ]
-            done = [unit for unit in state.get("WORK_UNITS", []) if unit.get("status") == "DONE"]
-            valid_zero_diff = state.get("REVIEW_CORRECTION_DISPOSITION") == "VALID_ZERO_DIFF_COMPLETION"
-            if valid_zero_diff:
-                review_accepted = True
+            invalid_done = [
+                unit for unit in structured_units
+                if unit.get("status") == "DONE"
+                and not _done_worker_result_terminal(unit)
+            ]
+            done = [
+                unit for unit in structured_units
+                if _done_worker_result_terminal(unit)
+            ]
+            required_nonterminal = [
+                unit for unit in structured_units
+                if not unit.get("optional")
+                and not _done_worker_result_terminal(unit)
+                and unit not in deferable_local
+            ]
             controller_failed = state.get("CONTROLLER_VALIDATION_STATUS") == "FAIL"
-            blocking_review = state.get("LAST_REVIEW_STATUS") in {"FIX_REQUIRED", "HUMAN_DECISION_REQUIRED"}
+            blocking_review = canonical_review_status in {
+                "FIX_REQUIRED", "HUMAN_DECISION_REQUIRED",
+            } or bool(
+                state.get("LAST_REVIEW_STATUS") in {
+                    "PASS", "PASS_WITH_WARNINGS", "FIX_REQUIRED",
+                    "HUMAN_DECISION_REQUIRED",
+                }
+                and not canonical_review_status
+            )
             contract_terminal_reason = str(state.get("TERMINAL_REASON", ""))
             if contract_terminal_reason:
                 terminal = "FAILED"
-            elif controller_failed or blocking_review or invalid_required_outputs or unresolved_failures or mandatory_unresolved:
+            elif (
+                controller_failed or blocking_review or invalid_required_outputs
+                or invalid_done or required_nonterminal
+                or work_unit_evidence_missing
+                or unresolved_failures or mandatory_unresolved
+            ):
                 terminal = "FAILED"
             elif deferred:
                 terminal = "COMPLETED_WITH_DEFERRED_WORK" if done or deferable_local else "FAILED"
@@ -6189,7 +7606,9 @@ def _dispatch_r3(task_id: str) -> None:
                     return
 
             def complete_all(value: dict[str, Any]) -> None:
-                persisted_done, _ = _reconcile_terminal_local_environment_units(value)
+                persisted_done = 0
+                if not work_unit_evidence_missing:
+                    persisted_done, _ = _reconcile_terminal_local_environment_units(value)
                 if persisted_done:
                     _telemetry_add(value, local_blockers_bypassed=persisted_done)
                 _plan_update(value, "AUTONOMOUS_EXECUTION_LOOP", "COMPLETED")
@@ -6303,7 +7722,11 @@ def recover_if_interrupted(task_id: str) -> dict[str, Any]:
             f"changed={len(changes['changed'])};recorded processes inactive"
         ), mutate=stop_mutate)
     if state.get("PAUSE_REQUESTED"):
-        return update_task(task_id, {
+        canonical_review = _canonical_persisted_review_classification(state)
+        resume_code = _canonical_review_resume_code(
+            state, str(state.get("NEXT_ACTION_CODE", "")),
+        )
+        pause_fields = {
             "WORKER_STATUS": "PAUSED_PROCESS_NOT_RUNNING",
             "WORKER_PID": None,
             "CONTROLLER_PID": None,
@@ -6314,16 +7737,96 @@ def recover_if_interrupted(task_id: str) -> dict[str, Any]:
             "WHY_CURRENT_ACTION": "The explicit human pause remains authoritative.",
             "NEXT_ACTION": "Resume from the persisted checkpoint when requested",
             "WHY_NEXT_ACTION": "No autonomous process remains active.",
-        }, new_state="PAUSED", event="PAUSE_RECOVERY_COMPLETED", detail=(
-            f"resume_point={state.get('NEXT_ACTION_CODE')}"
-        ))
+            "NEXT_ACTION_CODE": resume_code,
+        }
+        if canonical_review:
+            pause_fields.update({
+                "LAST_REVIEW_STATUS": canonical_review,
+                "REVIEW_CLASSIFICATION": canonical_review,
+            })
+        return update_task(
+            task_id, pause_fields, new_state="PAUSED",
+            event="PAUSE_RECOVERY_COMPLETED", detail=f"resume_point={resume_code}",
+        )
     if int(state.get("HARNESS_VERSION", 2)) >= 3:
         active_kind = str(state.get("ACTIVE_PROCESS_KIND", ""))
+        canonical_review = _canonical_persisted_review_classification(state)
         running_ids = [
             str(unit.get("id")) for unit in state.get("WORK_UNITS", [])
             if unit.get("status") == "RUNNING"
         ]
-        has_structured_checkpoint = bool(state.get("PENDING_UNIT_RESULTS"))
+        completion = state.get("WORKER_COMPLETION_EVIDENCE", {})
+        contamination = (
+            str(completion.get("holdout_contamination_risk", ""))
+            if isinstance(completion, dict) else ""
+        )
+        blocker_kind = (
+            str(completion.get("blocker_kind", "UNKNOWN")).upper()
+            if isinstance(completion, dict) else "UNKNOWN"
+        )
+        canonical_human_boundary = bool(
+            isinstance(completion, dict)
+            and completion.get("requires_human_boundary")
+            or contamination and contamination.upper() != "NONE"
+            or blocker_kind in HUMAN_BOUNDARY_KINDS
+        )
+        if canonical_human_boundary:
+            boundary_kind = (
+                blocker_kind
+                if blocker_kind in HUMAN_BOUNDARY_KINDS - {"PAUSE", "EXHAUSTED"}
+                else "SAFETY"
+            )
+            boundary_detail = (
+                contamination
+                if contamination and contamination.upper() != "NONE"
+                else f"Canonical worker completion blocker: {blocker_kind}"
+            )
+
+            def recover_boundary(value: dict[str, Any]) -> None:
+                for unit_id in running_ids:
+                    unit = _unit_by_id(value, unit_id)
+                    if unit is not None:
+                        unit["status"] = "RETRY"
+                        unit["last_checkpoint"] = "WORKER_HUMAN_BOUNDARY_RECOVERY"
+                        unit["next_action"] = (
+                            "Await human resolution of the canonical worker safety boundary"
+                        )
+                value["ACTIVE_WORK_UNIT_IDS"] = []
+                value["ACTIVE_WORK_UNIT_ID"] = ""
+                value["CURRENT_WORK_UNIT"] = ""
+                value["PENDING_UNIT_RESULTS"] = []
+                value["CONTROLLER_PID"] = None
+                value["WORKER_PID"] = None
+                value["ACTIVE_THREAD_ID"] = ""
+                value["ACTIVE_PROCESS_KIND"] = ""
+                value["WAITING_STARTED_AT"] = utc_now()
+                _append_active_blocker(
+                    value, "WORKER_CANONICAL_BOUNDARY_RECOVERY",
+                    boundary_detail, boundary_kind,
+                )
+                _close_active_plan(value, "PENDING")
+                _telemetry_add(value, crash_recoveries=1)
+                _meaningful_progress(value, "AUTOMATIC_CRASH_RECOVERY:HUMAN_BOUNDARY")
+
+            return update_task(task_id, {
+                "WORKER_STATUS": "WAITING_HUMAN",
+                "CURRENT_PHASE": "WAITING_HUMAN",
+                "CURRENT_ACTION": "Recovered a canonical worker safety boundary",
+                "WHY_CURRENT_ACTION": boundary_detail[:MAX_TEXT],
+                "NEXT_ACTION": "Human inspects the preserved evidence and worktree",
+                "WHY_NEXT_ACTION": "Crash recovery cannot bypass canonical safety authority.",
+                "HUMAN_ATTENTION_REQUIRED": True,
+                "FILES_CHANGED": changes["changed"],
+                "FILES_CREATED": changes["created"],
+                "DEPENDENCIES_ADDED": changes["dependencies"],
+            }, new_state="WAITING_HUMAN", event="CRASH_RECOVERY_HUMAN_BOUNDARY",
+                detail=f"kind={boundary_kind};{boundary_detail[:500]}",
+                mutate=recover_boundary)
+        has_structured_checkpoint = any(
+            str(row.get("status", "")).upper() in WORK_UNIT_TERMINAL_STATUSES
+            for row in state.get("PENDING_UNIT_RESULTS", [])
+            if isinstance(row, dict)
+        )
         if has_structured_checkpoint and running_ids:
             next_code = "UNIT_VALIDATE"
         elif active_kind == "REVIEW":
@@ -6334,6 +7837,7 @@ def recover_if_interrupted(task_id: str) -> dict[str, Any]:
             next_code = "SELECT_WORK"
         else:
             next_code = str(state.get("NEXT_ACTION_CODE", "SELECT_WORK"))
+        next_code = _canonical_review_resume_code(state, next_code)
 
         def recover(value: dict[str, Any]) -> None:
             if running_ids and next_code != "UNIT_VALIDATE":
@@ -6364,6 +7868,9 @@ def recover_if_interrupted(task_id: str) -> dict[str, Any]:
             value["FILES_CREATED"] = changes["created"]
             value["DEPENDENCIES_ADDED"] = changes["dependencies"]
             value["HUMAN_ATTENTION_REQUIRED"] = False
+            if canonical_review:
+                value["LAST_REVIEW_STATUS"] = canonical_review
+                value["REVIEW_CLASSIFICATION"] = canonical_review
             _close_active_plan(value, "PENDING")
             _telemetry_add(value, crash_recoveries=1)
             _meaningful_progress(value, f"AUTOMATIC_CRASH_RECOVERY:{next_code}")
@@ -7067,9 +8574,12 @@ def command_start(args: argparse.Namespace) -> int:
         raise HarnessError(f"TASK_ID_ALREADY_EXISTS_PRESERVE_STATE:{task_id}")
     contract = _task_contract(goal, args.task_kind, args.task_scope)
     scope = contract["TASK_SCOPE"]
+    start_repo_head, start_repo_toplevel = _capture_start_repo_identity()
     state = _new_state(
         task_id, goal, scope, args.max_corrections, contract,
         max_hours=getattr(args, "max_hours", None),
+        start_repo_head=start_repo_head,
+        start_repo_toplevel=start_repo_toplevel,
     )
     task_dir(task_id).mkdir(parents=True, exist_ok=False)
     _write_state_unlocked(task_id, state)
@@ -7124,6 +8634,8 @@ def command_status(args: argparse.Namespace) -> int:
         "TASK_ID", "HARNESS_STATE", "CURRENT_PHASE", "CURRENT_ACTION", "PROGRESS_SUMMARY",
         "LAST_COMPLETED", "NEXT_ACTION", "OVERFIT_GUARD", "ANTI_BLOAT",
         "ANTI_BLOAT_TASK_DELTA", "REUSE_GUARD", "WORKER_STATUS",
+        "START_REPO_HEAD", "START_REPO_TOPLEVEL", "WORKTREE_BASE_HEAD",
+        "WORKTREE_ACTUAL_HEAD", "BASE_HEAD_IDENTITY_STATUS",
         "RESEARCH_START_DECISION", "MATCHED_PRIOR_BRANCH",
         "REGISTRY_COMPLETION_STATUS", "RETENTION_MANIFEST_STATUS",
         "HOST_CLEANUP_STATUS", "WORKTREE_RETIREMENT_STATUS",
@@ -7213,7 +8725,7 @@ def command_resume(args: argparse.Namespace) -> int:
         raise HarnessError(f"RESUME_NOT_ALLOWED_FROM:{state['HARNESS_STATE']}")
     hard_blocker_codes = {
         "HARD_GUARD_CONFLICT", "R1_PREFLIGHT_APPLICABLE_HARD_BLOCKER",
-        "POST_CHANGE_R1_HARD_BLOCKER",
+        "POST_CHANGE_R1_HARD_BLOCKER", "BLOCKED_HARNESS_BASE_HEAD_MISMATCH",
     }
     if state["HARNESS_STATE"] == "BLOCKED":
         semantic = [
@@ -7254,6 +8766,8 @@ def command_resume(args: argparse.Namespace) -> int:
         next_code = "VALIDATE"
     else:
         next_code = state.get("NEXT_ACTION_CODE", "R1_PREFLIGHT")
+    next_code = _canonical_review_resume_code(state, str(next_code))
+    canonical_review = _canonical_persisted_review_classification(state)
     waited = _seconds_since(str(state.get("WAITING_STARTED_AT", "")))
     def resume_mutate(value: dict[str, Any]) -> None:
         if waited:
@@ -7261,11 +8775,18 @@ def command_resume(args: argparse.Namespace) -> int:
         value["WAITING_STARTED_AT"] = ""
         _resolve_active_blockers(value)
 
-    update_task(task_id, {
+    resume_fields = {
         "PAUSE_REQUESTED": False, "STOP_REQUESTED": False, "HUMAN_ATTENTION_REQUIRED": False,
         "NEXT_ACTION_CODE": next_code, "CURRENT_ACTION": "Resuming from authoritative task state",
         "WHY_CURRENT_ACTION": f"Continuation begins at {next_code}; prior work and timeline are preserved.",
-    }, new_state="PLANNING" if next_code in {"R1_PREFLIGHT", "HARD_PREFLIGHT", "DISCOVER_EXISTING", "DISCOVER_REUSE", "CREATE_WORKTREE"} else "RUNNING", event="TASK_RESUMED", detail=f"resume_point={next_code}", mutate=resume_mutate)
+    }
+    if canonical_review:
+        resume_fields.update({
+            "LAST_REVIEW_STATUS": canonical_review,
+            "REVIEW_CLASSIFICATION": canonical_review,
+        })
+    update_task(task_id, resume_fields,
+        new_state="PLANNING" if next_code in {"R1_PREFLIGHT", "HARD_PREFLIGHT", "DISCOVER_EXISTING", "DISCOVER_REUSE", "CREATE_WORKTREE"} else "RUNNING", event="TASK_RESUMED", detail=f"resume_point={next_code}", mutate=resume_mutate)
     pid = run_task(task_id) if args.foreground else _spawn_supervisor(task_id)
     print(f"TASK_ID={task_id}\nHARNESS_STATE={load_state(task_id)['HARNESS_STATE']}\n{'CONTROLLER' if args.foreground else 'SUPERVISOR'}={pid}")
     return 0 if args.foreground else 0

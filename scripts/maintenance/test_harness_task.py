@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
 import shutil
 import subprocess
@@ -76,6 +77,10 @@ REQUIRED_STATE_FIELDS = {
     "TERMINAL_REASON", "PENDING_AUTONOMOUS_CONTINUATION",
     "STATE_STORAGE_STATUS", "STATE_STORAGE_FAILURE", "STATE_BYTES_LAST_WRITE",
     "STATE_TEXT_ARCHIVES", "COMPACTED_HISTORY_IDENTITIES",
+    "START_REPO_HEAD", "START_REPO_TOPLEVEL", "WORKTREE_BASE_HEAD",
+    "WORKTREE_ACTUAL_HEAD", "BASE_HEAD_IDENTITY_STATUS",
+    "WORKER_COMPLETION_EVIDENCE", "REVIEW_AUTHORITY_EVIDENCE",
+    "REVIEW_CLASSIFICATION",
 }
 
 
@@ -93,6 +98,10 @@ def isolated_roots(monkeypatch: pytest.MonkeyPatch):
         state = root / "daily" / "harness_r2"
         worktrees = root / "worktrees"
         monkeypatch.setattr(module, "REPO", repository)
+        monkeypatch.setattr(
+            module, "_capture_start_repo_identity",
+            lambda: ("e" * 40, str(repository.resolve())),
+        )
         monkeypatch.setenv("USTQ_HARNESS_STATE_ROOT", str(state))
         monkeypatch.setenv("USTQ_HARNESS_WORKTREE_ROOT", str(worktrees))
         yield state, worktrees
@@ -121,6 +130,55 @@ def use_r2_compat_state(state: dict) -> dict:
     ]
     module._sync_plan_progress(state)
     return state
+
+
+def record_fake_review(
+    task_id: str, status: str, findings: str, **extra_fields: object,
+) -> str:
+    """Persist the same canonical receipt that a real read-only review turn emits."""
+    fields = canonical_review_fields(module.load_state(task_id), status, findings)
+    classification = str(fields["REVIEW_CLASSIFICATION"])
+    module.update_task(task_id, {
+        **fields,
+        **extra_fields,
+    }, new_state="REVIEWING", event="SYNTHETIC_REVIEW_CLASSIFIED",
+        detail=classification)
+    return classification
+
+
+def canonical_review_fields(state: dict, status: str, findings: str) -> dict:
+    """Build the persisted fields emitted from one complete reviewer message."""
+    authoritative_message = f"{findings}\nREVIEW_STATUS={status}"
+    evidence = module._ingest_review_authority_evidence(
+        state, authoritative_message,
+    )
+    classification = module._review_classification_with_authority(
+        module._review_classification(authoritative_message, 0), evidence,
+    )
+    evidence["classification"] = classification
+    return {
+        "LAST_REVIEW_STATUS": classification,
+        "REVIEW_FINDINGS": authoritative_message[-module.MAX_TEXT:],
+        "REVIEW_AUTHORITY_EVIDENCE": evidence,
+        "REVIEW_CLASSIFICATION": classification,
+    }
+
+
+def stale_bounded_blocking_review_fields(state: dict) -> dict:
+    """Model a persisted pre-repair PASS whose display tail lost its blocker."""
+    authoritative_message = (
+        "Blocking finding: duplicate component exists.\n"
+        + "x" * 9_000
+        + "\nREVIEW_STATUS=PASS"
+    )
+    evidence = module._ingest_review_authority_evidence(state, authoritative_message)
+    evidence["classification"] = "PASS"
+    return {
+        "LAST_REVIEW_STATUS": "PASS",
+        "REVIEW_FINDINGS": authoritative_message[-module.MAX_TEXT:],
+        "REVIEW_AUTHORITY_EVIDENCE": evidence,
+        "REVIEW_CLASSIFICATION": "PASS",
+    }
 
 
 def use_supervisor_test_storage(
@@ -260,6 +318,7 @@ def test_completed_units_remain_recoverable_and_deduplicable_after_compaction(
     )
     unit.update({
         "status": "DONE", "validation_state": "PASS",
+        "last_checkpoint": "VALIDATED", "next_action": "No further action",
         "failure_signature": "FINAL_REVIEW:stable-signature",
         "review_finding_id": "FINAL_REVIEW:stable-signature",
         "produced_outputs": ["scripts/common/storage_paths.ps1"],
@@ -284,6 +343,239 @@ def test_completed_units_remain_recoverable_and_deduplicable_after_compaction(
     assert recovered["retry_history_count"] == 20
     assert 1 <= len(recovered["retry_history"]) <= 5
     assert module._runnable_work_units(compact) == []
+
+
+def test_r9_persistence_cannot_create_done_authority_or_dispatch_dependent(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    checkpoint = (
+        "COMPLETED " + ("A" * 300) + " RETRY " + ("B" * 300) + " VALIDATED"
+    )
+    dependency = module._new_work_unit("WU-001", "Complete the prerequisite")
+    dependency.update({
+        "status": "DONE", "produced_outputs": ["existing.py"],
+        "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": checkpoint, "next_action": "No further action",
+    })
+    dependent = module._new_work_unit(
+        "WU-002", "Run only after the prerequisite", dependencies=["WU-001"],
+    )
+
+    assert module._done_worker_result_terminal(dependency) is False
+    module.update_task("test-task", {
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "SELECT_WORK", "WORK_UNITS": [dependency, dependent],
+    })
+    persisted = module.load_state("test-task")
+    persisted_dependency = module._unit_by_id(persisted, "WU-001")
+    persisted_dependent = module._unit_by_id(persisted, "WU-002")
+
+    assert persisted_dependency is not None and persisted_dependent is not None
+    assert persisted_dependency["last_checkpoint"] == checkpoint
+    assert "state_compacted" not in persisted_dependency
+    assert module._done_worker_result_terminal(persisted_dependency) is False
+    assert module._work_unit_counts(persisted)["done"] == 0
+    assert module._dependency_satisfied(persisted_dependency) is False
+    assert module._runnable_work_units(persisted) == []
+
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "p0")
+    monkeypatch.setattr(
+        module, "_run_codex_turn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("worker dispatch crossed a noncanonical dependency")
+        ),
+    )
+
+    def stop_after_selection(task_id: str) -> tuple[bool, str]:
+        raise RuntimeError("STOP_AFTER_R9_SELECTION")
+
+    monkeypatch.setattr(module, "_run_final_validation", stop_after_selection)
+    with pytest.raises(RuntimeError, match="STOP_AFTER_R9_SELECTION"):
+        module._dispatch("test-task")
+
+    persisted = module.load_state("test-task")
+    assert module._unit_by_id(persisted, "WU-002")["status"] == "READY"
+    assert module._unit_by_id(persisted, "WU-002")["attempts"] == 0
+    assert persisted["ACTIVE_WORK_UNIT_IDS"] == []
+    assert persisted["NEXT_ACTION_CODE"] == "FINAL_VALIDATION"
+
+
+def _r9_positioned_authority_text(
+    disqualifier: str, position: str, padding: int,
+) -> str:
+    left = "A" * padding
+    right = "B" * padding
+    parts = {
+        "head": (disqualifier, "COMPLETED", left, right, "VALIDATED"),
+        "middle": ("COMPLETED", left, disqualifier, right, "VALIDATED"),
+        "tail": ("COMPLETED", left, right, "VALIDATED", disqualifier),
+    }
+    return " ".join(parts[position])
+
+
+@pytest.mark.parametrize("authority_field", ["last_checkpoint", "next_action"])
+@pytest.mark.parametrize(
+    ("disqualifier", "position", "padding"),
+    [
+        (disqualifier, position, padding)
+        for disqualifier in (
+            "RETRY", "WAITING", "RUNNING", "IN_PROGRESS", "WORK_REMAINS",
+        )
+        for position, padding in (
+            ("head", 64), ("middle", 96), ("tail", 300),
+        )
+    ],
+)
+def test_r9_authority_fields_are_lossless_across_thresholds_and_positions(
+    isolated_roots: tuple[Path, Path],
+    authority_field: str,
+    disqualifier: str,
+    position: str,
+    padding: int,
+) -> None:
+    state = create_state()
+    authority_text = _r9_positioned_authority_text(
+        disqualifier, position, padding,
+    )
+    unit = module._new_work_unit("WU-001", "Preserve canonical DONE authority")
+    unit.update({
+        "status": "DONE", "produced_outputs": ["existing.py"],
+        "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "No further action",
+        authority_field: authority_text,
+    })
+    authority_before = module._done_worker_result_terminal(unit)
+
+    assert authority_before is False
+    module.update_task("test-task", {"WORK_UNITS": [unit]})
+    first = module.load_state("test-task")["WORK_UNITS"][0]
+    assert first[authority_field] == authority_text
+    assert module._done_worker_result_terminal(first) is authority_before
+
+    module.update_task("test-task", {"CURRENT_ACTION": "Repeat persistence"})
+    second = module.load_state("test-task")["WORK_UNITS"][0]
+    assert second[authority_field] == authority_text
+    assert module._done_worker_result_terminal(second) is authority_before
+
+
+def test_r9_persistence_cannot_destroy_canonical_done_authority(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    checkpoint = ("A" * 300) + " COMPLETED " + ("B" * 300)
+    unit = module._new_work_unit("WU-001", "Preserve completed authority")
+    unit.update({
+        "status": "DONE", "produced_outputs": ["existing.py"],
+        "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": checkpoint, "next_action": "No further action",
+    })
+
+    authority_before = module._done_worker_result_terminal(unit)
+    assert authority_before is True
+    module.update_task("test-task", {"WORK_UNITS": [unit]})
+    persisted = module.load_state("test-task")["WORK_UNITS"][0]
+
+    assert persisted["last_checkpoint"] == checkpoint
+    assert module._done_worker_result_terminal(persisted) is authority_before
+    assert module._work_unit_counts({"WORK_UNITS": [persisted]})["done"] == 1
+
+
+@pytest.mark.parametrize(
+    "authority_override",
+    [
+        {"blockers": {"code": "UNRESOLVED"}},
+        {"failed_tests": ["targeted validation failed"]},
+        {"validation_passed": False},
+        {"failed_validation": True},
+        {"validation_result": "FAIL"},
+    ],
+)
+def test_r9_storage_failure_snapshot_preserves_nonterminal_authority_evidence(
+    isolated_roots: tuple[Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    authority_override: dict[str, object],
+) -> None:
+    state = create_state()
+    unit = module._new_work_unit("WU-001", "Preserve active authority evidence")
+    unit.update({
+        "status": "DONE", "produced_outputs": ["existing.py"],
+        "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "VALIDATED", "next_action": "No further action",
+        **authority_override,
+    })
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKER_PID": 4242,
+        "ACTIVE_PROCESS_KIND": "WORKER", "ACTIVE_WORK_UNIT_ID": "WU-001",
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"], "WORK_UNITS": [unit],
+        "UNCOMPACTED_STORAGE_NOISE": "x" * 100_000,
+    })
+    monkeypatch.setattr(module, "MAX_STATE_BYTES", 50_000)
+    monkeypatch.setattr(module, "STATE_COMPACTION_TARGET_BYTES", 40_000)
+
+    assert module._done_worker_result_terminal(unit) is False
+    module._write_state_unlocked("test-task", state)
+    persisted = module.load_state("test-task")
+    persisted_unit = persisted["WORK_UNITS"][0]
+
+    assert persisted["STATE_STORAGE_STATUS"] == "COMPACTION_EXHAUSTED"
+    for field, value in authority_override.items():
+        assert persisted_unit[field] == value
+    assert module._done_worker_result_terminal(persisted_unit) is False
+    assert module._work_unit_counts(persisted)["done"] == 0
+
+
+def test_r9_oversized_authority_evidence_rejects_write_losslessly(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    persisted_before = module.state_path("test-task").read_bytes()
+    unit = module._new_work_unit("WU-001", "Reject an unsafe authority rewrite")
+    unit.update({
+        "status": "DONE", "produced_outputs": ["existing.py"],
+        "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "COMPLETED " + ("A" * 100_000),
+        "next_action": "No further action",
+    })
+    state["WORK_UNITS"] = [unit]
+    monkeypatch.setattr(module, "MAX_STATE_BYTES", 50_000)
+    monkeypatch.setattr(module, "STATE_COMPACTION_TARGET_BYTES", 40_000)
+
+    assert module._done_worker_result_terminal(unit) is True
+    with pytest.raises(
+        module.HarnessError,
+        match="WORK_UNIT_COMPLETION_AUTHORITY_CHANGED_DURING_PERSISTENCE",
+    ):
+        module._write_state_unlocked("test-task", state)
+
+    assert module.state_path("test-task").read_bytes() == persisted_before
+
+
+def test_r9_blocker_authority_semantics_are_lossless_across_persistence(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    blocker = {
+        "kind": "LOCAL", "code": "LOCAL_BLOCKER",
+        "detail": "environment " + ("A" * 300) + " task-caused " + ("B" * 300),
+    }
+    unit = module._new_work_unit("WU-001", "Preserve blocker authority")
+    unit.update({
+        "status": "DEFERRED", "validation_state": "NOT_RUN",
+        "blocker": blocker, "last_checkpoint": "DEFERRED_BY_DEPENDENCY",
+    })
+    state["WORK_UNITS"] = [unit]
+
+    assert module._local_environment_only(unit) is False
+    module.update_task("test-task", {"WORK_UNITS": [unit]})
+    persisted = module.load_state("test-task")["WORK_UNITS"][0]
+
+    assert persisted["blocker"] == blocker
+    assert module._done_worker_result_terminal(persisted) is False
+    assert module._local_environment_only(persisted) is False
 
 
 def test_active_running_unit_and_pending_worker_markers_survive_compaction(
@@ -314,6 +606,703 @@ def test_active_running_unit_and_pending_worker_markers_survive_compaction(
     assert compact["WORKER_FINDINGS"] == state["WORKER_FINDINGS"]
     assert compact["WORK_UNITS"][0]["objective"] == active["objective"]
     assert len(compact["HISTORICAL_FINDINGS"]) == module.STATE_HISTORY_RETAIN
+
+
+def test_missing_or_invalid_active_unit_results_are_retried_not_completed() -> None:
+    state = module._new_state("test-task", "Complete bounded units", "independent-code", 2)
+    units = [
+        module._new_work_unit(
+            f"WU-{index:03d}", f"Complete bounded unit {index}",
+            reuse_decision="EXTEND", reuse_evidence=["existing Harness component"],
+        )
+        for index in range(1, 4)
+    ]
+    for unit in units:
+        unit["status"] = "RUNNING"
+    state.update({
+        "WORK_UNITS": units,
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001", "WU-002", "WU-003"],
+    })
+    reported = [{
+        "id": "WU-001", "status": "BLOCKED_LOCAL", "produced_outputs": [],
+        "validation_state": "NOT_RUN",
+        "blocker": {"code": "SOURCE_UNAVAILABLE", "detail": "Canonical source is absent"},
+        "last_checkpoint": "SOURCE_AUDITED", "next_action": "Wait for the canonical source",
+        "reuse_decision": "EXTEND", "reuse_evidence": ["existing Harness component"],
+    }, {
+        "id": "WU-002", "status": "RUNNING",
+    }]
+    message = f"WORK_UNIT_RESULTS_JSON={json.dumps(reported, separators=(',', ':'))}"
+
+    results = module._pending_unit_results(state, message)
+
+    assert [row["status"] for row in results] == ["BLOCKED_LOCAL", "RETRY", "RETRY"]
+    for row in results[1:]:
+        assert row["validation_state"] == "WORKER_RESULT_MISSING"
+        assert row["blocker"]["code"] == "WORKER_RESULT_MISSING"
+        assert row["reuse_decision"] == "EXTEND"
+        assert row["reuse_evidence"] == ["existing Harness component"]
+
+
+def _active_structured_result_state() -> dict:
+    state = module._new_state("test-task", "Complete one bounded unit", "independent-code", 2)
+    unit = module._new_work_unit(
+        "WU-001", "Complete one bounded unit",
+        reuse_decision="EXTEND", reuse_evidence=["existing Harness component"],
+    )
+    unit["status"] = "RUNNING"
+    state.update({
+        "WORK_UNITS": [unit],
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+    })
+    return state
+
+
+def _structured_worker_result(
+    status: str = "DONE",
+    *,
+    validation_state: str = "PASS",
+    blocker: dict | None = None,
+    **extra: object,
+) -> dict:
+    row = {
+        "id": "WU-001", "status": status, "produced_outputs": ["authorized-output.py"],
+        "validation_state": validation_state, "blocker": {} if blocker is None else blocker,
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "No further worker action",
+        "reuse_decision": "EXTEND", "reuse_evidence": ["existing Harness component"],
+    }
+    row.update(extra)
+    return row
+
+
+def _worker_completion_message(
+    *,
+    task_result: str = "COMPLETED",
+    rows: list[dict] | None = None,
+    contamination: str = "NONE",
+    blocker_kind: str = "NONE",
+    changed_paths: list[str] | None = None,
+    justification: str = "NONE",
+) -> str:
+    return "\n".join([
+        f"TASK_RESULT={task_result}",
+        f"HOLDOUT_CONTAMINATION_RISK={contamination}",
+        f"BLOCKER_KIND={blocker_kind}",
+        f"WORK_UNIT_RESULTS_JSON={json.dumps(rows or [], separators=(',', ':'))}",
+        f"CHANGED_PATHS_JSON={json.dumps(changed_paths or [], separators=(',', ':'))}",
+        f"NEW_COMPONENT_JUSTIFICATION={justification}",
+    ])
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [("DONE", "RETRY"), ("DONE", "FAIL"), ("DONE", "DONE")],
+    ids=["done-retry", "done-fail", "identical-done"],
+)
+def test_duplicate_structured_results_are_rejected_independent_of_order(
+    statuses: tuple[str, str],
+) -> None:
+    outcomes = []
+    for ordered_statuses in (statuses, tuple(reversed(statuses))):
+        rows = [
+            _structured_worker_result(
+                status,
+                validation_state="PASS" if status == "DONE" else status,
+            )
+            for status in ordered_statuses
+        ]
+        state = _active_structured_result_state()
+        message = (
+            "TASK_RESULT=COMPLETED\n"
+            f"WORK_UNIT_RESULTS_JSON={json.dumps(rows, separators=(',', ':'))}"
+        )
+        parsed = module._pending_unit_results(state, message)
+        state["PENDING_UNIT_RESULTS"] = rows
+        module._apply_validated_unit_results(state)
+        outcomes.append((
+            parsed[0]["status"], parsed[0]["blocker"]["code"],
+            state["WORK_UNITS"][0]["status"], state["WORK_UNITS"][0]["blocker"]["code"],
+        ))
+
+    assert outcomes == [
+        ("RETRY", "WORKER_RESULT_DUPLICATE", "RETRY", "WORKER_RESULT_DUPLICATE"),
+        ("RETRY", "WORKER_RESULT_DUPLICATE", "RETRY", "WORKER_RESULT_DUPLICATE"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "statuses",
+    [("DONE", "RETRY"), ("RETRY", "DONE"), ("DONE", "DONE")],
+    ids=["done-then-retry", "retry-then-done", "identical-done"],
+)
+def test_repeated_worker_result_markers_reject_the_entire_message(
+    statuses: tuple[str, str],
+) -> None:
+    marker_lines = []
+    for status in statuses:
+        row = _structured_worker_result(
+            status, validation_state="PASS" if status == "DONE" else status,
+        )
+        marker_lines.append(
+            f"WORK_UNIT_RESULTS_JSON={json.dumps([row], separators=(',', ':'))}"
+        )
+    state = _active_structured_result_state()
+    state["WORKER_FINDINGS"] = "\n".join(marker_lines)
+
+    parsed = module._pending_unit_results(state)
+
+    assert parsed[0]["status"] == "RETRY"
+    assert parsed[0]["blocker"]["code"] == "WORKER_RESULT_MISSING"
+    state["PENDING_UNIT_RESULTS"] = []
+    module._apply_validated_unit_results(state)
+    assert state["WORK_UNITS"][0]["status"] == "RETRY"
+    assert state["WORK_UNITS"][0]["blocker"]["code"] == "WORKER_RESULT_MISSING"
+
+
+@pytest.mark.parametrize(
+    "extra_marker",
+    ["WORK_UNIT_RESULTS_JSON=", "WORK_UNIT_RESULTS_JSON={not-json}"],
+    ids=["empty-extra-marker", "malformed-extra-marker"],
+)
+def test_any_extra_worker_result_marker_makes_the_message_ambiguous(
+    extra_marker: str,
+) -> None:
+    row = _structured_worker_result()
+    valid_marker = f"WORK_UNIT_RESULTS_JSON={json.dumps([row], separators=(',', ':'))}"
+    state = _active_structured_result_state()
+
+    parsed = module._pending_unit_results(
+        state, f"{extra_marker}\n{valid_marker}",
+    )
+
+    assert parsed[0]["status"] == "RETRY"
+    assert parsed[0]["blocker"]["code"] == "WORKER_RESULT_MISSING"
+
+
+def test_duplicate_json_keys_at_top_level_or_nested_fail_closed() -> None:
+    compact = json.dumps([_structured_worker_result()], separators=(",", ":"))
+    ambiguous_payloads = [
+        compact.replace('"status":"DONE"', '"status":"RETRY","status":"DONE"', 1),
+        compact.replace('"status":"DONE"', '"status":"DONE","status":"RETRY"', 1),
+        compact.replace(
+            '"validation_state":"PASS"',
+            '"validation_state":"PASS","validation_state":"FAIL"',
+            1,
+        ),
+        compact.replace(
+            '"validation_state":"PASS"',
+            '"validation_state":"FAIL","validation_state":"PASS"',
+            1,
+        ),
+        compact.replace(
+            '"blocker":{}',
+            '"blocker":{"context":{"code":"FIRST","code":"SECOND"}}',
+            1,
+        ),
+    ]
+
+    for payload in ambiguous_payloads:
+        state = _active_structured_result_state()
+        parsed = module._pending_unit_results(
+            state, f"WORK_UNIT_RESULTS_JSON={payload}",
+        )
+
+        assert parsed[0]["status"] == "RETRY"
+        assert parsed[0]["blocker"]["code"] == "WORKER_RESULT_MISSING"
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    [
+        {"validation_state": "FAIL"},
+        {"validation_state": "NOT_RUN"},
+        {"validation_state": "TESTS_NOT_RUN"},
+        {"validation_state": "UNKNOWN"},
+        {"validation_state": "CANCELLED"},
+        {"validation_state": "TASK_TESTS_PASS_GLOBAL_GUARD_FAIL"},
+        {"validation_state": "WORKER_CHECKPOINT"},
+        {"validation_state": "ENVIRONMENT_LIMITED"},
+        {"validation_state": "pass"},
+        {"blocker": {"code": "VALIDATION_FAILED", "detail": "Focused validation failed"}},
+        {"blockers": [{"code": "VALIDATION_FAILED"}]},
+        {"validation_passed": False},
+        {"validation_failed": True},
+        {"failed_validation": True},
+        {"tests_failed": 1},
+        {"validation_errors": ["focused validation failed"]},
+        {"validation_result": "FAIL"},
+        {"validation_result": "PASSED"},
+        {"last_checkpoint": "VALIDATION_FAILED"},
+        {"last_checkpoint": ""},
+        {"last_checkpoint": "RUNNING"},
+        {"last_checkpoint": "IN_PROGRESS"},
+        {"last_checkpoint": "WORKING"},
+        {"last_checkpoint": "WAITING"},
+        {"last_checkpoint": "RETRY"},
+        {"last_checkpoint": "WORKER_CHECKPOINT"},
+        {"last_checkpoint": "NOT_COMPLETED"},
+        {"last_checkpoint": "IMPLEMENTATION_COMPLETE_NEEDS_MORE_WORK"},
+        {"next_action": ""},
+        {"next_action": "Continue implementation"},
+        {"next_action": "Run validation"},
+        {"next_action": "Controller validation"},
+        {"next_action": "Run remaining tests"},
+        {"next_action": "Controller validation then continue implementation"},
+    ],
+    ids=[
+        "validation-fail", "validation-not-run", "composite-not-run",
+        "ambiguous-validation", "cancelled-validation", "composite-terminal-fail",
+        "checkpoint-validation-is-not-pass", "environment-limited-validation-is-not-pass",
+        "lowercase-pass-is-not-canonical",
+        "blocker", "blockers", "explicit-validation-false", "validation-failed-true",
+        "failed-validation-true", "tests-failed-one", "validation-errors",
+        "explicit-validation-result", "noncanonical-passed-result", "failed-checkpoint",
+        "missing-checkpoint", "running-checkpoint", "in-progress-checkpoint",
+        "working-checkpoint", "waiting-checkpoint", "retry-checkpoint",
+        "checkpoint-only-checkpoint", "negated-completed-checkpoint",
+        "completed-but-needs-more-work-checkpoint",
+        "missing-next-action", "continuing-next-action", "run-validation-next-action",
+        "controller-validation-next-action", "remaining-tests-next-action",
+        "handoff-then-continue-next-action",
+    ],
+)
+def test_done_with_structured_contradiction_is_retried_despite_success_prose(
+    contradiction: dict,
+) -> None:
+    row = _structured_worker_result()
+    row.update(contradiction)
+    state = _active_structured_result_state()
+    message = (
+        "TASK_RESULT=COMPLETED\nCOMPLETED_WORK=All work is complete and successful.\n"
+        f"WORK_UNIT_RESULTS_JSON={json.dumps([row], separators=(',', ':'))}"
+    )
+
+    parsed = module._pending_unit_results(state, message)
+    assert parsed[0]["status"] == "RETRY"
+    assert parsed[0]["blocker"]["code"] == "WORKER_RESULT_CONTRADICTORY"
+
+    state["PENDING_UNIT_RESULTS"] = [row]
+    module._apply_validated_unit_results(state)
+    assert state["WORK_UNITS"][0]["status"] == "RETRY"
+    assert state["WORK_UNITS"][0]["blocker"]["code"] == "WORKER_RESULT_CONTRADICTORY"
+
+
+@pytest.mark.parametrize(
+    ("last_checkpoint", "next_action"),
+    [
+        ("IMPLEMENTATION_COMPLETE", "No further action"),
+        ("VALIDATED", "No further worker action"),
+        ("WORK_COMPLETED", "No more worker work remains"),
+        ("DONE", "NONE"),
+    ],
+)
+def test_single_done_pass_without_blocker_remains_valid_structured_completion(
+    last_checkpoint: str, next_action: str,
+) -> None:
+    row = _structured_worker_result(
+        last_checkpoint=last_checkpoint, next_action=next_action,
+    )
+    state = _active_structured_result_state()
+    message = f"WORK_UNIT_RESULTS_JSON={json.dumps([row], separators=(',', ':'))}"
+
+    parsed = module._pending_unit_results(state, message)
+    assert parsed == [row]
+
+    state["PENDING_UNIT_RESULTS"] = [row]
+    module._apply_validated_unit_results(state)
+    unit = state["WORK_UNITS"][0]
+    assert unit["status"] == "DONE"
+    assert unit["validation_state"] == "PASS"
+    assert unit["blocker"] == {}
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    [
+        {"validation_state": "WORKER_CHECKPOINT"},
+        {"last_checkpoint": ""},
+        {"last_checkpoint": "RUNNING"},
+        {"last_checkpoint": "IN_PROGRESS"},
+        {"last_checkpoint": "WORKING"},
+        {"last_checkpoint": "WAITING"},
+        {"last_checkpoint": "RETRY"},
+        {"last_checkpoint": "IMPLEMENTATION_COMPLETE_NEEDS_MORE_WORK"},
+        {"next_action": ""},
+        {"next_action": "Continue implementation"},
+        {"next_action": "Run validation"},
+        {"next_action": "Controller validation"},
+    ],
+)
+def test_complete_contract_and_downstream_apply_reject_nonterminal_done_authority(
+    contradiction: dict,
+) -> None:
+    state = _active_structured_result_state()
+    row = _structured_worker_result(**contradiction)
+    evidence = module._ingest_worker_completion_evidence(
+        state, _worker_completion_message(rows=[row]),
+    )
+    state.update(module._worker_completion_state_fields(evidence))
+
+    assert evidence["structured_contract_valid"] is False
+    assert evidence["task_result"] == "RETRY"
+    assert evidence["work_unit_results"][0]["status"] == "RETRY"
+    assert module._worker_result(state, 0) == "RETRY"
+
+    # Even a raw/stale pending row cannot bypass the canonical terminality
+    # predicate when Controller validation later applies unit results.
+    state["PENDING_UNIT_RESULTS"] = [row]
+    module._apply_validated_unit_results(state)
+    unit = state["WORK_UNITS"][0]
+    assert unit["status"] == "RETRY"
+    assert unit["blocker"]["code"] == "WORKER_RESULT_CONTRADICTORY"
+
+
+def test_malformed_worker_result_marker_does_not_complete_active_unit() -> None:
+    state = module._new_state("test-task", "Complete one bounded unit", "independent-code", 2)
+    unit = module._new_work_unit("WU-001", "Complete one bounded unit")
+    unit["status"] = "RUNNING"
+    state.update({
+        "WORK_UNITS": [unit],
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+    })
+
+    result = module._pending_unit_results(state, "WORK_UNIT_RESULTS_JSON={not-json}")
+
+    assert result[0]["status"] == "RETRY"
+    assert result[0]["last_checkpoint"] == "WORKER_RESULT_MISSING"
+    state["PENDING_UNIT_RESULTS"] = result
+    module._apply_validated_unit_results(state)
+    assert state["WORK_UNITS"][0]["status"] == "RETRY"
+    assert state["WORK_UNITS"][0]["validation_state"] == "WORKER_RESULT_MISSING"
+
+    persisted = module._new_state("test-task", "Complete one bounded unit", "independent-code", 2)
+    persisted_units = [
+        module._new_work_unit(f"WU-{index:03d}", f"Complete bounded unit {index}")
+        for index in range(1, 3)
+    ]
+    for persisted_unit in persisted_units:
+        persisted_unit["status"] = "RUNNING"
+    persisted.update({
+        "WORK_UNITS": persisted_units,
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001", "WU-002"],
+        "PENDING_UNIT_RESULTS": [{"id": "WU-001", "status": "RUNNING"}],
+    })
+
+    module._apply_validated_unit_results(persisted)
+
+    assert [unit["status"] for unit in persisted["WORK_UNITS"]] == ["RETRY", "RETRY"]
+    for persisted_unit in persisted["WORK_UNITS"]:
+        assert persisted_unit["blocker"]["code"] == "WORKER_RESULT_MISSING"
+
+
+def test_incomplete_done_worker_result_is_retried_not_completed() -> None:
+    state = module._new_state("test-task", "Complete one bounded unit", "independent-code", 2)
+    unit = module._new_work_unit("WU-001", "Complete one bounded unit")
+    unit["status"] = "RUNNING"
+    state.update({
+        "WORK_UNITS": [unit],
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+    })
+    incomplete = {"id": "WU-001", "status": "DONE"}
+    message = f"WORK_UNIT_RESULTS_JSON={json.dumps([incomplete], separators=(',', ':'))}"
+
+    parsed = module._pending_unit_results(state, message)
+
+    assert parsed[0]["status"] == "RETRY"
+    assert parsed[0]["blocker"]["code"] == "WORKER_RESULT_MISSING"
+
+    state["PENDING_UNIT_RESULTS"] = [incomplete]
+    module._apply_validated_unit_results(state)
+
+    assert state["WORK_UNITS"][0]["status"] == "RETRY"
+    assert state["WORK_UNITS"][0]["validation_state"] == "WORKER_RESULT_MISSING"
+
+
+@pytest.mark.parametrize("worker_findings", ["", "TASK_RESULT=RUNNING", "TASK_RESULT=unknown"])
+def test_absent_or_nonterminal_task_result_retries_fail_closed(worker_findings: str) -> None:
+    state = module._new_state("test-task", "Complete one bounded unit", "independent-code", 2)
+    state["WORKER_FINDINGS"] = worker_findings
+
+    assert module._worker_result(state, 0) == "RETRY"
+
+
+def test_complete_worker_message_is_ingested_before_display_truncation(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete one bounded unit")
+    unit["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "WORK_UNITS": [unit], "ACTIVE_WORK_UNIT_ID": "WU-001",
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+    })
+    module._write_state_unlocked("test-task", state)
+    retry_row = _structured_worker_result("RETRY", validation_state="RETRY")
+    done_row = _structured_worker_result()
+    authoritative_message = (
+        "TASK_RESULT=BLOCKED\n"
+        "HOLDOUT_CONTAMINATION_RISK=possible holdout exposure\n"
+        "BLOCKER_KIND=SAFETY\n"
+        "CHANGED_PATHS_JSON=[\"scripts/maintenance/harness_task.py\"]\n"
+        "NEW_COMPONENT_JUSTIFICATION=Existing Harness authority was extended\n"
+        f"WORK_UNIT_RESULTS_JSON={json.dumps([retry_row], separators=(',', ':'))}\n"
+        + "x" * 9_000
+        + "\n"
+        + f"WORK_UNIT_RESULTS_JSON={json.dumps([done_row], separators=(',', ':'))}"
+    )
+
+    class FakeInput:
+        def write(self, value: str) -> None:
+            assert value
+
+        def close(self) -> None:
+            return None
+
+    class FakeOutput:
+        def __iter__(self):
+            yield json.dumps({
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": authoritative_message},
+            }) + "\n"
+
+    class FakeProcess:
+        pid = 4242
+        stdin = FakeInput()
+        stdout = FakeOutput()
+
+        def wait(self) -> int:
+            return 0
+
+    monkeypatch.setattr(module, "assert_registered_isolated_worktree", lambda path: None)
+    monkeypatch.setattr(
+        module, "_codex_exec_command",
+        lambda worktree, sandbox, review, writable_runtime=None: ["codex"],
+    )
+    monkeypatch.setattr(module.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": [], "created": [], "dependencies": [],
+        "changed_count": 0, "created_count": 0,
+    })
+
+    result = module._run_codex_turn("test-task", "bounded prompt")
+    stored = module.load_state("test-task")
+    evidence = stored["WORKER_COMPLETION_EVIDENCE"]
+
+    assert result["message"] == authoritative_message[-module.MAX_TEXT:]
+    assert "TASK_RESULT=BLOCKED" not in result["message"]
+    assert evidence["marker_counts"]["WORK_UNIT_RESULTS_JSON"] == 2
+    assert evidence["task_result"] == "BLOCKED"
+    assert evidence["holdout_contamination_risk"] == "possible holdout exposure"
+    assert evidence["blocker_kind"] == "SAFETY"
+    assert evidence["changed_paths"] == ["scripts/maintenance/harness_task.py"]
+    assert evidence["new_component_justification"] == "Existing Harness authority was extended"
+    assert stored["PENDING_UNIT_RESULTS"][0]["status"] == "RETRY"
+    assert stored["PENDING_UNIT_RESULTS"][0]["blocker"]["code"] == "WORKER_RESULT_MISSING"
+    assert module._worker_result(stored, 0) == "BLOCKED"
+    assert module._pending_unit_results(stored)[0]["status"] == "RETRY"
+    assert module._pending_unit_results(stored, result["message"])[0]["status"] == "DONE"
+
+
+def test_compacted_worker_findings_never_replace_canonical_unit_results() -> None:
+    state = _active_structured_result_state()
+    retry_row = _structured_worker_result("RETRY", validation_state="RETRY")
+    done_row = _structured_worker_result()
+    message = (
+        "x" * 2_800
+        + "\n"
+        + f"WORK_UNIT_RESULTS_JSON={json.dumps([retry_row], separators=(',', ':'))}\n"
+        + "y" * 2_800
+        + "\n"
+        + f"WORK_UNIT_RESULTS_JSON={json.dumps([done_row], separators=(',', ':'))}"
+    )
+    evidence = module._ingest_worker_completion_evidence(state, message)
+    state.update(module._worker_completion_state_fields(evidence))
+    state.update({
+        "WORKER_FINDINGS": message, "NEXT_ACTION_CODE": "UNIT_VALIDATE",
+        "ACTIVE_PROCESS_KIND": "", "WORKER_PID": None,
+    })
+
+    module._compact_state_for_write("test-task", state)
+
+    assert len(state["WORKER_FINDINGS"].encode("utf-8")) <= 3_200
+    assert module._pending_unit_results(state)[0]["status"] == "RETRY"
+    assert module._pending_unit_results(
+        state, state["WORKER_FINDINGS"],
+    )[0]["status"] == "DONE"
+    module._apply_validated_unit_results(state)
+    assert state["WORK_UNITS"][0]["status"] == "RETRY"
+
+
+def test_display_only_done_marker_cannot_fill_an_empty_canonical_checkpoint() -> None:
+    state = _active_structured_result_state()
+    done_row = _structured_worker_result()
+    state["WORKER_FINDINGS"] = (
+        f"WORK_UNIT_RESULTS_JSON={json.dumps([done_row], separators=(',', ':'))}"
+    )
+    state["PENDING_UNIT_RESULTS"] = []
+    state["WORKER_COMPLETION_EVIDENCE"] = {}
+
+    module._apply_validated_unit_results(state)
+
+    assert state["WORK_UNITS"][0]["status"] == "RETRY"
+    assert state["WORK_UNITS"][0]["blocker"]["code"] == "WORKER_RESULT_MISSING"
+
+
+def test_structured_safety_blocker_overrides_completed_and_done_evidence() -> None:
+    state = _active_structured_result_state()
+    message = _worker_completion_message(
+        rows=[_structured_worker_result()], blocker_kind="SAFETY",
+    )
+
+    evidence = module._ingest_worker_completion_evidence(state, message)
+    state.update(module._worker_completion_state_fields(evidence))
+
+    assert evidence["structured_contract_valid"] is False
+    assert "CONTRADICTORY_TASK_RESULT_AND_BLOCKER_KIND" in evidence["validation_issues"]
+    assert evidence["requires_human_boundary"] is True
+    assert evidence["task_result"] == "BLOCKED"
+    assert evidence["work_unit_results"][0]["status"] == "RETRY"
+    assert module._worker_result(state, 0) == "BLOCKED"
+
+
+def test_ambiguous_blocker_markers_cannot_authorize_done_checkpoint() -> None:
+    state = _active_structured_result_state()
+    message = _worker_completion_message(rows=[_structured_worker_result()]).replace(
+        "BLOCKER_KIND=NONE",
+        "BLOCKER_KIND=SAFETY\nBLOCKER_KIND=NONE",
+    )
+
+    evidence = module._ingest_worker_completion_evidence(state, message)
+    state.update(module._worker_completion_state_fields(evidence))
+
+    assert evidence["structured_contract_valid"] is False
+    assert evidence["task_result"] == "RETRY"
+    assert evidence["marker_counts"]["BLOCKER_KIND"] == 2
+    assert evidence["work_unit_results"][0]["status"] == "RETRY"
+    assert module._worker_result(state, 0) == "RETRY"
+
+
+def test_missing_completion_safety_markers_invalidate_done_checkpoint() -> None:
+    state = _active_structured_result_state()
+    message = (
+        "TASK_RESULT=COMPLETED\n"
+        f"WORK_UNIT_RESULTS_JSON={json.dumps([_structured_worker_result()], separators=(',', ':'))}"
+    )
+
+    evidence = module._ingest_worker_completion_evidence(state, message)
+
+    assert evidence["structured_contract_valid"] is False
+    assert evidence["task_result"] == "RETRY"
+    assert evidence["work_unit_results"][0]["status"] == "RETRY"
+
+
+def test_waiting_human_requires_canonical_human_blocker_not_display_prose() -> None:
+    state = _active_structured_result_state()
+    message = (
+        "Authorization is required before continuing.\n"
+        + "x" * 9_000
+        + "\n"
+        + _worker_completion_message(
+            task_result="WAITING_HUMAN",
+            rows=[_structured_worker_result("RETRY", validation_state="RETRY")],
+            blocker_kind="NONE",
+        )
+    )
+
+    evidence = module._ingest_worker_completion_evidence(state, message)
+
+    assert evidence["structured_contract_valid"] is False
+    assert "CONTRADICTORY_TASK_RESULT_AND_BLOCKER_KIND" in evidence["validation_issues"]
+    assert evidence["task_result"] == "RETRY"
+    assert evidence["requires_human_boundary"] is False
+
+
+def test_pause_checkpoint_cannot_erase_canonical_worker_boundary(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete one authorized repair")
+    unit["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "PAUSING", "WORKTREE": str(worktree),
+        "PAUSE_REQUESTED": True, "NEXT_ACTION_CODE": "WORKER",
+        "WORK_UNITS": [unit], "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+        "ACTIVE_WORK_UNIT_ID": "WU-001",
+    })
+    message = _worker_completion_message(
+        task_result="BLOCKED",
+        rows=[_structured_worker_result("RETRY", validation_state="RETRY")],
+        blocker_kind="AUTHORIZATION",
+    )
+    evidence = module._ingest_worker_completion_evidence(state, message)
+    state.update(module._worker_completion_state_fields(evidence))
+    module._write_state_unlocked("test-task", state)
+
+    assert module._control_checkpoint("test-task") is True
+    paused = module.load_state("test-task")
+    assert paused["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert paused["WORKER_COMPLETION_EVIDENCE"]["requires_human_boundary"] is True
+    assert paused["ACTIVE_BLOCKERS"][-1]["code"] == (
+        "WORKER_CANONICAL_BOUNDARY_AT_PAUSE"
+    )
+
+
+def test_worker_process_error_cannot_reset_persisted_canonical_boundary(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete one authorized repair")
+    unit["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "WORKER", "WORK_UNITS": [unit],
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"], "ACTIVE_WORK_UNIT_ID": "WU-001",
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "stable")
+
+    def boundary_then_error(*args, **kwargs) -> dict:
+        current = module.load_state("test-task")
+        message = _worker_completion_message(
+            task_result="BLOCKED",
+            rows=[_structured_worker_result("RETRY", validation_state="RETRY")],
+            blocker_kind="AUTHORIZATION",
+        )
+        evidence = module._ingest_worker_completion_evidence(current, message)
+        module.update_task("test-task", {
+            **module._worker_completion_state_fields(evidence),
+            "WORKER_FINDINGS": message[-module.MAX_TEXT:],
+            "WORKER_STATUS": "EXITED_1", "WORKER_PID": None,
+            "ACTIVE_PROCESS_KIND": "", "ACTIVE_THREAD_ID": "",
+        })
+        raise module.HarnessError(
+            "CODEX_INTERFACE_UNAVAILABLE:authentication required"
+        )
+
+    monkeypatch.setattr(module, "_run_codex_turn", boundary_then_error)
+
+    module._dispatch("test-task")
+
+    failed = module.load_state("test-task")
+    assert failed["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert failed["WORKER_COMPLETION_EVIDENCE"]["requires_human_boundary"] is True
+    assert failed["ACTIVE_BLOCKERS"][-1]["code"] == (
+        "WORKER_CANONICAL_BOUNDARY_AFTER_PROCESS_ERROR"
+    )
+    assert failed["NEXT_ACTION_CODE"] == "WORKER"
 
 
 def test_retry_signature_and_compacted_historical_identity_remain_effective(
@@ -413,7 +1402,9 @@ def test_longrun_synthetic_state_growth_stays_well_below_hard_limit(
         unit.update({
             "status": ("DONE", "BLOCKED_LOCAL", "DEFERRED")[index % 3],
             "validation_state": "PASS" if index % 3 == 0 else "NOT_RUN",
-            "blocker": {"code": "LOCAL", "detail": "b" * 2_000} if index % 3 else {},
+            "blocker": {"code": "LOCAL", "detail": "local environment blocker"} if index % 3 else {},
+            "last_checkpoint": "VALIDATED" if index % 3 == 0 else "PLANNED",
+            "next_action": "No further action" if index % 3 == 0 else "Execute this authorized work unit",
             "failure_signature": f"signature-{index}",
             "retry_history": [{"signature": f"s-{index}", "count": retry} for retry in range(20)],
         })
@@ -532,20 +1523,26 @@ def test_new_component_justification_survives_same_path_correction(
         "changed_count": 1, "created_count": 1,
     })
 
+    findings = _worker_completion_message(
+        changed_paths=[artifact],
+        justification="No authoritative component existed",
+    )
     module._refresh_changes(
-        "test-task",
-        worker_findings=(
-            "TASK_RESULT=COMPLETED\n"
-            "NEW_COMPONENT_JUSTIFICATION=No authoritative component existed"
+        "test-task", worker_findings=findings,
+        worker_completion_evidence=module._ingest_worker_completion_evidence(
+            module.load_state("test-task"), findings,
         ),
     )
     initial = module.load_state("test-task")
     assert initial["REUSE_GUARD"] == "PASS_SEARCH_RECORDED"
     assert initial["JUSTIFIED_CREATED_PATHS"] == [artifact]
 
+    findings = _worker_completion_message(changed_paths=[artifact])
     module._refresh_changes(
-        "test-task",
-        worker_findings="TASK_RESULT=COMPLETED\nNEW_COMPONENT_JUSTIFICATION=NONE",
+        "test-task", worker_findings=findings,
+        worker_completion_evidence=module._ingest_worker_completion_evidence(
+            module.load_state("test-task"), findings,
+        ),
     )
     corrected = module.load_state("test-task")
     assert corrected["REUSE_GUARD"] == "PASS_SEARCH_RECORDED"
@@ -567,14 +1564,24 @@ def test_correction_with_new_unjustified_path_fails_closed(
         "changed": list(created), "created": list(created), "dependencies": [],
         "changed_count": len(created), "created_count": len(created),
     })
+    findings = _worker_completion_message(
+        changed_paths=list(created),
+        justification="Component A had no reusable predecessor",
+    )
     module._refresh_changes(
-        "test-task",
-        worker_findings="NEW_COMPONENT_JUSTIFICATION=Component A had no reusable predecessor",
+        "test-task", worker_findings=findings,
+        worker_completion_evidence=module._ingest_worker_completion_evidence(
+            module.load_state("test-task"), findings,
+        ),
     )
 
     created.append("docs/component-b.md")
+    findings = _worker_completion_message(changed_paths=list(created))
     module._refresh_changes(
-        "test-task", worker_findings="NEW_COMPONENT_JUSTIFICATION=NONE",
+        "test-task", worker_findings=findings,
+        worker_completion_evidence=module._ingest_worker_completion_evidence(
+            module.load_state("test-task"), findings,
+        ),
     )
     corrected = module.load_state("test-task")
     assert corrected["REUSE_GUARD"] == "HARD_BLOCKER_NEW_COMPONENT_JUSTIFICATION_MISSING"
@@ -596,8 +1603,12 @@ def test_initial_unjustified_component_behavior_remains_fail_closed(
         "changed_count": 1, "created_count": 1,
     })
 
+    findings = _worker_completion_message(changed_paths=[artifact])
     module._refresh_changes(
-        "test-task", worker_findings="NEW_COMPONENT_JUSTIFICATION=NONE",
+        "test-task", worker_findings=findings,
+        worker_completion_evidence=module._ingest_worker_completion_evidence(
+            module.load_state("test-task"), findings,
+        ),
     )
     current = module.load_state("test-task")
     assert current["REUSE_GUARD"] == "HARD_BLOCKER_NEW_COMPONENT_JUSTIFICATION_MISSING"
@@ -841,10 +1852,216 @@ def test_r3_final_review_identity_is_canonical_across_entrypoints() -> None:
     assert set(state["REVIEW_FINDING_LEDGER"]) == {signature}
 
 
+def test_r3_final_review_safety_pass_language_is_not_an_actionable_identity() -> None:
+    state = module._new_state("test-task", "Repair worker result handling", "2026-evaluation", 2)
+    state["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+    detail = (
+        "Blocking: activation did not occur because the registry is unchanged. "
+        "Material Harness inconsistency: structured BLOCKED_LOCAL/FAIL results were later "
+        "represented as DONE/PASS; unparsed active results default to DONE. "
+        "Safety is intact: no duplicate implementation or frozen-asset modification occurred. "
+        "Anti-Bloat checks are passing with no task-created violation."
+    )
+
+    finding = module._review_finding_identity(
+        state, detail, ["scripts/maintenance/harness_task.py"],
+    )
+
+    assert finding["identities"] == ["WORKER_RESULT_COMPLETION_INFERENCE"]
+    assert "ANTI_BLOAT_TASK_DELTA" not in finding["identity"]
+    assert "DUPLICATE_COMPONENT_IDENTITY" not in finding["identity"]
+    assert module._review_finding_analysis(
+        state, "A duplicate implementation was introduced by this change.",
+    )["identities"] == ["DUPLICATE_COMPONENT_IDENTITY"]
+    assert module._review_finding_analysis(
+        state, "Anti-Bloat task delta violation: a task-created .venv was found.",
+    )["identities"] == ["ANTI_BLOAT_TASK_DELTA"]
+    for safe_detail in (
+        "No Anti-Bloat violation or duplicate implementation was introduced.",
+        "Anti-Bloat checks found no violation and zero duplicate component identities.",
+        "Anti-Bloat checks pass with no task-created violation.",
+        "A duplicate implementation was not introduced by this change.",
+        "The change is free of duplicate implementation.",
+        "Anti-Bloat violation was not introduced by this change.",
+        "Unparsed active results do not default to DONE anymore.",
+        "Malformed worker results must not be inferred as complete.",
+    ):
+        assert module._review_finding_analysis(state, safe_detail)["identities"] == [
+            "GENERIC_CORRECTNESS|general",
+        ]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Duplicate component does not exist.",
+        "Duplicate component cannot be found.",
+        "Duplicate component was not found.",
+        "No duplicate component was found.",
+        "Duplicate component is absent.",
+        "Duplicate component doesn't exist.",
+        "Duplicate component can't be found.",
+        "Duplicate component could not be found.",
+        "Duplicate component couldn't be found.",
+        "The reviewer could not find a duplicate component.",
+        "The reviewer couldn't find duplicate component.",
+    ],
+)
+def test_r3_common_negated_duplicate_forms_are_not_actionable(detail: str) -> None:
+    state = module._new_state("test-task", "Review task delta", "independent-code", 2)
+
+    identities = module._review_finding_analysis(state, detail)["identities"]
+
+    assert "DUPLICATE_COMPONENT_IDENTITY" not in identities
+
+
+def test_r3_duplicate_negation_is_clause_local_with_positive_controls() -> None:
+    state = module._new_state("test-task", "Review task delta", "independent-code", 2)
+    for detail in (
+        "Duplicate component exists.",
+        "Duplicate component does not exist, but duplicate implementation exists.",
+        "Duplicate component exists, but duplicate implementation cannot be found.",
+        "No tests failed and duplicate component exists.",
+        "No tests failed, duplicate component exists.",
+        "Duplicate component A does not exist and duplicate component B exists.",
+        "Duplicate component A exists and duplicate component B does not exist.",
+        "Duplicate component A exists and duplicate component B couldn't be found.",
+        "No concerns about timing and duplicate component exists.",
+        "The reviewer could not confirm timing and duplicate component exists.",
+        "This note is not about timing because duplicate component exists.",
+        "No timing issue exists; duplicate component exists.",
+        "Duplicate component A does not exist, but duplicate component B exists.",
+        "The reviewer cannot confirm timing because duplicate component exists.",
+        "The reviewer could not confirm timing because duplicate component exists.",
+        "The reviewer did not find a duplicate component, and duplicate implementation exists.",
+        "No Anti-Bloat violation, and duplicate component exists.",
+        "No duplicate component, and duplicate implementation exists.",
+    ):
+        assert "DUPLICATE_COMPONENT_IDENTITY" in module._review_finding_analysis(
+            state, detail,
+        )["identities"]
+    for detail in (
+        "Duplicate component A and duplicate component B do not exist.",
+        "No duplicate component A and duplicate component B were found.",
+        "Duplicate component A and duplicate component B couldn't be found.",
+    ):
+        assert "DUPLICATE_COMPONENT_IDENTITY" not in module._review_finding_analysis(
+            state, detail,
+        )["identities"]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "No duplicate component, duplicate implementation, or parallel component was found.",
+        "Anti-Bloat violation, and duplicate component, were not found.",
+        "Duplicate component: not found.",
+        "No duplicate component\nduplicate implementation\nor parallel component was found.",
+        "Anti-Bloat violation\nand duplicate component\nwere not found.",
+        "Neither duplicate component nor duplicate implementation was found.",
+        "Duplicate component and duplicate implementation were never found.",
+        "Duplicate component and duplicate implementation have not been found.",
+        "Anti-Bloat violation and duplicate component had not been detected.",
+        "Duplicate component or parallel component has not been observed.",
+        "No duplicate component, duplicate implementation, nor parallel component was found.",
+    ],
+)
+def test_r3_negation_scope_survives_coordinating_punctuation(detail: str) -> None:
+    state = module._new_state("test-task", "Review task delta", "independent-code", 2)
+
+    identities = module._review_finding_analysis(state, detail)["identities"]
+
+    assert "DUPLICATE_COMPONENT_IDENTITY" not in identities
+    assert "ANTI_BLOAT_TASK_DELTA" not in identities
+
+
+def test_r3_shared_negation_stops_at_affirmative_coordinated_finding() -> None:
+    state = module._new_state("test-task", "Review task delta", "independent-code", 2)
+    state["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+
+    duplicate_clause = module._review_finding_analysis(
+        state, "No Anti-Bloat violation, and duplicate component exists.",
+    )["identities"]
+    anti_bloat_clause = module._review_finding_analysis(
+        state, "No duplicate component, and Anti-Bloat violation exists.",
+    )["identities"]
+
+    assert "DUPLICATE_COMPONENT_IDENTITY" in duplicate_clause
+    assert "ANTI_BLOAT_TASK_DELTA" not in duplicate_clause
+    assert "ANTI_BLOAT_TASK_DELTA" in anti_bloat_clause
+    assert "DUPLICATE_COMPONENT_IDENTITY" not in anti_bloat_clause
+
+    emphasized = module._review_finding_analysis(
+        state, "No Anti-Bloat violation, and duplicate component clearly exists.",
+    )["identities"]
+    assert "DUPLICATE_COMPONENT_IDENTITY" in emphasized
+    assert "ANTI_BLOAT_TASK_DELTA" not in emphasized
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Anti-Bloat violation does not exist.",
+        "Anti-Bloat violation cannot be found.",
+        "Anti-Bloat violation was not found.",
+        "No Anti-Bloat violation was found.",
+        "Anti-Bloat violation is absent.",
+        "Anti-Bloat violation doesn't exist.",
+        "Anti-Bloat violation can't be found.",
+        "Anti-Bloat violation could not be found.",
+        "Anti-Bloat violation couldn't be found.",
+        "The reviewer could not find an Anti-Bloat violation.",
+        "The reviewer couldn't find Anti-Bloat violation.",
+    ],
+)
+def test_r3_common_negated_anti_bloat_forms_are_not_actionable(detail: str) -> None:
+    state = module._new_state("test-task", "Review task delta", "independent-code", 2)
+    state["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+
+    identities = module._review_finding_analysis(state, detail)["identities"]
+
+    assert "ANTI_BLOAT_TASK_DELTA" not in identities
+
+
+def test_r3_anti_bloat_negation_is_clause_local_with_positive_controls() -> None:
+    state = module._new_state("test-task", "Review task delta", "independent-code", 2)
+    state["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+    for detail in (
+        "Anti-Bloat violation exists.",
+        "Anti-Bloat violation does not exist, but an Anti-Bloat breach exists.",
+        "Anti-Bloat violation exists, but an Anti-Bloat breach cannot be found.",
+        "No tests failed and Anti-Bloat violation exists.",
+        "No tests failed, Anti-Bloat violation exists.",
+        "Anti-Bloat violation A does not exist and Anti-Bloat violation B exists.",
+        "Anti-Bloat violation A exists and duplicate component B does not exist.",
+        "Anti-Bloat violation A exists and duplicate component B couldn't be found.",
+        "No concerns about timing and Anti-Bloat violation exists.",
+        "The reviewer could not confirm timing and Anti-Bloat violation exists.",
+        "This note is not about timing because Anti-Bloat violation exists.",
+        "The reviewer cannot confirm timing because Anti-Bloat violation exists.",
+        "The reviewer could not confirm timing because Anti-Bloat violation exists.",
+        "Anti-Bloat review is not about timing because a violation exists.",
+    ):
+        assert "ANTI_BLOAT_TASK_DELTA" in module._review_finding_analysis(
+            state, detail,
+        )["identities"]
+    for detail in (
+        "Anti-Bloat violation and duplicate component do not exist.",
+        "No Anti-Bloat violation and duplicate component were found.",
+        "Anti-Bloat violation and duplicate component couldn't be found.",
+    ):
+        identities = module._review_finding_analysis(state, detail)["identities"]
+        assert "ANTI_BLOAT_TASK_DELTA" not in identities
+        assert "DUPLICATE_COMPONENT_IDENTITY" not in identities
+
+
 def test_r3_nonactionable_review_identities_do_not_share_empty_signature() -> None:
     complete = module._new_state("complete", "Complete audit", "independent-code", 2)
     done = module._new_work_unit("WU-001", "Complete audit")
-    done["status"] = "DONE"
+    done.update({
+        "status": "DONE", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "VALIDATED", "next_action": "No further action",
+    })
     complete["WORK_UNITS"] = [done]
     incomplete = module._new_state("incomplete", "Complete required work", "independent-code", 2)
     baseline = module._new_state("baseline", "Audit task delta", "independent-code", 2)
@@ -897,16 +2114,395 @@ def test_r3_validated_correction_reconciles_parent_and_reopens_dependency() -> N
     state["PENDING_UNIT_RESULTS"] = [{
         "id": correction["id"], "status": "DONE", "produced_outputs": [],
         "validation_state": "PASS", "blocker": {}, "last_checkpoint": "VALIDATED",
-        "next_action": "", "reuse_decision": "EXTEND", "reuse_evidence": [],
+        "next_action": "No further worker action", "reuse_decision": "EXTEND",
+        "reuse_evidence": [],
     }]
 
     module._apply_validated_unit_results(state)
 
+    assert module._done_worker_result_terminal(correction) is True
     assert parent["status"] == "DONE"
+    assert module._done_worker_result_terminal(parent) is True
     assert parent["resolved_by"] == correction["id"]
     assert dependent["status"] == "READY"
     assert dependent["last_checkpoint"] == "DEPENDENCY_RESOLVED"
     assert any(row.get("work_unit_id") == "WU-001" for row in state["RESOLVED_FINDINGS"])
+
+
+def test_r6_correction_parent_done_requires_canonical_candidate() -> None:
+    state = module._new_state("test-task", "Repair storage containment", "independent-code", 2)
+    parent = module._new_work_unit("WU-001", "Repair storage containment parity")
+    blocker = {"kind": "LOCAL", "conditions": ["Sandbox access denied"]}
+    parent.update({
+        "status": "BLOCKED_LOCAL", "blocker": blocker,
+        "test_failures": ["targeted validation still fails"],
+    })
+    correction = module._new_work_unit(
+        "FIX-001", "Complete the validated correction", parent_id="WU-001",
+    )
+    correction.update({
+        "status": "DONE", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "VALIDATED", "next_action": "No further action",
+    })
+    state["WORK_UNITS"] = [parent, correction]
+
+    assert module._done_worker_result_terminal(correction) is True
+    assert module._reconcile_correction_parents(state, correction) == 0
+    assert parent["status"] == "BLOCKED_LOCAL"
+    assert parent["blocker"] == blocker
+    assert module._done_worker_result_terminal({
+        **parent,
+        "status": "DONE",
+        "validation_state": "PASS",
+        "blocker": {},
+        "last_checkpoint": "RESOLVED_BY_VALIDATED_CORRECTION",
+        "next_action": "No further action",
+    }) is False
+
+
+@pytest.mark.parametrize(
+    "reconciler",
+    [
+        module._reconcile_terminal_local_environment_units,
+        module._reconcile_correction_parents,
+    ],
+)
+def test_r6_reconciliation_done_synthesis_uses_canonical_predicate(reconciler: object) -> None:
+    source = inspect.getsource(reconciler)
+
+    assert '"status": "DONE"' in source
+    assert "_done_worker_result_terminal(candidate)" in source
+
+
+def test_r6_validated_done_merge_requires_canonical_candidate() -> None:
+    state = module._new_state("test-task", "Complete one bounded repair", "independent-code", 2)
+    unit = module._new_work_unit("WU-001", "Complete the required repair")
+    unit["failed_tests"] = ["targeted validation still fails"]
+    state.update({
+        "WORK_UNITS": [unit],
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"],
+        "PENDING_UNIT_RESULTS": [{
+            "id": "WU-001", "status": "DONE",
+            "produced_outputs": ["scripts/maintenance/existing.py"],
+            "validation_state": "PASS", "blocker": {},
+            "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+            "next_action": "No further action", "reuse_decision": "REUSE",
+            "reuse_evidence": ["scripts/maintenance/existing.py"],
+        }],
+    })
+
+    module._apply_validated_unit_results(state)
+
+    applied = state["WORK_UNITS"][0]
+    assert applied["status"] == "RETRY"
+    assert applied["blocker"]["code"] == "WORKER_RESULT_CONTRADICTORY"
+    assert module._done_worker_result_terminal(applied) is False
+    assert state["TELEMETRY"]["work_units_completed"] == 0
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected_done"),
+    [
+        ({
+            "blocker": {"code": "LOCAL_BLOCKER", "detail": "unresolved"},
+            "next_action": "Retry validation",
+        }, 0),
+        ({
+            "blocker": {"code": "LOCAL_BLOCKER", "detail": "unresolved"},
+        }, 0),
+        ({"next_action": "Complete remaining work"}, 0),
+        ({"validation_state": "WORKER_CHECKPOINT"}, 0),
+        ({"last_checkpoint": "RUNNING"}, 0),
+        ({}, 1),
+    ],
+)
+def test_r7_work_unit_done_count_requires_canonical_terminality(
+    overrides: dict[str, object], expected_done: int,
+) -> None:
+    unit = module._new_work_unit("WU-001", "Complete the required repair")
+    unit.update({
+        "status": "DONE", "produced_outputs": ["existing.py"],
+        "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "No further action",
+    })
+    unit.update(overrides)
+
+    counts = module._work_unit_counts({"WORK_UNITS": [unit]})
+
+    assert module._done_worker_result_terminal(unit) is bool(expected_done)
+    assert counts == {
+        "total": 1,
+        "done": expected_done,
+        "runnable": 0,
+        "local_blocked": 0,
+        "deferred": 0,
+    }
+
+
+def test_r7_mixed_work_unit_counts_only_canonical_done() -> None:
+    canonical = module._new_work_unit("WU-001", "Complete the canonical repair")
+    canonical.update({
+        "status": "DONE", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "VALIDATED", "next_action": "No further action",
+    })
+    noncanonical = module._new_work_unit("WU-002", "Complete the unresolved repair")
+    noncanonical.update({
+        "status": "DONE", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "Retry validation",
+    })
+    retry = module._new_work_unit("WU-003", "Retry the remaining repair")
+    retry.update({
+        "status": "RETRY", "validation_state": "NOT_RUN",
+        "last_checkpoint": "RETRY_PENDING", "next_action": "Retry validation",
+    })
+    state = {"WORK_UNITS": [canonical, noncanonical, retry]}
+
+    counts = module._work_unit_counts(state)
+
+    assert module._done_worker_result_terminal(canonical) is True
+    assert module._done_worker_result_terminal(noncanonical) is False
+    assert module._done_worker_result_terminal(retry) is False
+    assert counts["done"] == 1
+    assert counts["total"] == 3
+    assert counts["runnable"] == 1
+    assert noncanonical["status"] == "DONE"
+
+
+def test_r7_command_status_reports_only_canonical_done(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    state = module._new_state("test-task", "Report one unresolved repair", "independent-code", 2)
+    unit = module._new_work_unit("WU-001", "Complete the unresolved repair")
+    unit.update({
+        "status": "DONE", "produced_outputs": ["existing.py"],
+        "validation_state": "PASS",
+        "blocker": {"code": "LOCAL_BLOCKER", "detail": "unresolved"},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "Retry validation",
+    })
+    state["WORK_UNITS"] = [unit]
+    before = json.loads(json.dumps(state["WORK_UNITS"]))
+    monkeypatch.setattr(module, "load_state", lambda task_id: state)
+
+    assert module.command_status(argparse.Namespace(task_id="test-task")) == 0
+    output = capsys.readouterr().out
+
+    assert module._done_worker_result_terminal(unit) is False
+    assert "WORK_UNITS_DONE=0" in output
+    assert "WORK_UNITS_TOTAL=1" in output
+    assert "WORK_UNITS_DONE=1" not in output
+    assert state["WORK_UNITS"][0]["status"] == "DONE"
+    assert state["WORK_UNITS"] == before
+    assert state["PROGRESS_SUMMARY"] == "0/8 plan steps completed"
+
+
+def test_r7_zero_diff_completion_reporting_requires_canonical_done() -> None:
+    state = module._new_state("test-task", "Review one unresolved repair", "independent-code", 2)
+    unit = module._new_work_unit("WU-001", "Complete the unresolved repair")
+    unit.update({
+        "status": "DONE", "validation_state": "PASS",
+        "blocker": {"code": "LOCAL_BLOCKER", "detail": "unresolved"},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "Retry validation",
+    })
+    state["WORK_UNITS"] = [unit]
+    detail = "No reviewable diff; the clean worktree has zero files changed."
+
+    finding = module._review_finding_identity(state, detail)
+
+    assert module._done_worker_result_terminal(unit) is False
+    assert finding["identity"] == "TASK_INCOMPLETE"
+    assert finding["identity"] != "VALID_ZERO_DIFF_COMPLETION"
+    assert (
+        module._queue_correction_work_unit(
+            state,
+            "FINAL_REVIEW",
+            detail,
+            "p0",
+        )
+        is False
+    )
+    assert (
+        state["REVIEW_CORRECTION_DISPOSITION"]
+        == "INCOMPLETE_NO_RUNNABLE_REMEDY"
+    )
+
+
+def _r8_canonical_done_unit(unit_id: str, objective: str) -> dict:
+    unit = module._new_work_unit(unit_id, objective)
+    unit.update({
+        "status": "DONE", "produced_outputs": ["existing.py"],
+        "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "No further action",
+    })
+    return unit
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {
+            "blocker": {"code": "LOCAL_BLOCKER", "detail": "unresolved"},
+            "next_action": "Retry validation",
+        },
+        {"blocker": {"code": "LOCAL_BLOCKER", "detail": "unresolved"}},
+        {"next_action": "Complete remaining work"},
+        {"validation_state": "WORKER_CHECKPOINT"},
+        {"last_checkpoint": "RUNNING"},
+    ],
+    ids=[
+        "exact-reviewer-reproducer", "nonempty-blocker", "remaining-work",
+        "nonterminal-validation", "nonterminal-checkpoint",
+    ],
+)
+def test_r8_noncanonical_done_dependency_is_not_runnable_or_selected(
+    overrides: dict[str, object],
+) -> None:
+    dependency = _r8_canonical_done_unit("WU-001", "Complete the prerequisite")
+    dependency.update(overrides)
+    dependent = module._new_work_unit(
+        "WU-002", "Run only after the prerequisite", dependencies=["WU-001"],
+    )
+    state = {"WORK_UNITS": [dependency, dependent]}
+    dependency_before = json.loads(json.dumps(dependency))
+
+    assert module._done_worker_result_terminal(dependency) is False
+    assert module._dependency_satisfied(dependency) is False
+    assert module._runnable_work_units(state) == []
+    assert module._recoverable_required_unit_ids(state) == []
+    assert module._select_work_unit_batch(state) == []
+    assert dependent["status"] == "READY"
+    assert dependent["attempts"] == 0
+    assert state["ACTIVE_WORK_UNIT_IDS"] == []
+    assert dependency == dependency_before
+
+
+def test_r8_select_work_does_not_dispatch_noncanonical_done_dependent(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    dependency = _r8_canonical_done_unit("WU-001", "Complete the prerequisite")
+    dependency.update({
+        "blocker": {"code": "LOCAL_BLOCKER", "detail": "unresolved"},
+        "next_action": "Retry validation",
+    })
+    dependent = module._new_work_unit(
+        "WU-002", "Run only after the prerequisite", dependencies=["WU-001"],
+    )
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "SELECT_WORK", "WORK_UNITS": [dependency, dependent],
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "p0")
+    monkeypatch.setattr(
+        module, "_run_codex_turn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("worker dispatch bypassed a noncanonical dependency"),
+        ),
+    )
+
+    def stop_after_selection(task_id: str) -> tuple[bool, str]:
+        raise RuntimeError("STOP_AFTER_DEPENDENCY_SELECTION")
+
+    monkeypatch.setattr(module, "_run_final_validation", stop_after_selection)
+
+    with pytest.raises(RuntimeError, match="STOP_AFTER_DEPENDENCY_SELECTION"):
+        module._dispatch("test-task")
+
+    persisted = module.load_state("test-task")
+    assert [unit["id"] for unit in persisted["WORK_UNITS"]] == ["WU-001", "WU-002"]
+    assert persisted["WORK_UNITS"][1]["status"] == "READY"
+    assert persisted["WORK_UNITS"][1]["attempts"] == 0
+    assert persisted["ACTIVE_WORK_UNIT_IDS"] == []
+    assert persisted["NEXT_ACTION_CODE"] == "FINAL_VALIDATION"
+
+
+def test_r8_canonical_done_dependency_is_runnable_and_selected() -> None:
+    dependency = _r8_canonical_done_unit("WU-001", "Complete the prerequisite")
+    dependent = module._new_work_unit(
+        "WU-002", "Run only after the prerequisite", dependencies=["WU-001"],
+    )
+    state = {"WORK_UNITS": [dependency, dependent]}
+
+    assert module._done_worker_result_terminal(dependency) is True
+    assert module._dependency_satisfied(dependency) is True
+    assert [unit["id"] for unit in module._runnable_work_units(state)] == ["WU-002"]
+    assert module._select_work_unit_batch(state) == ["WU-002"]
+    assert dependent["status"] == "RUNNING"
+
+
+def test_r8_all_multiple_dependencies_must_be_canonical_done() -> None:
+    first = _r8_canonical_done_unit("WU-A", "Complete the first prerequisite")
+    second = _r8_canonical_done_unit("WU-B", "Complete the second prerequisite")
+    second["next_action"] = "Retry validation"
+    dependent = module._new_work_unit(
+        "WU-C", "Run after both prerequisites", dependencies=["WU-A", "WU-B"],
+    )
+    state = {"WORK_UNITS": [first, second, dependent]}
+
+    assert module._done_worker_result_terminal(first) is True
+    assert module._done_worker_result_terminal(second) is False
+    assert module._runnable_work_units(state) == []
+
+    second["next_action"] = "No further action"
+
+    assert module._done_worker_result_terminal(second) is True
+    assert [unit["id"] for unit in module._runnable_work_units(state)] == ["WU-C"]
+
+
+def test_r8_mixed_graph_runs_only_unrelated_ready_unit() -> None:
+    dependency = _r8_canonical_done_unit("WU-A", "Complete the prerequisite")
+    dependency["blocker"] = {"code": "LOCAL_BLOCKER", "detail": "unresolved"}
+    dependent = module._new_work_unit(
+        "WU-B", "Run after the prerequisite", dependencies=["WU-A"], optional=True,
+    )
+    unrelated = module._new_work_unit("WU-C", "Run independent authorized work")
+    already_running = module._new_work_unit("WU-D", "Continue already-running work")
+    already_running["status"] = "RUNNING"
+    state = {"WORK_UNITS": [dependency, dependent, unrelated, already_running]}
+
+    assert [unit["id"] for unit in module._runnable_work_units(state)] == ["WU-C"]
+    assert module._select_work_unit_batch(state) == ["WU-C"]
+    assert dependent["status"] == "READY"
+    assert dependent["attempts"] == 0
+    assert unrelated["status"] == "RUNNING"
+    assert already_running["status"] == "RUNNING"
+
+
+def test_r8_deferred_dependency_reopens_only_for_canonical_done() -> None:
+    dependency = _r8_canonical_done_unit("WU-001", "Complete the prerequisite")
+    dependency.update({
+        "blocker": {"code": "LOCAL_BLOCKER", "detail": "unresolved"},
+        "next_action": "Retry validation",
+    })
+    dependent = module._new_work_unit(
+        "WU-002", "Run only after the prerequisite", dependencies=["WU-001"],
+    )
+    dependent.update({
+        "status": "DEFERRED",
+        "blocker": {"code": "DEPENDENCY_UNAVAILABLE", "dependencies": ["WU-001"]},
+        "last_checkpoint": "DEFERRED_BY_DEPENDENCY",
+    })
+    state = {"WORK_UNITS": [dependency, dependent]}
+    blocker_before = dict(dependent["blocker"])
+
+    assert module._reconsider_dependency_deferred_units(state) == 0
+    assert dependent["status"] == "DEFERRED"
+    assert dependent["blocker"] == blocker_before
+
+    dependency["blocker"] = {}
+    dependency["next_action"] = "No further action"
+
+    assert module._done_worker_result_terminal(dependency) is True
+    assert module._reconsider_dependency_deferred_units(state) == 1
+    assert dependent["status"] == "READY"
+    assert dependent["blocker"] == {}
 
 
 def test_r3_permission_failure_signature_uses_operation_target_and_error_class() -> None:
@@ -955,7 +2551,10 @@ def test_r3_preexisting_anti_bloat_residue_does_not_generate_task_correction() -
 def test_r3_zero_diff_completion_and_incomplete_zero_diff_converge_without_correction() -> None:
     complete = module._new_state("complete", "Audit and make no change if unwarranted", "independent-code", 2)
     audit = module._new_work_unit("WU-001", "Complete the authorized audit")
-    audit["status"] = "DONE"
+    audit.update({
+        "status": "DONE", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "VALIDATED", "next_action": "No further action",
+    })
     complete["WORK_UNITS"] = [audit]
     assert module._queue_correction_work_unit(
         complete, "FINAL_REVIEW", "No reviewable diff; the clean worktree has zero files changed.", "p0",
@@ -1590,7 +3189,10 @@ def _contract_lifecycle_state(
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True, exist_ok=True)
     done = module._new_work_unit("WU-001", "Complete the initial authorized research")
-    done.update({"status": "DONE", "validation_state": "PASS"})
+    done.update({
+        "status": "DONE", "validation_state": "PASS",
+        "last_checkpoint": "COMPLETED", "next_action": "No further action",
+    })
     state.update({
         "HARNESS_STATE": "RUNNING", "CURRENT_PHASE": "AUTONOMOUS_EXECUTION_LOOP",
         "NEXT_ACTION_CODE": "SELECT_WORK", "WORKTREE": str(worktree),
@@ -1682,14 +3284,11 @@ def test_research_breadth_unmet_queues_autonomous_continuation(
     observed: list[dict] = []
 
     def breadth_review(task_id: str) -> str:
-        module.update_task(task_id, {
-            "LAST_REVIEW_STATUS": "FIX_REQUIRED",
-            "REVIEW_FINDINGS": (
-                "RESEARCH_BREADTH_UNMET: mechanism families and information-set categories "
-                "remain below the authorized contract; add distinct in-scope research."
-            ),
-        }, new_state="REVIEWING")
-        return "FIX_REQUIRED"
+        return record_fake_review(
+            task_id, "FIX_REQUIRED",
+            "RESEARCH_BREADTH_UNMET: mechanism families and information-set categories "
+            "remain below the authorized contract; add distinct in-scope research.",
+        )
 
     monkeypatch.setattr(module, "_perform_review", breadth_review)
     monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "breadth-progress")
@@ -1721,11 +3320,10 @@ def test_reviewer_fix_required_runs_correction_before_another_final_review(
 
     def fix_review(task_id: str) -> str:
         calls["review"] += 1
-        module.update_task(task_id, {
-            "LAST_REVIEW_STATUS": "FIX_REQUIRED",
-            "REVIEW_FINDINGS": "AssertionError in scripts/maintenance/harness_task.py requires an in-scope correction.",
-        }, new_state="REVIEWING")
-        return "FIX_REQUIRED"
+        return record_fake_review(
+            task_id, "FIX_REQUIRED",
+            "AssertionError in scripts/maintenance/harness_task.py requires an in-scope correction.",
+        )
 
     def correction_worker(task_id: str, prompt: str, review: bool = False, role: str = "") -> dict:
         calls["worker"] += 1
@@ -1829,7 +3427,7 @@ def test_repeated_identical_runtime_continuation_without_progress_converges_non_
             "id": unit_id, "status": "RETRY", "produced_outputs": [],
             "validation_state": "PASS",
             "blocker": {
-                "kind": "SAFETY", "signature": "MIN_SUBSTANTIVE_RUNTIME_UNMET",
+                "kind": "LOCAL", "signature": "MIN_SUBSTANTIVE_RUNTIME_UNMET",
                 "detail": "MIN_SUBSTANTIVE_RUNTIME_UNMET: canonical productive work did not advance",
             },
             "last_checkpoint": "NO_CANONICAL_PROGRESS",
@@ -1837,8 +3435,9 @@ def test_repeated_identical_runtime_continuation_without_progress_converges_non_
             "reuse_decision": "EXTEND", "reuse_evidence": ["existing task"],
         }
         findings = (
-            "TASK_RESULT=BLOCKED\nBLOCKER_KIND=SAFETY\n"
+            "TASK_RESULT=BLOCKED\nHOLDOUT_CONTAMINATION_RISK=NONE\nBLOCKER_KIND=LOCAL\n"
             f"WORK_UNIT_RESULTS_JSON={json.dumps([row], separators=(',', ':'))}\n"
+            "CHANGED_PATHS_JSON=[]\nNEW_COMPONENT_JUSTIFICATION=NONE\n"
             "MIN_SUBSTANTIVE_RUNTIME_UNMET"
         )
         module.update_task(task_id, {
@@ -1883,10 +3482,7 @@ def test_already_valid_completed_contract_has_no_lifecycle_regression(
 
     def final_review(task_id: str) -> str:
         calls["review"] += 1
-        module.update_task(task_id, {
-            "LAST_REVIEW_STATUS": "PASS", "REVIEW_FINDINGS": "No blocking findings.",
-        }, new_state="REVIEWING")
-        return "PASS"
+        return record_fake_review(task_id, "PASS", "No blocking findings.")
 
     monkeypatch.setattr(module, "_run_final_validation", final_validation)
     monkeypatch.setattr(module, "_perform_review", final_review)
@@ -1992,11 +3588,10 @@ def test_r3_incomplete_zero_diff_review_terminalizes_without_correction_loop(
 
     def incomplete_review(task_id: str) -> str:
         reviews["count"] += 1
-        module.update_task(task_id, {
-            "LAST_REVIEW_STATUS": "FIX_REQUIRED",
-            "REVIEW_FINDINGS": "Task incomplete: no reviewable output and mandatory work remains blocked.",
-        }, new_state="REVIEWING")
-        return "FIX_REQUIRED"
+        return record_fake_review(
+            task_id, "FIX_REQUIRED",
+            "Task incomplete: no reviewable output and mandatory work remains blocked.",
+        )
 
     monkeypatch.setattr(module, "_perform_review", incomplete_review)
     monkeypatch.setattr(module, "_worktree_progress_hash", lambda path: "zero-diff")
@@ -2117,10 +3712,15 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
     def result_row(unit_id: str, status: str, *, blocker: dict | None = None) -> dict:
         current = module.load_state("test-task")
         unit = module._unit_by_id(current, unit_id) or {}
+        done = status == "DONE"
         return {
             "id": unit_id, "status": status, "produced_outputs": [f"checkpoint/{unit_id}"],
-            "validation_state": "WORKER_CHECKPOINT", "blocker": blocker or {},
-            "last_checkpoint": f"TURN_{len(worker_batches) + 1}",
+            "validation_state": "PASS" if done else "WORKER_CHECKPOINT",
+            "blocker": blocker or {},
+            "last_checkpoint": (
+                f"TURN_{len(worker_batches) + 1}_COMPLETED"
+                if done else f"TURN_{len(worker_batches) + 1}"
+            ),
             "next_action": "Retry differently" if status == "RETRY" else "No further action",
             "reuse_decision": unit.get("reuse_decision", "UNKNOWN"),
             "reuse_evidence": unit.get("reuse_evidence", []),
@@ -2187,8 +3787,10 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
             task_result, exit_code = "COMPLETED", 0
         message = (
             f"TASK_RESULT={task_result}\nHOLDOUT_CONTAMINATION_RISK=NONE\n"
+            f"BLOCKER_KIND={'LOCAL' if task_result == 'BLOCKED' else 'NONE'}\n"
             f"WORK_UNIT_RESULTS_JSON={json.dumps(rows, separators=(',', ':'))}\n"
-            "CHANGED_PATHS_JSON=[\"scripts/existing_shared_utility.py\"]"
+            "CHANGED_PATHS_JSON=[\"scripts/existing_shared_utility.py\"]\n"
+            "NEW_COMPONENT_JUSTIFICATION=NONE"
         )
         module.update_task(task_id, {
             "WORKER_FINDINGS": message, "PENDING_UNIT_RESULTS": rows,
@@ -2216,11 +3818,10 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
             if validation_calls["review"] == 1
             else "Storage resolver parity still permits the repository root as external in scripts/common/storage_paths.ps1. All baseline hashes match Git blobs; that residue is pre-existing."
         )
-        module.update_task(task_id, {
-            "LAST_REVIEW_STATUS": classification, "REVIEW_FINDINGS": findings,
-            "CURRENT_PHASE": "FINAL_INDEPENDENT_REVIEW",
-        }, new_state="REVIEWING", event="REVIEW_CLASSIFIED", detail=classification)
-        return classification
+        return record_fake_review(
+            task_id, classification, findings,
+            CURRENT_PHASE="FINAL_INDEPENDENT_REVIEW",
+        )
 
     def cleanup(task_id: str) -> None:
         validation_calls["cleanup"] += 1
@@ -2511,10 +4112,18 @@ def test_normal_finalization_cleans_controller_owned_task_temp_runtime(
     worktree.mkdir(parents=True)
     runtime = module._ensure_task_temp_runtime("test-task")
     state = module.load_state("test-task")
+    unit = module._new_work_unit("WU-001", "Complete the bounded repair")
+    unit.update({
+        "status": "DONE", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "No further action",
+    })
     state.update({
         "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
-        "NEXT_ACTION_CODE": "FINALIZE", "LAST_REVIEW_STATUS": "PASS",
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
     })
+    state.update(canonical_review_fields(state, "PASS", "No blocking findings."))
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
         "changed": [], "created": [], "dependencies": [],
@@ -2530,7 +4139,63 @@ def test_normal_finalization_cleans_controller_owned_task_temp_runtime(
     assert not runtime.exists()
 
 
-def test_r31_historical_pilot_semantic_replay_reconciles_local_residue(
+def test_r6_finalization_rejects_missing_work_unit_evidence(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [],
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
+    })
+    state.update(canonical_review_fields(state, "PASS", "No blocking findings."))
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/maintenance/existing.py"], "created": [],
+        "dependencies": [], "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["TERMINAL_OUTCOME"] == "FAILED"
+    assert final["TERMINAL_SUCCESS"] is False
+
+
+def test_r6_terminal_local_reconciliation_rejects_nonterminal_done_candidate() -> None:
+    state = module._new_state("test-task", "Complete one bounded repair", "independent-code", 2)
+    blocker = {
+        "kind": "LOCAL",
+        "conditions": ["Local validation retry remains unresolved in the sandbox environment"],
+    }
+    unit = module._new_work_unit("WU-001", "Complete the reviewed maintenance correction")
+    unit.update({
+        "status": "BLOCKED_LOCAL",
+        "produced_outputs": ["scripts/maintenance/existing.py"],
+        "validation_state": "PASS",
+        "blocker": blocker,
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "Retry validation",
+    })
+    state.update({
+        "WORK_UNITS": [unit], "CONTROLLER_VALIDATION_STATUS": "PASS",
+    })
+    state.update(canonical_review_fields(state, "PASS", "No blocking review findings."))
+
+    completed, deferred = module._reconcile_terminal_local_environment_units(state)
+
+    assert (completed, deferred) == (0, 0)
+    assert unit["status"] == "BLOCKED_LOCAL"
+    assert unit["blocker"] == blocker
+    assert unit["next_action"] == "Retry validation"
+    assert module._done_worker_result_terminal({**unit, "status": "DONE"}) is False
+
+
+def test_r6_finalization_cannot_override_nonterminal_local_unit(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     state = create_state()
@@ -2538,18 +4203,16 @@ def test_r31_historical_pilot_semantic_replay_reconciles_local_residue(
     worktree.mkdir(parents=True)
     blocker = {
         "kind": "LOCAL",
-        "conditions": [
-            "FAST3 guard reports inherited frozen-baseline identity failures outside this diff",
-            "pytest-created task cache is inaccessible and cleanup was rejected before execution",
-        ],
+        "conditions": ["Local validation retry remains unresolved in the sandbox environment"],
     }
     unit = module._new_work_unit("FIX-002", "Complete the reviewed maintenance correction")
     unit.update({
         "status": "BLOCKED_LOCAL",
         "produced_outputs": ["scripts/maintenance/existing.py"],
-        "validation_state": "TASK_TESTS_PASS_GLOBAL_GUARD_FAIL",
+        "validation_state": "PASS",
         "blocker": blocker,
-        "last_checkpoint": "CORRECTION_IMPLEMENTED_AND_FOCUSED_TESTS_PASS",
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "Retry validation",
     })
     local_evidence = {
         "identity": "historical-local-residue", "work_unit_id": "FIX-002",
@@ -2559,10 +4222,12 @@ def test_r31_historical_pilot_semantic_replay_reconciles_local_residue(
         "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
         "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
         "CONTROLLER_VALIDATION_STATUS": "PASS",
-        "LAST_REVIEW_STATUS": "PASS_WITH_WARNINGS",
-        "REVIEW_FINDINGS": "No blocking findings. The residue is local/pre-existing and outputs are complete.",
         "LOCAL_BLOCKED_WORK": [local_evidence],
     })
+    state.update(canonical_review_fields(
+        state, "PASS",
+        "No blocking findings.",
+    ))
     module._write_state_unlocked("test-task", state)
     changes = {
         "changed": ["scripts/maintenance/existing.py"], "created": [], "dependencies": [],
@@ -2575,13 +4240,121 @@ def test_r31_historical_pilot_semantic_replay_reconciles_local_residue(
 
     final = module.load_state("test-task")
     reconciled = final["WORK_UNITS"][0]
-    assert final["HARNESS_STATE"] == "COMPLETED"
-    assert final["TERMINAL_OUTCOME"] == "COMPLETED"
-    assert final["TERMINAL_SUCCESS"] is True
-    assert reconciled["status"] == "DONE"
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["TERMINAL_OUTCOME"] == "FAILED"
+    assert final["TERMINAL_SUCCESS"] is False
+    assert reconciled["status"] == "BLOCKED_LOCAL"
     assert reconciled["blocker"] == blocker
+    assert reconciled["next_action"] == "Retry validation"
     assert final["LOCAL_BLOCKED_WORK"] == [local_evidence]
-    assert final["TELEMETRY"]["local_blockers_bypassed"] == 1
+    assert final["TELEMETRY"]["local_blockers_bypassed"] == 0
+
+
+def test_r6_r2_compat_finalization_rejects_nonterminal_structured_unit(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = use_r2_compat_state(create_state())
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    blocker = {
+        "kind": "LOCAL",
+        "conditions": ["Local validation retry remains unresolved"],
+    }
+    unit = module._new_work_unit("WU-001", "Complete the required repair")
+    unit.update({
+        "status": "BLOCKED_LOCAL",
+        "produced_outputs": ["scripts/maintenance/existing.py"],
+        "validation_state": "PASS", "blocker": blocker,
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "Retry validation",
+    })
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
+    })
+    state.update(canonical_review_fields(state, "PASS", "No blocking findings."))
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/maintenance/existing.py"], "created": [],
+        "dependencies": [], "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "BLOCKED"
+    assert final["ACTIVE_BLOCKERS"][0]["code"] == "INCOMPLETE_REQUIRED_WORK_UNITS"
+    assert final["WORK_UNITS"][0]["status"] == "BLOCKED_LOCAL"
+    assert final["WORK_UNITS"][0]["blocker"] == blocker
+    assert final["WORK_UNITS"][0]["next_action"] == "Retry validation"
+
+
+def test_r6_finalization_rejects_noncanonical_persisted_done(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete the required repair")
+    unit.update({
+        "status": "DONE", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE", "next_action": "Retry validation",
+    })
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
+    })
+    state.update(canonical_review_fields(state, "PASS", "No blocking findings."))
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/maintenance/existing.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert module._done_worker_result_terminal(final["WORK_UNITS"][0]) is False
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["TERMINAL_OUTCOME"] == "FAILED"
+    assert final["TERMINAL_SUCCESS"] is False
+
+
+def test_r6_controller_and_review_pass_cannot_override_required_retry(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete the required repair")
+    unit.update({
+        "status": "RETRY", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE", "next_action": "Retry validation",
+    })
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
+    })
+    state.update(canonical_review_fields(state, "PASS", "No blocking findings."))
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/maintenance/existing.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["WORK_UNITS"][0]["status"] == "RETRY"
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["TERMINAL_OUTCOME"] == "FAILED"
+    assert final["TERMINAL_SUCCESS"] is False
 
 
 @pytest.mark.parametrize(
@@ -2615,9 +4388,12 @@ def test_r31_incomplete_local_environment_work_is_deferred(
     state.update({
         "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
         "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
-        "CONTROLLER_VALIDATION_STATUS": "PASS", "LAST_REVIEW_STATUS": "PASS_WITH_WARNINGS",
-        "REVIEW_FINDINGS": "No blocking findings; the incomplete unit is safely deferable.",
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
     })
+    state.update(canonical_review_fields(
+        state, "PASS_WITH_WARNINGS",
+        "No blocking findings; the incomplete unit is safely deferable.",
+    ))
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
         "changed": [], "created": [], "dependencies": [], "changed_count": 0, "created_count": 0,
@@ -2639,7 +4415,10 @@ def test_r311_optional_blocked_local_does_not_fail_completed_mandatory_work(
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
     mandatory = module._new_work_unit("WU-001", "Complete the mandatory repair")
-    mandatory.update({"status": "DONE", "validation_state": "PASS"})
+    mandatory.update({
+        "status": "DONE", "validation_state": "PASS",
+        "last_checkpoint": "VALIDATED", "next_action": "No further action",
+    })
     optional = module._new_work_unit("WU-002", "Run an optional diagnostic", optional=True)
     optional.update({
         "status": "BLOCKED_LOCAL",
@@ -2648,9 +4427,12 @@ def test_r311_optional_blocked_local_does_not_fail_completed_mandatory_work(
     state.update({
         "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
         "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [mandatory, optional],
-        "CONTROLLER_VALIDATION_STATUS": "PASS", "LAST_REVIEW_STATUS": "PASS_WITH_WARNINGS",
-        "REVIEW_FINDINGS": "No blocking findings; the optional diagnostic remains unavailable.",
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
     })
+    state.update(canonical_review_fields(
+        state, "PASS_WITH_WARNINGS",
+        "No blocking findings; the optional diagnostic remains unavailable.",
+    ))
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
         "changed": ["scripts/maintenance/existing.py"], "created": [], "dependencies": [],
@@ -2691,9 +4473,12 @@ def test_r31_terminal_reconciliation_keeps_real_failures_failed(
     state.update({
         "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
         "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [unit],
-        "CONTROLLER_VALIDATION_STATUS": controller, "LAST_REVIEW_STATUS": review,
-        "REVIEW_FINDINGS": "Blocking finding remains." if review == "FIX_REQUIRED" else "No blocking findings.",
+        "CONTROLLER_VALIDATION_STATUS": controller,
     })
+    state.update(canonical_review_fields(
+        state, review,
+        "Blocking finding remains." if review == "FIX_REQUIRED" else "No blocking findings.",
+    ))
     module._write_state_unlocked("test-task", state)
     monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
         "changed": ["scripts/maintenance/existing.py"], "created": [], "dependencies": [],
@@ -2952,6 +4737,28 @@ def test_known_nested_windows_pytest_temp_failure_is_environment_limited() -> No
     assert status == "ENVIRONMENT_LIMITED"
     assert limitation == module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION
     assert module._classify_worker_test_execution(results, "", 1)[0] == "REAL_TEST_FAILURE"
+
+
+def test_complete_command_output_precedes_environment_limitation_classification() -> None:
+    complete_output = (
+        "FAILED focused_test.py::test_value - AssertionError: assert 1 == 2\n"
+        + "x" * 9_000
+        + "\n"
+        + KNOWN_NESTED_PYTEST_TEMP_FAILURE
+    )
+    event = {"aggregated_output": complete_output}
+    captured = module._command_event_output(event)
+    results = [{
+        "command": "python -m pytest -q focused_test.py",
+        "exit_code": 1,
+        "output": captured,
+    }]
+
+    status, limitation, _ = module._classify_worker_test_execution(results, "", 0)
+
+    assert captured == complete_output
+    assert status == "REAL_TEST_FAILURE"
+    assert limitation == ""
 
 
 def test_worker_pytest_assertion_failure_is_real_test_failure() -> None:
@@ -3230,7 +5037,10 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
 
     def complete_review(task_id: str, prompt: str, review: bool = False) -> dict:
         observed_started.append(module.load_state(task_id))
-        return {"exit_code": 0, "message": "REVIEW_STATUS=PASS", "tests": []}
+        return {
+            "exit_code": 0, "message": "REVIEW_STATUS=PASS", "tests": [],
+            "review_classification": "PASS",
+        }
 
     monkeypatch.setattr(module, "_run_codex_turn", complete_review)
     assert module._perform_review("test-task") == "PASS"
@@ -3251,6 +5061,43 @@ def test_independent_review_started_and_completed_checkpoints_are_coherent(
     assert reviewed["WORKER_STATUS"] == "REVIEW_EXITED_0"
     assert "active" not in reviewed["CURRENT_ACTION"].lower()
     assert reviewed["FILES_CHANGED"] == ["reviewed.py"]
+
+
+@pytest.mark.parametrize("status", ["PASS", "FIX_REQUIRED"])
+def test_complete_review_human_boundary_dominates_status_for_all_dispatch_versions(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, status: str,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({"HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree)})
+    module._write_state_unlocked("test-task", state)
+    fingerprint = {"entry_count": 1, "sha256": "same"}
+    monkeypatch.setattr(module, "_repo_status_fingerprint", lambda path: fingerprint)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["reviewed.py"], "created": [], "dependencies": [],
+        "changed_count": 1, "created_count": 0,
+    })
+    authoritative_message = (
+        "Human authorization is required before this correction may proceed.\n"
+        + "x" * 9_000
+        + f"\nREVIEW_STATUS={status}"
+    )
+    evidence = module._ingest_review_authority_evidence(state, authoritative_message)
+    evidence["classification"] = status
+    monkeypatch.setattr(module, "_run_codex_turn", lambda *args, **kwargs: {
+        "exit_code": 0,
+        "message": authoritative_message[-module.MAX_TEXT:],
+        "tests": [],
+        "review_classification": status,
+        "review_authority_evidence": evidence,
+    })
+
+    assert module._perform_review("test-task") == "HUMAN_DECISION_REQUIRED"
+    reviewed = module.load_state("test-task")
+    assert reviewed["REVIEW_AUTHORITY_EVIDENCE"]["requires_human_boundary"] is True
+    assert reviewed["REVIEW_CLASSIFICATION"] == "HUMAN_DECISION_REQUIRED"
+    assert reviewed["NEXT_ACTION_CODE"] == "FINAL_REVIEW"
 
 
 def test_controller_targeted_pytest_uses_task_runtime_cache_and_basetemp(
@@ -3434,6 +5281,59 @@ def test_hard_guard_detects_unsafe_2026_feedback_actions(goal: str) -> None:
 
 def test_hard_guard_allows_explicitly_negated_2026_training_and_tuning() -> None:
     assert module.hard_guard_conflicts("Do not use 2026 outcomes to train or tune the model.") == []
+    assert module.hard_guard_conflicts("Do not attempt to modify frozen asset.") == []
+    assert module.hard_guard_conflicts("Do not try to write to canonical data.") == []
+    assert module.hard_guard_conflicts(
+        "Do not plan to use 2026 outcomes to tune the threshold."
+    ) == []
+
+
+def test_negation_scope_cannot_hide_unrelated_authority_or_safety_actions() -> None:
+    assert module._explicit_human_boundary_evidence(
+        "No timing issue can arise, human authorization is required."
+    ) is True
+    assert module.hard_guard_conflicts(
+        "This note is not about timing because modify frozen asset."
+    ) == ["FROZEN_ASSET_MUTATION"]
+    assert module.hard_guard_conflicts(
+        "No timing issue can arise, modify canonical data."
+    ) == ["CANONICAL_DATA_MUTATION"]
+    for instruction in (
+        "This note is not about timing because use 2026 outcomes to tune the threshold.",
+        "No timing issue can arise, use 2026 outcomes to tune the threshold.",
+    ):
+        assert module.hard_guard_conflicts(instruction) == ["EXPOSED_2026_OPTIMIZATION"]
+    assert module.hard_guard_conflicts(
+        "No timing issue, operator can directly modify frozen asset."
+    ) == ["FROZEN_ASSET_MUTATION"]
+    assert module.hard_guard_conflicts(
+        "No timing issue, the worker may modify canonical data."
+    ) == ["CANONICAL_DATA_MUTATION"]
+    for actor in ("operator", "a worker", "automation", "tooling"):
+        assert module.hard_guard_conflicts(
+            f"No timing issue and {actor} can modify frozen asset."
+        ) == ["FROZEN_ASSET_MUTATION"]
+    assert module.hard_guard_conflicts(
+        "No timing issue remains, schedule looks clear, and automation can modify frozen asset."
+    ) == ["FROZEN_ASSET_MUTATION"]
+    assert module.hard_guard_conflicts(
+        "No timing concern persists, schedule stayed stable, and tooling may modify canonical data."
+    ) == ["CANONICAL_DATA_MUTATION"]
+    assert module.hard_guard_conflicts(
+        "No timing issue because we can use 2026 outcomes to tune the threshold."
+    ) == ["EXPOSED_2026_OPTIMIZATION"]
+    assert module.hard_guard_conflicts(
+        "No timing issue: we can directly promote it to production."
+    ) == ["AUTO_MERGE_OR_PRODUCTION_PROMOTION"]
+    for separator in (
+        "although", "and", "(", "\u2014",
+    ):
+        instruction = (
+            f"No timing issue {separator} we can modify frozen asset."
+            if separator != "(" else
+            "No timing issue (we can modify frozen asset)."
+        )
+        assert module.hard_guard_conflicts(instruction) == ["FROZEN_ASSET_MUTATION"]
 
 
 def test_ambiguous_real_training_request_fails_closed() -> None:
@@ -3483,6 +5383,10 @@ def local_persisted_start_roots(monkeypatch: pytest.MonkeyPatch):
         repository = root / "primary-repository"
         repository.mkdir()
         monkeypatch.setattr(module, "REPO", repository)
+        monkeypatch.setattr(
+            module, "_capture_start_repo_identity",
+            lambda: ("f" * 40, str(repository.resolve())),
+        )
         monkeypatch.setenv("USTQ_HARNESS_STATE_ROOT", str(root / "daily" / "harness_r2"))
         monkeypatch.setenv("USTQ_HARNESS_WORKTREE_ROOT", str(root / "worktrees"))
         yield root
@@ -3505,7 +5409,13 @@ def test_start_goal_uses_dedicated_length_limit(
     monkeypatch.setattr(module, "_spawn_supervisor", lambda task_id: 4242)
 
     assert module.command_start(args) == 0
-    assert module.load_state(f"goal-{goal_length}")["GOAL"] == goal
+    stored = module.load_state(f"goal-{goal_length}")
+    assert stored["GOAL"] == goal
+    assert stored["START_REPO_HEAD"] == "f" * 40
+    assert stored["START_REPO_TOPLEVEL"] == str(module.REPO.resolve())
+    assert stored["WORKTREE_BASE_HEAD"] == ""
+    assert stored["WORKTREE_ACTUAL_HEAD"] == ""
+    assert stored["BASE_HEAD_IDENTITY_STATUS"] == "PENDING"
 
 
 @pytest.mark.parametrize("goal", ["", "x" * 12_001])
@@ -3771,6 +5681,267 @@ def test_worktree_isolation_rejects_primary_and_nested_paths(isolated_roots: tup
         module.assert_isolated_worktree_path(module.REPO, module.REPO, root)
 
 
+def _install_pinned_worktree_git(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    start_head: str,
+    mutable_primary_head: str,
+    snapshots: dict[str, dict[str, str]],
+) -> list[tuple[list[str], Path]]:
+    calls: list[tuple[list[str], Path]] = []
+    created_source = {"head": ""}
+
+    def fake_git(
+        arguments: list[str], cwd: Path = module.REPO, timeout: int = 30,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((list(arguments), Path(cwd)))
+        if arguments == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(arguments, 0, str(Path(cwd).resolve()), "")
+        if arguments == ["rev-parse", "--verify", f"{start_head}^{{commit}}"]:
+            return subprocess.CompletedProcess(arguments, 0, start_head + "\n", "")
+        if arguments[:3] == ["show-ref", "--verify", "--quiet"]:
+            return subprocess.CompletedProcess(arguments, 1, "", "")
+        if arguments[:2] == ["worktree", "add"]:
+            worktree = Path(arguments[4])
+            source = arguments[-1]
+            created_source["head"] = source
+            worktree.mkdir(parents=True)
+            for relative_path, content in snapshots[source].items():
+                target = worktree / relative_path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+            return subprocess.CompletedProcess(arguments, 0, "created", "")
+        if arguments == ["rev-parse", "HEAD"]:
+            value = (
+                mutable_primary_head
+                if Path(cwd).resolve() == module.REPO.resolve()
+                else created_source["head"]
+            )
+            return subprocess.CompletedProcess(arguments, 0, value + "\n", "")
+        if arguments == ["rev-parse", "--git-common-dir"]:
+            return subprocess.CompletedProcess(arguments, 0, str(module.REPO / ".git"), "")
+        raise AssertionError(f"unexpected git call: {arguments} in {cwd}")
+
+    monkeypatch.setattr(module, "_git", fake_git)
+    return calls
+
+
+def test_worktree_creation_uses_task_start_head_when_primary_advances(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_head = "a" * 40
+    advanced_head = "b" * 40
+    state = create_state(task_id="pinned-advance")
+    state.update({
+        "START_REPO_HEAD": start_head,
+        "START_REPO_TOPLEVEL": str(module.REPO.resolve()),
+    })
+    module._write_state_unlocked("pinned-advance", state)
+    calls = _install_pinned_worktree_git(
+        monkeypatch,
+        start_head=start_head,
+        mutable_primary_head=advanced_head,
+        snapshots={
+            start_head: {"at-start.txt": "pinned\n"},
+            advanced_head: {"at-start.txt": "pinned\n", "after-start.txt": "mutable head\n"},
+        },
+    )
+
+    worktree, _, base_head = module._create_worktree("pinned-advance")
+
+    stored = module.load_state("pinned-advance")
+    assert base_head == start_head
+    assert stored["START_REPO_HEAD"] == start_head
+    assert stored["WORKTREE_BASE_HEAD"] == start_head
+    assert stored["WORKTREE_ACTUAL_HEAD"] == start_head
+    assert stored["BASE_HEAD_IDENTITY_STATUS"] == "PASS"
+    assert (worktree / "at-start.txt").read_text(encoding="utf-8") == "pinned\n"
+    assert not (worktree / "after-start.txt").exists()
+    add_call = next(arguments for arguments, _ in calls if arguments[:2] == ["worktree", "add"])
+    assert add_call[-1] == start_head
+    assert not any(
+        arguments == ["rev-parse", "HEAD"] and cwd.resolve() == module.REPO.resolve()
+        for arguments, cwd in calls
+    )
+
+
+def test_stale_primary_head_cannot_replace_newer_task_start_head(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_head = "a" * 40
+    start_head = "b" * 40
+    state = create_state(task_id="pinned-stale")
+    state.update({
+        "START_REPO_HEAD": start_head,
+        "START_REPO_TOPLEVEL": str(module.REPO.resolve()),
+    })
+    module._write_state_unlocked("pinned-stale", state)
+    calls = _install_pinned_worktree_git(
+        monkeypatch,
+        start_head=start_head,
+        mutable_primary_head=old_head,
+        snapshots={
+            old_head: {"old.txt": "old\n"},
+            start_head: {"old.txt": "old\n", "introduced-at-start.txt": "visible\n"},
+        },
+    )
+
+    worktree, _, _ = module._create_worktree("pinned-stale")
+
+    stored = module.load_state("pinned-stale")
+    assert stored["START_REPO_HEAD"] == start_head
+    assert stored["WORKTREE_BASE_HEAD"] == start_head
+    assert stored["WORKTREE_ACTUAL_HEAD"] == start_head
+    assert stored["BASE_HEAD_IDENTITY_STATUS"] == "PASS"
+    assert (worktree / "introduced-at-start.txt").read_text(encoding="utf-8") == "visible\n"
+    add_call = next(arguments for arguments, _ in calls if arguments[:2] == ["worktree", "add"])
+    assert add_call[-1] == start_head
+    assert not any(
+        arguments == ["rev-parse", "HEAD"] and cwd.resolve() == module.REPO.resolve()
+        for arguments, cwd in calls
+    )
+
+
+def test_actual_worktree_head_mismatch_is_persisted_and_rejected(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_head = "a" * 40
+    actual_head = "b" * 40
+    state = create_state(task_id="actual-mismatch")
+    state.update({
+        "START_REPO_HEAD": start_head,
+        "START_REPO_TOPLEVEL": str(module.REPO.resolve()),
+    })
+    module._write_state_unlocked("actual-mismatch", state)
+    calls: list[tuple[list[str], Path]] = []
+
+    def fake_git(
+        arguments: list[str], cwd: Path = module.REPO, timeout: int = 30,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append((list(arguments), Path(cwd)))
+        if arguments == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(arguments, 0, str(Path(cwd).resolve()), "")
+        if arguments == ["rev-parse", "--verify", f"{start_head}^{{commit}}"]:
+            return subprocess.CompletedProcess(arguments, 0, start_head + "\n", "")
+        if arguments[:3] == ["show-ref", "--verify", "--quiet"]:
+            return subprocess.CompletedProcess(arguments, 1, "", "")
+        if arguments[:2] == ["worktree", "add"]:
+            Path(arguments[4]).mkdir(parents=True)
+            return subprocess.CompletedProcess(arguments, 0, "created", "")
+        if arguments == ["rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(arguments, 0, actual_head + "\n", "")
+        if arguments == ["rev-parse", "--git-common-dir"]:
+            return subprocess.CompletedProcess(arguments, 0, str(module.REPO / ".git"), "")
+        raise AssertionError(f"unexpected git call: {arguments} in {cwd}")
+
+    monkeypatch.setattr(module, "_git", fake_git)
+
+    with pytest.raises(module.HarnessError, match="^BLOCKED_HARNESS_BASE_HEAD_MISMATCH:"):
+        module._create_worktree("actual-mismatch")
+
+    stored = module.load_state("actual-mismatch")
+    assert stored["WORKTREE_BASE_HEAD"] == start_head
+    assert stored["WORKTREE_ACTUAL_HEAD"] == actual_head
+    assert stored["BASE_HEAD_IDENTITY_STATUS"] == "BLOCKED_HARNESS_BASE_HEAD_MISMATCH"
+    add_call = next(arguments for arguments, _ in calls if arguments[:2] == ["worktree", "add"])
+    assert add_call[-1] == start_head
+
+
+def test_start_repo_toplevel_mismatch_blocks_before_worktree_add(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state(task_id="toplevel-mismatch")
+    state.update({
+        "START_REPO_HEAD": "a" * 40,
+        "START_REPO_TOPLEVEL": str((module.REPO.parent / "different-repository").resolve()),
+    })
+    module._write_state_unlocked("toplevel-mismatch", state)
+    calls: list[list[str]] = []
+
+    def fake_git(
+        arguments: list[str], cwd: Path = module.REPO, timeout: int = 30,
+    ) -> subprocess.CompletedProcess[str]:
+        calls.append(list(arguments))
+        if arguments == ["rev-parse", "--show-toplevel"]:
+            return subprocess.CompletedProcess(arguments, 0, str(module.REPO.resolve()), "")
+        raise AssertionError(f"unexpected git call after toplevel mismatch: {arguments}")
+
+    monkeypatch.setattr(module, "_git", fake_git)
+
+    with pytest.raises(module.HarnessError, match="^BLOCKED_HARNESS_BASE_HEAD_MISMATCH:"):
+        module._create_worktree("toplevel-mismatch")
+
+    stored = module.load_state("toplevel-mismatch")
+    assert stored["BASE_HEAD_IDENTITY_STATUS"] == "BLOCKED_HARNESS_BASE_HEAD_MISMATCH"
+    assert calls == [["rev-parse", "--show-toplevel"]]
+    assert not any(arguments[:2] == ["worktree", "add"] for arguments in calls)
+
+
+def test_legacy_state_missing_start_identity_blocks_without_recapturing_head(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_state(task_id="legacy-no-start-head")
+    monkeypatch.setattr(
+        module, "_git",
+        lambda *args, **kwargs: pytest.fail("legacy state must not recapture mutable primary HEAD"),
+    )
+
+    with pytest.raises(module.HarnessError, match="^BLOCKED_HARNESS_BASE_HEAD_MISMATCH:"):
+        module._create_worktree("legacy-no-start-head")
+
+    stored = module.load_state("legacy-no-start-head")
+    assert stored["BASE_HEAD_IDENTITY_STATUS"] == "BLOCKED_HARNESS_BASE_HEAD_MISMATCH"
+    assert stored["WORKTREE_ACTUAL_HEAD"] == ""
+
+
+@pytest.mark.parametrize("harness_version", [2, 3])
+def test_base_head_mismatch_dispatch_blocks_exactly_and_skips_preflight(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+    harness_version: int,
+) -> None:
+    state = create_state(task_id=f"dispatch-mismatch-{harness_version}")
+    if harness_version == 2:
+        use_r2_compat_state(state)
+    state.update({
+        "HARNESS_VERSION": harness_version,
+        "HARNESS_STATE": "PLANNING",
+        "NEXT_ACTION_CODE": "CREATE_WORKTREE",
+    })
+    module._write_state_unlocked(state["TASK_ID"], state)
+    monkeypatch.setattr(
+        module, "_create_worktree",
+        lambda task_id: (_ for _ in ()).throw(
+            module.HarnessError("BLOCKED_HARNESS_BASE_HEAD_MISMATCH:synthetic mismatch")
+        ),
+    )
+    monkeypatch.setattr(
+        module, "_run_preflight_for",
+        lambda *args, **kwargs: pytest.fail("base mismatch must block before isolated preflight"),
+    )
+
+    module._dispatch(state["TASK_ID"])
+
+    blocked = module.load_state(state["TASK_ID"])
+    assert blocked["HARNESS_STATE"] == "BLOCKED"
+    assert blocked["ACTIVE_BLOCKERS"][0]["code"] == "BLOCKED_HARNESS_BASE_HEAD_MISMATCH"
+
+
+def test_base_head_mismatch_cannot_be_resumed(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    create_state(task_id="base-mismatch-resume")
+    module._block(
+        "base-mismatch-resume", "BLOCKED_HARNESS_BASE_HEAD_MISMATCH",
+        "start/base/actual identity failed",
+    )
+    monkeypatch.setattr(
+        module, "recover_if_interrupted", lambda task_id: module.load_state(task_id),
+    )
+
+    with pytest.raises(module.HarnessError, match="RESUME_REJECTED_UNRESOLVED_HARD_INVARIANT"):
+        module.command_resume(argparse.Namespace(task_id="base-mismatch-resume", foreground=False))
+
+
 def test_registered_worktree_check_is_fail_closed(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3856,8 +6027,9 @@ def test_environment_limited_worker_delegates_to_authoritative_controller_valida
     review_seen: list[dict] = []
 
     def environment_limited_worker(task_id: str, prompt: str, review: bool = False) -> dict:
+        findings = _worker_completion_message(task_result="SOFTWARE_FAILURE")
         module.update_task(task_id, {
-            "WORKER_FINDINGS": "TASK_RESULT=SOFTWARE_FAILURE\nHOLDOUT_CONTAMINATION_RISK=NONE",
+            "WORKER_FINDINGS": findings,
             "WORKER_TEST_STATUS": "ENVIRONMENT_LIMITED",
             "WORKER_TEST_LIMITATION": module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
             "WORKER_TEST_EVIDENCE": KNOWN_NESTED_PYTEST_TEMP_FAILURE,
@@ -3865,7 +6037,7 @@ def test_environment_limited_worker_delegates_to_authoritative_controller_valida
             "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "",
             "WORKTREE_INVENTORY_STATUS": "KNOWN",
         })
-        return {"exit_code": 0, "message": "environment limited", "tests": ["pytest | exit=1"]}
+        return {"exit_code": 0, "message": findings, "tests": ["pytest | exit=1"]}
 
     def controller_validation(task_id: str) -> tuple[bool, str]:
         if not controller_passes:
@@ -3926,6 +6098,27 @@ def test_environment_limited_delegation_requires_known_inventory_and_passed_guar
     assert module._worker_test_environment_delegation_allowed(state, 0)[0] is False
 
 
+def test_canonical_worker_boundary_precedes_environment_limited_delegation(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state.update({
+        "WORKER_TEST_STATUS": "ENVIRONMENT_LIMITED",
+        "WORKER_TEST_LIMITATION": module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
+        "WORKER_STATUS": "EXITED_0",
+        "WORKER_COMPLETION_EVIDENCE": {
+            "schema_version": 1,
+            "task_result": "BLOCKED",
+            "requires_human_boundary": True,
+        },
+    })
+
+    allowed, reason = module._worker_test_environment_delegation_allowed(state, 0)
+
+    assert allowed is False
+    assert reason == "CANONICAL_WORKER_BOUNDARY_PRECEDES_TEST_DELEGATION"
+
+
 @pytest.mark.parametrize("controller_passes", [True, False])
 def test_r3_environment_limited_worker_uses_authoritative_controller_without_retry_budget(
     isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
@@ -3945,8 +6138,21 @@ def test_r3_environment_limited_worker_uses_authoritative_controller_without_ret
     module._write_state_unlocked("test-task", state)
 
     def environment_limited(task_id: str, prompt: str, review: bool = False, role: str = "") -> dict:
+        unit_results = [{
+            "id": "WU-001", "status": "DONE", "produced_outputs": [],
+            "validation_state": "PASS", "blocker": {},
+            "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+            "next_action": "No further worker action",
+            "reuse_decision": "EXTEND", "reuse_evidence": ["existing Harness implementation"],
+        }]
+        findings = (
+            "TASK_RESULT=SOFTWARE_FAILURE\nHOLDOUT_CONTAMINATION_RISK=NONE\n"
+            "BLOCKER_KIND=NONE\n"
+            f"WORK_UNIT_RESULTS_JSON={json.dumps(unit_results, separators=(',', ':'))}\n"
+            "CHANGED_PATHS_JSON=[]\nNEW_COMPONENT_JUSTIFICATION=NONE"
+        )
         module.update_task(task_id, {
-            "WORKER_FINDINGS": "TASK_RESULT=SOFTWARE_FAILURE\nHOLDOUT_CONTAMINATION_RISK=NONE",
+            "WORKER_FINDINGS": findings,
             "WORKER_TEST_STATUS": "ENVIRONMENT_LIMITED",
             "WORKER_TEST_LIMITATION": module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
             "WORKER_TEST_EVIDENCE": KNOWN_NESTED_PYTEST_TEMP_FAILURE,
@@ -3954,7 +6160,7 @@ def test_r3_environment_limited_worker_uses_authoritative_controller_without_ret
             "ACTIVE_THREAD_ID": "", "ACTIVE_PROCESS_KIND": "",
             "WORKTREE_INVENTORY_STATUS": "KNOWN",
         })
-        return {"exit_code": 0, "message": "environment limited", "tests": []}
+        return {"exit_code": 0, "message": findings, "tests": []}
 
     def controller_validation(task_id: str) -> tuple[bool, str]:
         module.update_task(task_id, {
@@ -4086,15 +6292,16 @@ def test_live_or_orphan_worker_prevents_environment_limited_delegation(
     module._write_state_unlocked("test-task", state)
 
     def orphaned_result(task_id: str, prompt: str, review: bool = False) -> dict:
+        findings = _worker_completion_message(task_result="SOFTWARE_FAILURE")
         module.update_task(task_id, {
-            "WORKER_FINDINGS": "TASK_RESULT=SOFTWARE_FAILURE\nHOLDOUT_CONTAMINATION_RISK=NONE",
+            "WORKER_FINDINGS": findings,
             "WORKER_TEST_STATUS": "ENVIRONMENT_LIMITED",
             "WORKER_TEST_LIMITATION": module.WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION,
             "WORKER_STATUS": "EXITED_0", "WORKER_PID": 4242,
             "ACTIVE_THREAD_ID": "thread-live", "ACTIVE_PROCESS_KIND": "WORKER",
             "WORKTREE_INVENTORY_STATUS": "KNOWN",
         })
-        return {"exit_code": 0, "message": "environment limited", "tests": ["pytest | exit=1"]}
+        return {"exit_code": 0, "message": findings, "tests": ["pytest | exit=1"]}
 
     controller_called = {"value": False}
     monkeypatch.setattr(module, "_run_codex_turn", orphaned_result)
@@ -4151,6 +6358,217 @@ def test_software_correction_loop_is_bounded(
 )
 def test_review_classification_is_fail_closed(text: str, code: int, expected: str) -> None:
     assert module._review_classification(text, code) == expected
+
+
+def test_conflicting_review_markers_cannot_become_pass_after_tail_truncation() -> None:
+    authoritative_message = (
+        "REVIEW_STATUS=FIX_REQUIRED\n" + "x" * 9_000 + "\nREVIEW_STATUS=PASS"
+    )
+
+    assert module._review_classification(authoritative_message, 0) == "HUMAN_DECISION_REQUIRED"
+    assert module._review_classification(
+        authoritative_message[-module.MAX_TEXT:], 0,
+    ) == "PASS"
+
+
+def test_complete_review_evidence_drives_correction_identity_before_display_truncation() -> None:
+    state = module._new_state("test-task", "Review one repair", "independent-code", 2)
+    state["FILES_CHANGED"] = ["scripts/maintenance/harness_task.py"]
+    authoritative_message = (
+        "Duplicate component exists in scripts/maintenance/harness_task.py.\n"
+        + "x" * 9_000
+        + "\nThe inherited Anti-Bloat baseline residue is unchanged by this task.\n"
+        + "REVIEW_STATUS=FIX_REQUIRED"
+    )
+
+    evidence = module._ingest_review_authority_evidence(state, authoritative_message)
+    bounded_display = authoritative_message[-module.MAX_TEXT:]
+
+    assert "DUPLICATE_COMPONENT_IDENTITY" in evidence["finding_analysis"]["identities"]
+    assert "DUPLICATE_COMPONENT_IDENTITY" not in module._review_finding_analysis(
+        state, bounded_display,
+    )["identities"]
+    assert module._queue_correction_work_unit(
+        state, "FINAL_REVIEW", bounded_display, "p1",
+        state["FILES_CHANGED"], review_analysis=evidence["finding_analysis"],
+    ) is True
+    assert "DUPLICATE_COMPONENT_IDENTITY" in state["WORK_UNITS"][-1][
+        "review_finding_identity"
+    ]
+
+
+def test_complete_review_authorization_boundary_precedes_display_truncation() -> None:
+    state = module._new_state("test-task", "Review one repair", "independent-code", 2)
+    authoritative_message = (
+        "Human authorization is required before this correction may proceed.\n"
+        + "x" * 9_000
+        + "\nREVIEW_STATUS=FIX_REQUIRED"
+    )
+
+    evidence = module._ingest_review_authority_evidence(state, authoritative_message)
+
+    assert evidence["requires_human_boundary"] is True
+    assert module._review_classification_with_authority("PASS", evidence) == (
+        "HUMAN_DECISION_REQUIRED"
+    )
+    assert module._explicit_human_boundary_evidence(
+        authoritative_message[-module.MAX_TEXT:],
+    ) is False
+
+
+@pytest.mark.parametrize(
+    ("authoritative_message", "blocking_identity"),
+    [
+        (
+            "Duplicate component exists.\n" + "x" * 9_000 + "\nREVIEW_STATUS=PASS",
+            "DUPLICATE_COMPONENT_IDENTITY",
+        ),
+        (
+            "REVIEW_STATUS=PASS\n" + "x" * 9_000 + "\nDuplicate component exists.",
+            "DUPLICATE_COMPONENT_IDENTITY",
+        ),
+        (
+            "y" * 2_800 + "\nAnti-Bloat violation exists.\n"
+            + "z" * 2_800 + "\nREVIEW_STATUS=PASS",
+            "ANTI_BLOAT_TASK_DELTA",
+        ),
+    ],
+)
+def test_complete_review_blocker_overrides_pass_regardless_of_order_or_compaction(
+    authoritative_message: str, blocking_identity: str,
+) -> None:
+    state = module._new_state("test-task", "Review one repair", "independent-code", 2)
+    state["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+
+    evidence = module._ingest_review_authority_evidence(state, authoritative_message)
+    classification = module._review_classification_with_authority(
+        module._review_classification(authoritative_message, 0), evidence,
+    )
+
+    assert evidence["reported_status"] == "PASS"
+    assert blocking_identity in evidence["blocking_identities"]
+    assert evidence["has_blocking_finding"] is True
+    assert classification == "FIX_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    "safe_finding",
+    [
+        "No duplicate component, duplicate implementation, or parallel component was found.",
+        "Anti-Bloat violation, and duplicate component, were not found.",
+    ],
+)
+def test_complete_review_negated_findings_remain_pass_before_long_padding(
+    safe_finding: str,
+) -> None:
+    state = module._new_state("test-task", "Review one repair", "independent-code", 2)
+    state["ANTI_BLOAT_TASK_DELTA"] = "PASS"
+    authoritative_message = (
+        safe_finding + "\n" + "x" * 9_000 + "\nREVIEW_STATUS=PASS"
+    )
+
+    evidence = module._ingest_review_authority_evidence(state, authoritative_message)
+
+    assert evidence["blocking_identities"] == []
+    assert evidence["has_blocking_finding"] is False
+    assert module._review_classification_with_authority(
+        module._review_classification(authoritative_message, 0), evidence,
+    ) == "PASS"
+
+
+def test_bounded_review_findings_cannot_reconcile_local_unit_to_done() -> None:
+    state = module._new_state("test-task", "Review one repair", "independent-code", 2)
+    unit = module._new_work_unit("WU-001", "Complete the reviewed correction")
+    unit.update({
+        "status": "BLOCKED_LOCAL",
+        "produced_outputs": ["scripts/maintenance/existing.py"],
+        "validation_state": "TASK_TESTS_PASS_GLOBAL_GUARD_FAIL",
+        "blocker": {"kind": "LOCAL", "conditions": ["inherited residue outside this diff"]},
+        "last_checkpoint": "CORRECTION_IMPLEMENTED_AND_FOCUSED_TESTS_PASS",
+    })
+    state.update({
+        "WORK_UNITS": [unit], "CONTROLLER_VALIDATION_STATUS": "PASS",
+        **stale_bounded_blocking_review_fields(state),
+    })
+
+    assert "duplicate component" not in state["REVIEW_FINDINGS"].casefold()
+    assert module._canonical_persisted_review_classification(state) == "FIX_REQUIRED"
+    assert module._accepted_nonblocking_review(state) is False
+    assert module._reconcile_terminal_local_environment_units(state) == (0, 0)
+    assert unit["status"] == "BLOCKED_LOCAL"
+
+
+def test_finalization_cannot_complete_from_bounded_review_display(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    done = module._new_work_unit("WU-001", "Complete the bounded repair")
+    done["status"] = "DONE"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "WORK_UNITS": [done],
+        "CONTROLLER_VALIDATION_STATUS": "PASS",
+        **stale_bounded_blocking_review_fields(state),
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_refresh_changes", lambda task_id: {
+        "changed": ["scripts/maintenance/existing.py"], "created": [],
+        "dependencies": [], "changed_count": 1, "created_count": 0,
+    })
+    monkeypatch.setattr(module, "_cleanup_task_temp_runtime", lambda task_id: None)
+
+    module._dispatch("test-task")
+
+    final = module.load_state("test-task")
+    assert final["HARNESS_STATE"] == "FAILED"
+    assert final["TERMINAL_SUCCESS"] is False
+    assert module._canonical_persisted_review_classification(final) == "FIX_REQUIRED"
+
+
+def test_pause_checkpoint_cannot_preserve_finalize_after_canonical_review_blocker(
+    isolated_roots: tuple[Path, Path],
+) -> None:
+    state = create_state()
+    state.update({
+        "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "FINALIZE",
+        "PAUSE_REQUESTED": True,
+        **stale_bounded_blocking_review_fields(state),
+    })
+    module._write_state_unlocked("test-task", state)
+
+    assert module._control_checkpoint("test-task") is True
+
+    paused = module.load_state("test-task")
+    assert paused["HARNESS_STATE"] == "PAUSED"
+    assert paused["NEXT_ACTION_CODE"] == "FINAL_REVIEW"
+    assert paused["LAST_REVIEW_STATUS"] == "FIX_REQUIRED"
+
+
+def test_crash_recovery_cannot_resume_finalize_after_canonical_review_blocker(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "NEXT_ACTION_CODE": "FINALIZE", "CONTROLLER_PID": 999_999,
+        **stale_bounded_blocking_review_fields(state),
+    })
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["scripts/maintenance/existing.py"], "created": [],
+        "dependencies": [], "changed_count": 1, "created_count": 0,
+    })
+
+    recovered = module.recover_if_interrupted("test-task")
+
+    assert recovered["HARNESS_STATE"] == "RUNNING"
+    assert recovered["NEXT_ACTION_CODE"] == "FINAL_REVIEW"
+    assert recovered["LAST_REVIEW_STATUS"] == "FIX_REQUIRED"
 
 
 def test_crash_recovery_preserves_changed_file_inventory(
@@ -4218,6 +6636,84 @@ def test_crash_recovery_validates_only_a_persisted_structured_checkpoint(
     assert recovered["NEXT_ACTION_CODE"] == "UNIT_VALIDATE"
     assert recovered["WORK_UNITS"][0]["status"] == "RUNNING"
     assert recovered["ACTIVE_WORK_UNIT_IDS"] == ["WU-001"]
+
+
+def test_crash_recovery_cannot_bypass_canonical_worker_safety_boundary(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete checkpointed implementation")
+    unit["status"] = "RUNNING"
+    state.update({
+        "HARNESS_STATE": "RUNNING", "WORKTREE": str(worktree),
+        "CONTROLLER_PID": 999_999, "WORKER_PID": 999_998,
+        "ACTIVE_PROCESS_KIND": "WORKER", "WORK_UNITS": [unit],
+        "ACTIVE_WORK_UNIT_IDS": ["WU-001"], "ACTIVE_WORK_UNIT_ID": "WU-001",
+    })
+    evidence = module._ingest_worker_completion_evidence(
+        state,
+        _worker_completion_message(
+            rows=[_structured_worker_result()],
+            contamination="possible exposed holdout use",
+            blocker_kind="SAFETY",
+        ),
+    )
+    state.update(module._worker_completion_state_fields(evidence))
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": ["checkpointed.py"], "created": [], "dependencies": [],
+    })
+
+    recovered = module.recover_if_interrupted("test-task")
+
+    assert recovered["HARNESS_STATE"] == "WAITING_HUMAN"
+    assert recovered["NEXT_ACTION_CODE"] != "UNIT_VALIDATE"
+    assert recovered["HUMAN_ATTENTION_REQUIRED"] is True
+    assert recovered["WORK_UNITS"][0]["status"] == "RETRY"
+    assert recovered["PENDING_UNIT_RESULTS"] == []
+    assert recovered["ACTIVE_BLOCKERS"][0]["boundary_kind"] == "SAFETY"
+
+
+def test_new_batch_clears_prior_turn_authority_before_crash_inventory(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = create_state()
+    worktree = isolated_roots[1] / "harness-task-test-task"
+    worktree.mkdir(parents=True)
+    prior_path = "docs/component-a.md"
+    new_path = "docs/component-b.md"
+    unit = module._new_work_unit("WU-001", "Repair the next bounded unit")
+    state.update({
+        "WORKTREE": str(worktree), "WORK_UNITS": [unit],
+        "JUSTIFIED_CREATED_PATHS": [prior_path],
+        "NEW_COMPONENT_JUSTIFICATION": "Prior turn justification",
+        "WORKER_COMPLETION_EVIDENCE": {
+            "schema_version": 1,
+            "new_component_justification": "Prior turn justification",
+            "work_unit_results": [{"id": "OLD", "status": "DONE"}],
+        },
+        "PENDING_UNIT_RESULTS": [{"id": "OLD", "status": "DONE"}],
+        "WORKER_REPORTED_CHANGED_PATHS": [prior_path],
+    })
+
+    assert module._select_work_unit_batch(state) == ["WU-001"]
+    assert state["WORKER_COMPLETION_EVIDENCE"] == {}
+    assert state["PENDING_UNIT_RESULTS"] == []
+    assert state["WORKER_REPORTED_CHANGED_PATHS"] == []
+    module._write_state_unlocked("test-task", state)
+    monkeypatch.setattr(module, "_git_changes", lambda path: {
+        "changed": [prior_path, new_path], "created": [prior_path, new_path],
+        "dependencies": [], "changed_count": 2, "created_count": 2,
+    })
+
+    module._refresh_changes("test-task")
+    recovered = module.load_state("test-task")
+
+    assert recovered["JUSTIFIED_CREATED_PATHS"] == [prior_path]
+    assert recovered["UNJUSTIFIED_CREATED_PATHS"] == [new_path]
 
 
 def test_interruption_preserves_task_temp_runtime_identity(
@@ -4492,11 +6988,18 @@ def test_non_research_finalization_never_invokes_prospective_retirement(
     state = create_state(goal="Harness maintenance fixture")
     worktree = isolated_roots[1] / "harness-task-test-task"
     worktree.mkdir(parents=True)
+    unit = module._new_work_unit("WU-001", "Complete the maintenance fixture")
+    unit.update({
+        "status": "DONE", "validation_state": "PASS", "blocker": {},
+        "last_checkpoint": "IMPLEMENTATION_COMPLETE",
+        "next_action": "No further action",
+    })
     state.update({
         "HARNESS_STATE": "RUNNING", "TASK_KIND": "maintenance",
         "WORKTREE": str(worktree), "NEXT_ACTION_CODE": "FINALIZE",
-        "LAST_REVIEW_STATUS": "PASS", "CONTROLLER_VALIDATION_STATUS": "PASS",
+        "CONTROLLER_VALIDATION_STATUS": "PASS", "WORK_UNITS": [unit],
     })
+    state.update(canonical_review_fields(state, "PASS", "No blocking findings."))
     module._write_state_unlocked("test-task", state)
     cleanup_calls: list[str] = []
 
@@ -4734,11 +7237,12 @@ def test_prospective_real_entrypoint_orders_finalize_cleanup_and_retirement(
         state.update({
             "HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "FINAL_VALIDATION",
             "WORKTREE": str(worktree), "CONTROLLER_VALIDATION_STATUS": "NOT_RUN",
-            "WORK_UNITS": [{
-                "id": "WU-001", "status": "DONE", "optional": False,
-                "produced_outputs": [str(receipt_path)],
-                "validation_state": "PASS", "last_checkpoint": "COMPLETED",
-            }],
+                "WORK_UNITS": [{
+                    "id": "WU-001", "status": "DONE", "optional": False,
+                    "produced_outputs": [str(receipt_path)],
+                    "validation_state": "PASS", "last_checkpoint": "COMPLETED",
+                    "next_action": "No further action",
+                }],
         })
         module._write_state_unlocked(task_id, state)
         module._dispatch(task_id)
@@ -4751,11 +7255,10 @@ def test_prospective_real_entrypoint_orders_finalize_cleanup_and_retirement(
 
     def final_review(task_id: str) -> str:
         order.append("FINAL_REVIEW")
-        module.update_task(task_id, {
-            "LAST_REVIEW_STATUS": "PASS", "REVIEW_FINDINGS": "No blocking findings.",
-            "FINAL_REVIEWER_ID": "review-thread-e2e",
-        }, new_state="REVIEWING", event="SYNTHETIC_FINAL_REVIEW", detail="PASS")
-        return "PASS"
+        return record_fake_review(
+            task_id, "PASS", "No blocking findings.",
+            FINAL_REVIEWER_ID="review-thread-e2e",
+        )
 
     def post_terminal_temp_cleanup(task_id: str) -> None:
         order.append("TEMP_CLEANUP")

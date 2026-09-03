@@ -19,6 +19,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 
 SCHEMA_VERSION = 1
@@ -189,7 +190,9 @@ PERFORMANCE_KEY_TOKENS = {
     "gini",
     "lift",
     "mae",
+    "maxdd",
     "mcc",
+    "mdd",
     "metric",
     "mse",
     "nav",
@@ -225,6 +228,7 @@ PERFORMANCE_KEY_PHRASES = (
     "brier_score",
     "confusion_matrix",
     "cross_entropy",
+    "economic_outcome",
     "false_positive_rate",
     "ks_statistic",
     "log_loss",
@@ -232,32 +236,158 @@ PERFORMANCE_KEY_PHRASES = (
     "outcome_derived_metadata",
     "p_and_l",
     "pr_curve",
+    "prospective_economic_outcome",
+    "prospective_outcome",
+    "realized_performance",
     "r_squared",
     "roc_curve",
     "true_positive_rate",
 )
+PERFORMANCE_COMPACT_KEY_NAMES = {
+    "economicoutcome",
+    "economicoutcomes",
+    "maxdd",
+    "maxdrawdown",
+    "maximumdrawdown",
+    "pnl",
+    "profitandloss",
+    "profitloss",
+    "realizedperformance",
+    "sharperatio",
+}
+SEMANTIC_DESCRIPTOR_FIELDS = {
+    "field",
+    "field_label",
+    "field_name",
+    "label",
+    "measurement_label",
+    "measurement_name",
+    "metric",
+    "metric_label",
+    "metric_name",
+    "metric_type",
+    "name",
+    "statistic_label",
+    "statistic_name",
+    "type",
+}
+SEMANTIC_VALUE_FIELDS = {
+    "measurement",
+    "measurements",
+    "observation",
+    "observations",
+    "result",
+    "results",
+    "score",
+    "scores",
+    "value",
+    "values",
+}
+STRICT_STRUCTURAL_IDENTITY_FIELDS = {
+    "alias",
+    "aliases",
+    "canonical_name",
+    "decision_layer",
+    "entity_id",
+    "entity_type",
+    "evidence_source_temporal_status",
+    "frozen_name",
+    "lifecycle_state",
+    "namespace",
+    "parent_entity_id",
+    "parent_entity_ids",
+    "research_branch_cluster",
+    "short_name",
+    "status",
+}
+STRUCTURAL_DESCRIPTION_FIELDS = {
+    "economic_role",
+    "feature_input_family",
+    "information_family",
+    "information_source",
+    "lifecycle_reason",
+    "mechanism_family",
+    "model_family",
+    "outcome_horizon",
+    "portfolio_action",
+}
 PERFORMANCE_VALUE_TERM = re.compile(
     r"\b(?:"
     r"accuracy|alpha|ap|auc|auroc|average\s+precision|brier(?:\s+score)?|calibration|"
     r"cagr|confusion\s+matrix|cross\s+entropy|drawdown|f1|false\s+positive\s+rate|"
     r"gini|hit\s+rate|ic|information\s+coefficient|ks\s+statistic|lift|log\s+loss|"
-    r"mae|mcc|mse|nav|net\s+asset\s+value|p\s*(?:and|&)\s*l|pnl|precision|profit|"
+    r"economic\s+(?:outcomes?|performance)|mae|maxdd|mcc|mdd|mse|nav|net\s+asset\s+value|"
+    r"p\s*(?:and|&)\s*l|pnl|precision|profit|"
     r"pr\s+curve|r(?:ank\s+)?ic|r\s*(?:squared|\^?2)|recall|return|returns|rmse|"
-    r"roc\s+curve|sensitivity|sharpe|sortino|specificity|tail\s+event|"
+    r"realized\s+performance|roc\s+curve|sensitivity|sharpe|sortino|specificity|tail\s+event|"
     r"true\s+positive\s+rate|win\s+rate"
     r")\b",
     re.IGNORECASE,
 )
 NUMERIC_VALUE = re.compile(
-    r"(?<![A-Za-z0-9])[-+]?(?:\d+(?:\.\d+)?|\.\d+)%?(?![A-Za-z])"
+    r"(?<![A-Za-z0-9])[-+]?(?:\d+(?:\.\d+)?|\.\d+)"
+    r"(?:[eE][-+]?\d+)?%?(?![A-Za-z])"
+)
+PERCENT_VALUE_TERM = re.compile(
+    r"(?<!\d)\d+(?:\.\d+)?\s*(?:pct|percent)\b",
+    re.IGNORECASE,
+)
+BASIS_POINT_VALUE_TERM = re.compile(
+    r"(?<![A-Za-z0-9])[-+]?(?:\d+(?:\.\d+)?|\.\d+)\s*"
+    r"(?:bp|bps|basis[- ]?points?)\b",
+    re.IGNORECASE,
+)
+IDENTIFIER_ENCODED_NUMERIC_VALUE_TERM = re.compile(
+    r"\b(?:plus\s+|minus\s+)?(?:"
+    r"\d+\s+p\s+\d+(?:\s+(?:pct|percent|bp|bps))?|"
+    r"\d+\s+(?:e\s+(?:(?:plus|minus)\s+)?|e(?:plus|minus)\s+)\d+|"
+    r"\d+\s+(?:pct|percent|bp|bps)"
+    r")\b",
+    re.IGNORECASE,
+)
+IDENTIFIER_COMPACT_PERFORMANCE_TERM = re.compile(
+    r"(?:accuracy|alpha|ap|auc|auroc|averageprecision|brierscore|calibration|cagr|"
+    r"confusionmatrix|crossentropy|drawdown|f1|falsepositiverate|gini|hitrate|ic|"
+    r"informationcoefficient|ksstatistic|lift|logloss|economic(?:outcome|outcomes|performance)|"
+    r"mae|maxdd|maxdrawdown|maximumdrawdown|mcc|mdd|mse|nav|netassetvalue|pandl|pnl|"
+    r"precision|profit|prcurve|rankic|ric|r2|rsquared|recall|returns?|rmse|"
+    r"realizedperformance|roccurve|sensitivity|sharpe|sortino|specificity|tailevent|"
+    r"truepositiverate|winrate)"
+    r"(?:acceptable|achieved|bad|beat|better|excellent|exceptional\d*|exceeded|failed|"
+    r"favorable|good|high|improved|inferior|lagged|low|negative|outperformed|outstanding|"
+    r"passed|poor|positive|profitable|remarkable|strong|superior|unacceptable|"
+    r"underperformed|unprofitable|weak|worse|"
+    r"(?:plus|minus)?(?:\d+p\d+(?:pct|percent|bp|bps)?|"
+    r"\d+e(?:plus|minus)?\d+|\d+(?:pct|percent|bp|bps)))",
+    re.IGNORECASE,
+)
+IDENTIFIER_COMPACT_BARE_NUMERIC_PERFORMANCE_TERM = re.compile(
+    r"(?:accuracy|alpha|auc|auroc|averageprecision|brierscore|calibration|cagr|"
+    r"confusionmatrix|crossentropy|drawdown|falsepositiverate|gini|hitrate|"
+    r"informationcoefficient|ksstatistic|lift|logloss|economic(?:outcome|outcomes|performance)|"
+    r"mae|maxdd|maxdrawdown|maximumdrawdown|mcc|mdd|mse|nav|netassetvalue|pandl|pnl|"
+    r"precision|profit|prcurve|rankic|recall|returns?|rmse|realizedperformance|"
+    r"roccurve|sensitivity|sharpe|sortino|specificity|tailevent|truepositiverate|winrate)"
+    r"(?P<value>\d+)",
+    re.IGNORECASE,
 )
 OUTCOME_EVALUATION_TERM = re.compile(
     r"\b(?:achieved|evaluation|evaluated|holdout|measured|observed|outcome|performance|"
     r"prospective|realized|reported|result|score|test(?:ed)?|validation|validated|2026)\b",
     re.IGNORECASE,
 )
+PERFORMANCE_PREDICATE_TERM = re.compile(
+    r"\b(?:am|appear(?:ed|ing|s)?|are|be|became|become|becomes|been|being|feel(?:s|t)?|"
+    r"grew|grow(?:ing|s)?|is|look(?:ed|ing|s)?|prove(?:d|n|s)?|rank(?:ed|ing|s)?|"
+    r"rate(?:d|s)?|remain(?:ed|ing|s)?|seem(?:ed|ing|s)?|sound(?:ed|ing|s)?|"
+    r"stay(?:ed|ing|s)?|stood|was|were)\b",
+    re.IGNORECASE,
+)
 QUALITATIVE_VALUE_TERM = re.compile(
-    r"\b(?:bad|better|failed|good|high|improved|low|passed|poor|strong|weak|worse)\b",
+    r"\b(?:acceptable|achieved|bad|beat|better|excellent|exceptional\d*|exceeded|failed|"
+    r"favorable|good|high|improved|inferior|lagged|low|negative|outperformed|outstanding|"
+    r"passed|poor|positive|profitable|remarkable|strong|superior|unacceptable|"
+    r"underperformed|unprofitable|weak|worse)\b",
     re.IGNORECASE,
 )
 SPELLED_NUMBER_TERM = re.compile(
@@ -295,6 +425,143 @@ HARD_REALIZED_CONTEXT = re.compile(
     r"\bpost[- ]?2025\b|(?<!pre-)(?<!pre )\b2026\b",
     re.IGNORECASE,
 )
+PERFORMANCE_STORAGE_DENIAL_GLUE_TOKENS = {
+    "and",
+    "data",
+    "evidence",
+    "measurement",
+    "measurements",
+    "metric",
+    "metrics",
+    "nor",
+    "observation",
+    "observations",
+    "or",
+    "outcome",
+    "outcomes",
+    "prospective",
+    "realized",
+    "result",
+    "results",
+    "score",
+    "scores",
+    "statistic",
+    "statistics",
+    "value",
+    "values",
+}
+PERFORMANCE_STORAGE_AUXILIARY_TOKENS = {
+    "are",
+    "be",
+    "been",
+    "being",
+    "currently",
+    "ever",
+    "had",
+    "has",
+    "have",
+    "is",
+    "not",
+    "was",
+    "were",
+}
+PERFORMANCE_REFERENCE_GLUE_TOKENS = {
+    "artifact",
+    "contract",
+    "field",
+    "frozen",
+    "historical",
+    "identifier",
+    "identity",
+    "label",
+    "metric",
+    "name",
+    "overlay",
+    "r1",
+    "r2",
+    "r3",
+    "reference",
+    "registry",
+    "research",
+    "schema",
+    "source",
+    "version",
+}
+PERFORMANCE_IDENTITY_REFERENCE_FIELDS = {
+    "alias",
+    "aliases",
+    "canonical_name",
+    "decision_layer",
+    "entity_id",
+    "entity_type",
+    "evidence_source_temporal_status",
+    "frozen_name",
+    "information_family",
+    "lifecycle_state",
+    "namespace",
+    "parent_entity_id",
+    "short_name",
+    "status",
+}
+PERFORMANCE_REFERENCE_FIELD_SUFFIXES = (
+    "_fingerprint",
+    "_hash",
+    "_ref",
+    "_refs",
+    "_sha256",
+)
+REFERENCE_NEUTRAL_NUMERIC_PATH_CONTEXTS = {
+    "build",
+    "part",
+    "partition",
+    "rev",
+    "revision",
+    "schema",
+    "v",
+    "ver",
+    "version",
+}
+REFERENCE_NEUTRAL_QUERY_VALUE_FIELDS = {
+    *REFERENCE_NEUTRAL_NUMERIC_PATH_CONTEXTS,
+    "artifact_id",
+    "artifact_ref",
+    "artifact_refs",
+    "artifact_sha256",
+    "checksum",
+    "commit",
+    "commit_sha",
+    "commit_sha256",
+    "date",
+    "datetime",
+    "fingerprint",
+    "hash",
+    "id",
+    "identity",
+    "path",
+    "ref",
+    "refs",
+    "reference",
+    "sha",
+    "sha256",
+    "timestamp",
+    "uri",
+    "url",
+    "uuid",
+}
+PERFORMANCE_REFERENCE_FILE_SUFFIX_TOKENS = {
+    "bin",
+    "csv",
+    "json",
+    "jsonl",
+    "npy",
+    "npz",
+    "parquet",
+    "pickle",
+    "pkl",
+    "txt",
+    "yaml",
+    "yml",
+}
 
 
 class RegistryError(ValueError):
@@ -391,33 +658,622 @@ def _failure_count_regressed(old: int | None, new: int | None) -> bool:
 
 
 def _normalized_key(key: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_")
+    text = unicodedata.normalize("NFKC", str(key))
+    text = re.sub(
+        r"(?<![A-Za-z0-9])p\s*(?:&|/|\band\b)\s*l(?![A-Za-z0-9])",
+        "pnl",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", text)
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
+    return re.sub(r"[^a-z0-9]+", "_", text.casefold()).strip("_")
 
 
-def _performance_field_paths(value: Any, prefix: str = "") -> list[str]:
+def _normalized_performance_key(value: Any) -> str:
+    key = _normalized_key(value)
+    normalized_tokens: list[str] = []
+    for token in key.split("_"):
+        if token in {"f1", "r2"}:
+            normalized_tokens.append(token)
+            continue
+        compact_metric = re.match(r"^(f1|r2)(?=[a-z0-9])", token)
+        if compact_metric:
+            normalized_tokens.append(compact_metric.group(1))
+            token = token[compact_metric.end() :]
+        token = re.sub(r"(?<=[a-z])(?=\d)", "_", token)
+        token = re.sub(r"(?<=\d)(?=[a-z])", "_", token)
+        normalized_tokens.extend(part for part in token.split("_") if part)
+    return "_".join(normalized_tokens)
+
+
+def _performance_key_is_forbidden(value: Any) -> bool:
+    key = _normalized_performance_key(value)
+    if not key:
+        return False
+    ordered_tokens = key.split("_")
+    tokens = set(ordered_tokens)
+    compact = key.replace("_", "")
+    compact_token_windows = {
+        "".join(ordered_tokens[start:end])
+        for start in range(len(ordered_tokens))
+        for end in range(start + 1, min(len(ordered_tokens), start + 3) + 1)
+    }
+    return (
+        key in PERFORMANCE_KEY_NAMES
+        or any(
+            key == prefix_key or key.startswith(prefix_key + "_")
+            for prefix_key in PERFORMANCE_KEY_PREFIXES
+        )
+        or any(phrase in key for phrase in PERFORMANCE_KEY_PHRASES)
+        or bool(tokens & PERFORMANCE_KEY_TOKENS)
+        or compact in PERFORMANCE_COMPACT_KEY_NAMES
+        or bool(compact_token_windows & PERFORMANCE_COMPACT_KEY_NAMES)
+    )
+
+
+def _exact_structural_version_token(value: Any) -> bool:
+    text = unicodedata.normalize("NFKC", str(value)).strip()
+    return bool(re.fullmatch(r"[RrVv]\d+(?:\.\d+)*", text))
+
+
+def _non_year_numeric_matches(value: Any) -> list[re.Match[str]]:
+    text = _bounded_unquote(unicodedata.normalize("NFKC", str(value)))
+    matches: list[re.Match[str]] = []
+    for number in NUMERIC_VALUE.finditer(text):
+        # NUMERIC_VALUE intentionally permits digit-following boundaries for
+        # compact metric forms; do not let regex backtracking turn ``13F`` into
+        # the numeric outcome ``1`` in a structural identity.
+        if number.end() < len(text) and text[number.end()].isdigit():
+            continue
+        numeric = number.group(0).lstrip("+-").rstrip("%")
+        if re.fullmatch(r"\d{4}", numeric) and 1900 <= int(numeric) <= 2100:
+            continue
+        matches.append(number)
+    return matches
+
+
+def _performance_qualification_present(value: Any) -> bool:
+    """Recognize value qualifications, including identifier-safe encodings."""
+    text = _bounded_unquote(unicodedata.normalize("NFKC", str(value))).strip()
+    if (
+        not text
+        or _entire_opaque_structural_identity(text)
+        or _exact_structural_version_token(text)
+    ):
+        return False
+    metric_text = _normalized_performance_text(text)
+    compact_qualification = _compact_performance_qualification_present(text)
+    return bool(
+        _non_year_numeric_matches(text)
+        or IDENTIFIER_ENCODED_NUMERIC_VALUE_TERM.search(metric_text)
+        or compact_qualification
+        or QUALITATIVE_VALUE_TERM.search(metric_text)
+        or SPELLED_NUMBER_TERM.search(metric_text)
+        or PERCENT_VALUE_TERM.search(metric_text)
+        or BASIS_POINT_VALUE_TERM.search(metric_text)
+    )
+
+
+def _compact_performance_qualification_present(value: Any) -> bool:
+    compact_text = _normalized_key(value).replace("_", "")
+    if IDENTIFIER_COMPACT_PERFORMANCE_TERM.search(compact_text):
+        return True
+    for match in IDENTIFIER_COMPACT_BARE_NUMERIC_PERFORMANCE_TERM.finditer(compact_text):
+        number = match.group("value")
+        if len(number) == 4 and 1900 <= int(number) <= 2100:
+            continue
+        return True
+    return False
+
+
+def _descriptor_context_has_outcome_leaf(value: Any) -> bool:
+    return _performance_qualification_present(value)
+
+
+def _strict_full_field_structural_identity(value: Any, field: str) -> bool:
+    if field not in STRICT_STRUCTURAL_IDENTITY_FIELDS:
+        return False
+    text = _bounded_unquote(unicodedata.normalize("NFKC", str(value))).strip()
+    if not text:
+        return False
+    if _entire_opaque_structural_identity(text) or _exact_structural_version_token(text):
+        return True
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_. -]*", text):
+        return False
+    metric_text = _normalized_performance_text(text)
+    return not bool(
+        _performance_qualification_present(text)
+        or PERFORMANCE_PREDICATE_TERM.search(metric_text)
+    )
+
+
+def _performance_field_paths(
+    value: Any, prefix: str = "", *,
+    _active_descriptor_paths: tuple[str, ...] = (),
+) -> list[str]:
     findings: list[str] = []
     if isinstance(value, Mapping):
-        for raw_key, child in value.items():
-            key = _normalized_key(raw_key)
+        normalized_items = [
+            (raw_key, child, _normalized_key(raw_key))
+            for raw_key, child in value.items()
+        ]
+        local_descriptor_paths = tuple(
+            f"{prefix}.{raw_key}" if prefix else str(raw_key)
+            for raw_key, child, key in normalized_items
+            if key in SEMANTIC_DESCRIPTOR_FIELDS
+            and (
+                isinstance(child, str) and _performance_key_is_forbidden(child)
+                or isinstance(child, (list, tuple))
+                and any(
+                    isinstance(item, str) and _performance_key_is_forbidden(item)
+                    for item in child
+                )
+            )
+        )
+        active_descriptor_paths = tuple(dict.fromkeys([
+            *_active_descriptor_paths, *local_descriptor_paths,
+        ]))
+        if active_descriptor_paths and any(
+            key in SEMANTIC_VALUE_FIELDS for _, _, key in normalized_items
+        ):
+            findings.extend(active_descriptor_paths)
+        for raw_key, child, key in normalized_items:
             path = f"{prefix}.{raw_key}" if prefix else str(raw_key)
-            tokens = set(key.split("_"))
-            if (
-                key in PERFORMANCE_KEY_NAMES
-                or any(key == prefix_key or key.startswith(prefix_key + "_") for prefix_key in PERFORMANCE_KEY_PREFIXES)
-                or any(phrase in key for phrase in PERFORMANCE_KEY_PHRASES)
-                or bool(tokens & PERFORMANCE_KEY_TOKENS)
-            ):
+            if _performance_key_is_forbidden(key):
                 findings.append(path)
-            findings.extend(_performance_field_paths(child, path))
+            findings.extend(_performance_field_paths(
+                child, path, _active_descriptor_paths=active_descriptor_paths,
+            ))
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
-            findings.extend(_performance_field_paths(child, f"{prefix}[{index}]"))
-    return findings
+            findings.extend(_performance_field_paths(
+                child, f"{prefix}[{index}]",
+                _active_descriptor_paths=_active_descriptor_paths,
+            ))
+    elif (
+        _active_descriptor_paths
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
+        # Transparent containers retain a prohibited descriptor's meaning at
+        # numeric leaves; unrelated numeric governance metadata stays valid.
+        findings.extend(_active_descriptor_paths)
+    elif (
+        _active_descriptor_paths
+        and isinstance(value, str)
+        and _descriptor_context_has_outcome_leaf(value)
+    ):
+        # Text values retain the same descriptor authority through transparent
+        # wrappers and lists; neutral identity/version text remains structural.
+        findings.extend(_active_descriptor_paths)
+    return list(dict.fromkeys(findings))
 
 
-def _string_has_performance_value(value: str, path: str = "") -> bool:
-    text = unicodedata.normalize("NFKC", value)
-    metric_matches = list(PERFORMANCE_VALUE_TERM.finditer(text))
+def _bounded_unquote(value: Any, *, rounds: int = 3) -> str:
+    text = str(value)
+    for _ in range(rounds):
+        decoded = unquote(text)
+        if decoded == text:
+            break
+        text = decoded
+    return text
+
+
+def _normalized_performance_text(value: Any) -> str:
+    text = _normalized_performance_key(_bounded_unquote(value)).replace("_", " ")
+    text = re.sub(r"\bpn\s+l\b", "pnl", text)
+    text = re.sub(r"\bprofit\s+(?:and\s+)?loss\b", "pnl", text)
+    text = re.sub(r"\bsharpe\s+ratio\b", "sharpe", text)
+    text = re.sub(r"\bmax(?:imum)?\s*drawdown\b", "maxdd", text)
+    return re.sub(r"\bmax\s+dd\b", "maxdd", text)
+
+
+def _opaque_reference_token(token: str) -> bool:
+    return bool(re.fullmatch(r"[a-f0-9]{8,}", token, re.IGNORECASE))
+
+
+def _exact_uuid_token(token: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            token,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _entire_opaque_structural_identity(value: Any) -> bool:
+    token = unicodedata.normalize("NFKC", str(value)).strip()
+    return bool(_opaque_reference_token(token) or _exact_uuid_token(token))
+
+
+def _reference_component_has_performance_qualification(value: Any) -> bool:
+    raw_text = _bounded_unquote(value)
+    raw_token = unicodedata.normalize("NFKC", raw_text).strip()
+    if _opaque_reference_token(raw_token) or _exact_uuid_token(raw_token):
+        return False
+    metric_text = _normalized_performance_text(value)
+    metrics = list(PERFORMANCE_VALUE_TERM.finditer(metric_text))
+    if not metrics:
+        return False
+    if (
+        _performance_qualification_present(raw_text)
+        or PERFORMANCE_PREDICATE_TERM.search(metric_text)
+    ):
+        return True
+    if _terminal_r2_version_text(str(value), metrics):
+        return False
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", raw_token):
+        return False
+    remainder = PERFORMANCE_VALUE_TERM.sub(" ", metric_text)
+    for match in re.finditer(
+        r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+        raw_text,
+        re.IGNORECASE,
+    ):
+        opaque_phrase = _normalized_performance_text(match.group(0))
+        remainder = re.sub(rf"\b{re.escape(opaque_phrase)}\b", " ", remainder)
+    tokens = set(re.findall(r"[a-z0-9]+", remainder))
+    tokens -= PERFORMANCE_REFERENCE_GLUE_TOKENS
+    tokens -= PERFORMANCE_REFERENCE_FILE_SUFFIX_TOKENS
+    return any(not _opaque_reference_token(token) for token in tokens)
+
+
+def _reference_component_has_performance_descriptor(value: Any) -> bool:
+    token = unicodedata.normalize("NFKC", _bounded_unquote(value)).strip()
+    if _opaque_reference_token(token) or _exact_uuid_token(token):
+        return False
+    return _performance_key_is_forbidden(token)
+
+
+def _reference_component_has_outcome_value(value: Any) -> bool:
+    raw_text = unicodedata.normalize("NFKC", _bounded_unquote(value)).strip()
+    if not raw_text:
+        return False
+    if (
+        _entire_opaque_structural_identity(raw_text)
+        or _exact_structural_version_token(raw_text)
+    ):
+        return False
+    normalized_key = _normalized_key(raw_text)
+    metric_text = _normalized_performance_text(raw_text)
+    if normalized_key in SEMANTIC_VALUE_FIELDS:
+        return True
+    if _performance_qualification_present(raw_text):
+        return True
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", raw_text):
+        return False
+    return bool(
+        QUALITATIVE_VALUE_TERM.search(metric_text)
+        or OUTCOME_EVALUATION_TERM.search(metric_text)
+        or PERFORMANCE_PREDICATE_TERM.search(metric_text)
+        or SPELLED_NUMBER_TERM.search(metric_text)
+        or PERCENT_VALUE_TERM.search(metric_text)
+        or BASIS_POINT_VALUE_TERM.search(metric_text)
+    )
+
+
+def _reference_query_value_is_structurally_neutral(
+    normalized_key: str, value: Any,
+) -> bool:
+    text = unicodedata.normalize("NFKC", _bounded_unquote(value)).strip()
+    if not text:
+        return True
+    if _entire_opaque_structural_identity(text) or _exact_structural_version_token(text):
+        return True
+    if normalized_key in REFERENCE_NEUTRAL_NUMERIC_PATH_CONTEXTS and re.fullmatch(
+        r"[Vv]?\d+(?:\.\d+)*", text,
+    ):
+        return True
+    if normalized_key in {"date", "datetime", "timestamp"} and re.fullmatch(
+        r"\d{4}(?:[-/:T ]\d{1,2})+(?:[.Z+:-][A-Za-z0-9]+)*", text,
+        re.IGNORECASE,
+    ):
+        return True
+    structural_field = bool(
+        normalized_key in REFERENCE_NEUTRAL_QUERY_VALUE_FIELDS
+        or normalized_key.endswith(PERFORMANCE_REFERENCE_FIELD_SUFFIXES)
+        or normalized_key.endswith(("_id", "_ids", "_uuid", "_uuids"))
+    )
+    return structural_field and not _descriptor_context_has_outcome_leaf(text)
+
+
+def _reference_query_semantics(query: str) -> tuple[bool, bool]:
+    pairs = parse_qsl(query, keep_blank_values=True)
+    if not pairs and query:
+        pairs = [(unquote(query), "")]
+    has_descriptor = False
+    has_outcome_value = False
+    for raw_key, raw_value in pairs:
+        key = _normalized_key(_bounded_unquote(raw_key))
+        if _reference_component_has_performance_descriptor(raw_key):
+            has_descriptor = True
+        if (
+            key in SEMANTIC_DESCRIPTOR_FIELDS
+            and _reference_component_has_performance_descriptor(raw_value)
+        ):
+            has_descriptor = True
+        if key in SEMANTIC_VALUE_FIELDS and str(raw_value).strip():
+            has_outcome_value = True
+        elif (
+            str(raw_value).strip()
+            and not _reference_query_value_is_structurally_neutral(key, raw_value)
+            and _descriptor_context_has_outcome_leaf(raw_value)
+        ):
+            has_outcome_value = True
+    return has_descriptor, has_outcome_value
+
+
+def _reference_query_has_performance_qualification(query: str) -> bool:
+    pairs = parse_qsl(query, keep_blank_values=True)
+    if not pairs and query:
+        pairs = [(unquote(query), "")]
+    has_descriptor, has_outcome_value = _reference_query_semantics(query)
+    if has_descriptor and has_outcome_value:
+        return True
+    return any(
+        _reference_component_has_performance_qualification(f"{key} {value}")
+        for key, value in pairs
+    )
+
+
+def _reference_text_has_performance_qualification(value: str) -> bool:
+    text = _bounded_unquote(unicodedata.normalize("NFKC", value)).strip()
+    parsed = urlsplit(text)
+    is_uri = bool(parsed.scheme and "://" in text)
+    has_descriptor = False
+    has_outcome_value = False
+    if is_uri:
+        if _reference_component_has_performance_qualification(parsed.scheme):
+            return True
+        has_descriptor = (
+            has_descriptor
+            or _reference_component_has_performance_descriptor(parsed.scheme)
+        )
+        host = parsed.hostname or ""
+        for part in host.split("."):
+            if not part:
+                continue
+            if _reference_component_has_performance_qualification(part):
+                return True
+            has_descriptor = (
+                has_descriptor
+                or _reference_component_has_performance_descriptor(part)
+            )
+        if parsed.username or parsed.password:
+            if _reference_component_has_performance_qualification(
+                f"{parsed.username or ''} {parsed.password or ''}"
+            ):
+                return True
+            for credential in (parsed.username, parsed.password):
+                if not credential:
+                    continue
+                has_descriptor = (
+                    has_descriptor
+                    or _reference_component_has_performance_descriptor(credential)
+                )
+                has_outcome_value = (
+                    has_outcome_value
+                    or _reference_component_has_outcome_value(credential)
+                )
+        path_text = _bounded_unquote(parsed.path)
+        query = parsed.query
+        fragment = _bounded_unquote(parsed.fragment)
+    else:
+        path_text = _bounded_unquote(text.split("?", 1)[0].split("#", 1)[0])
+        query = text.split("?", 1)[1].split("#", 1)[0] if "?" in text else ""
+        fragment = text.split("#", 1)[1] if "#" in text else ""
+
+    segments = [part for part in re.split(r"[/\\]+", path_text) if part]
+    bare_numeric_path_value = False
+    for index, segment in enumerate(segments):
+        if _reference_component_has_performance_qualification(segment):
+            return True
+        has_descriptor = (
+            has_descriptor
+            or _reference_component_has_performance_descriptor(segment)
+        )
+        segment_metric_text = _normalized_performance_text(segment)
+        metric_segment = bool(PERFORMANCE_VALUE_TERM.search(segment_metric_text))
+        metric_remainder_tokens = set(
+            re.findall(
+                r"[a-z0-9]+",
+                PERFORMANCE_VALUE_TERM.sub(" ", segment_metric_text),
+            )
+        )
+        metric_has_structural_glue = bool(metric_remainder_tokens) and bool(
+            metric_remainder_tokens
+            <= (
+                PERFORMANCE_REFERENCE_GLUE_TOKENS
+                | PERFORMANCE_REFERENCE_FILE_SUFFIX_TOKENS
+            )
+        )
+        next_index = index + 1
+        while (
+            next_index < len(segments)
+            and (
+                _entire_opaque_structural_identity(
+                    _bounded_unquote(segments[next_index])
+                )
+                or unicodedata.normalize(
+                    "NFKC", _bounded_unquote(segments[next_index]),
+                ).strip() in {".", ".."}
+            )
+        ):
+            next_index += 1
+        next_text = (
+            unicodedata.normalize(
+                "NFKC", _bounded_unquote(segments[next_index]),
+            ).strip()
+            if next_index < len(segments)
+            else ""
+        )
+        next_is_bare_numeric = bool(
+            re.fullmatch(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)", next_text)
+        )
+        next_is_year = bool(
+            re.fullmatch(r"\d{4}", next_text)
+            and 1900 <= int(next_text) <= 2100
+        )
+        next_is_neutral_numeric_context = bool(
+            next_index < len(segments)
+            and (
+                _normalized_key(segments[next_index])
+                in REFERENCE_NEUTRAL_NUMERIC_PATH_CONTEXTS
+                or re.fullmatch(
+                    r"v\d+(?:\.\d+)+",
+                    next_text,
+                    re.IGNORECASE,
+                )
+                or next_is_year
+                or (next_is_bare_numeric and metric_has_structural_glue)
+            )
+        )
+        current_text = unicodedata.normalize(
+            "NFKC", _bounded_unquote(segment),
+        ).strip()
+        current_is_bare_numeric = bool(
+            re.fullmatch(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)", current_text)
+        )
+        prior_index = index - 1
+        while prior_index >= 0 and (
+            _entire_opaque_structural_identity(
+                _bounded_unquote(segments[prior_index])
+            )
+            or unicodedata.normalize(
+                "NFKC", _bounded_unquote(segments[prior_index]),
+            ).strip() in {".", ".."}
+        ):
+            prior_index -= 1
+        prior_segment = segments[prior_index] if prior_index >= 0 else ""
+        prior_metric_text = _normalized_performance_text(prior_segment)
+        prior_metric_tokens = set(re.findall(
+            r"[a-z0-9]+",
+            PERFORMANCE_VALUE_TERM.sub(" ", prior_metric_text),
+        ))
+        prior_metric_is_structural = bool(
+            PERFORMANCE_VALUE_TERM.search(prior_metric_text)
+            and prior_metric_tokens
+            and prior_metric_tokens <= (
+                PERFORMANCE_REFERENCE_GLUE_TOKENS
+                | PERFORMANCE_REFERENCE_FILE_SUFFIX_TOKENS
+            )
+        )
+        date_path_component = bool(
+            re.fullmatch(r"\d{4}", current_text)
+            and 1900 <= int(current_text) <= 2100
+            or index >= 1
+            and re.fullmatch(r"\d{4}", segments[index - 1])
+            and 1900 <= int(segments[index - 1]) <= 2100
+            or index >= 2
+            and re.fullmatch(r"\d{4}", segments[index - 2])
+            and 1900 <= int(segments[index - 2]) <= 2100
+        )
+        current_is_neutral_numeric_context = bool(
+            current_is_bare_numeric
+            and (
+                date_path_component
+                or _normalized_key(prior_segment)
+                in REFERENCE_NEUTRAL_NUMERIC_PATH_CONTEXTS
+                or prior_metric_is_structural
+            )
+        )
+        has_outcome_value = bool(
+            has_outcome_value
+            or (
+                not current_is_neutral_numeric_context
+                and _reference_component_has_outcome_value(segment)
+            )
+        )
+        bare_numeric_path_value = bool(
+            bare_numeric_path_value
+            or current_is_bare_numeric and not current_is_neutral_numeric_context
+        )
+        if (
+            metric_segment
+            and next_index < len(segments)
+            and not next_is_neutral_numeric_context
+            and (
+                _descriptor_context_has_outcome_leaf(segments[next_index])
+                or _reference_component_has_outcome_value(segments[next_index])
+            )
+        ):
+            if _reference_component_has_performance_qualification(
+                f"{segment} {segments[next_index]}"
+            ):
+                return True
+
+    if query:
+        if _reference_query_has_performance_qualification(query):
+            return True
+        query_descriptor, query_outcome_value = _reference_query_semantics(query)
+        has_descriptor = has_descriptor or query_descriptor
+        has_outcome_value = has_outcome_value or query_outcome_value
+    if fragment:
+        if _reference_component_has_performance_qualification(fragment):
+            return True
+        if _reference_query_has_performance_qualification(fragment):
+            return True
+        fragment_descriptor, fragment_outcome_value = _reference_query_semantics(
+            fragment
+        )
+        has_descriptor = (
+            has_descriptor
+            or fragment_descriptor
+            or _reference_component_has_performance_descriptor(fragment)
+        )
+        has_outcome_value = (
+            has_outcome_value
+            or fragment_outcome_value
+            or _reference_component_has_outcome_value(fragment)
+        )
+    return has_descriptor and (has_outcome_value or bare_numeric_path_value)
+
+
+def _terminal_r2_version_text(
+    value: str, metric_matches: Sequence[re.Match[str]]
+) -> bool:
+    if not metric_matches:
+        return False
+    if any(match.group(0).casefold() != "r2" for match in metric_matches):
+        return False
+    text = _bounded_unquote(unicodedata.normalize("NFKC", value)).strip()
+    normalized_text = _normalized_performance_text(text)
+    if (
+        QUALITATIVE_VALUE_TERM.search(normalized_text)
+        or OUTCOME_EVALUATION_TERM.search(normalized_text)
+        or PERFORMANCE_PREDICATE_TERM.search(normalized_text)
+        or SPELLED_NUMBER_TERM.search(normalized_text)
+        or PERCENT_VALUE_TERM.search(normalized_text)
+        or BASIS_POINT_VALUE_TERM.search(normalized_text)
+    ):
+        return False
+    return bool(
+        re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_.:/\\ -]*[_.:/\\ -]R2",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _terminal_r2_identity_version(
+    value: str, field: str, metric_matches: Sequence[re.Match[str]]
+) -> bool:
+    return bool(
+        field in PERFORMANCE_IDENTITY_REFERENCE_FIELDS
+        and _terminal_r2_version_text(value, metric_matches)
+    )
+
+
+def _performance_clause_has_value(value: str, path: str = "") -> bool:
+    text = _bounded_unquote(unicodedata.normalize("NFKC", value))
+    metric_scan_text = _normalized_performance_text(text)
+    metric_matches = list(PERFORMANCE_VALUE_TERM.finditer(metric_scan_text))
+    compact_performance = _compact_performance_qualification_present(text)
+    if compact_performance:
+        return True
     if not metric_matches:
         return False
     numeric_values: list[re.Match[str]] = []
@@ -426,15 +1282,25 @@ def _string_has_performance_value(value: str, path: str = "") -> bool:
         if re.fullmatch(r"\d{4}", numeric) and 1900 <= int(numeric) <= 2100:
             continue
         numeric_values.append(number)
-    outcome_context = bool(OUTCOME_EVALUATION_TERM.search(text))
-    qualitative_value = bool(QUALITATIVE_VALUE_TERM.search(text))
-    spelled_value = bool(SPELLED_NUMBER_TERM.search(text))
-    governance_denial = bool(
-        re.search(
-            r"\b(?:excluded|never|no|not|omitted|unavailable|without)\b",
-            text,
-            re.IGNORECASE,
-        )
+    outcome_context = bool(
+        OUTCOME_EVALUATION_TERM.search(text)
+        or OUTCOME_EVALUATION_TERM.search(metric_scan_text)
+    )
+    qualitative_value = bool(
+        QUALITATIVE_VALUE_TERM.search(text)
+        or QUALITATIVE_VALUE_TERM.search(metric_scan_text)
+    )
+    spelled_value = bool(
+        SPELLED_NUMBER_TERM.search(text)
+        or SPELLED_NUMBER_TERM.search(metric_scan_text)
+    )
+    percent_value = bool(
+        PERCENT_VALUE_TERM.search(text)
+        or PERCENT_VALUE_TERM.search(metric_scan_text)
+    )
+    basis_point_value = bool(
+        BASIS_POINT_VALUE_TERM.search(text)
+        or BASIS_POINT_VALUE_TERM.search(metric_scan_text)
     )
     field = _normalized_key(path.rsplit(".", 1)[-1].split("[", 1)[0]) if path else ""
     hard_context_text = (
@@ -460,6 +1326,35 @@ def _string_has_performance_value(value: str, path: str = "") -> bool:
             re.IGNORECASE,
         )
     )
+    reference_field = field.endswith(PERFORMANCE_REFERENCE_FIELD_SUFFIXES)
+    reference_shape = bool(
+        reference_field
+        and not re.search(r"\s", text)
+        and (
+            re.fullmatch(r"[A-Za-z0-9_.-]+", text)
+            or "://" in text
+            or re.search(r"[/\\?#]", text)
+        )
+    )
+    if reference_shape:
+        return _reference_text_has_performance_qualification(text)
+    if (
+        field in STRICT_STRUCTURAL_IDENTITY_FIELDS
+        and _performance_qualification_present(text)
+    ):
+        return True
+    if _strict_full_field_structural_identity(text, field):
+        return False
+    if (
+        field in STRUCTURAL_DESCRIPTION_FIELDS
+        and not HARD_REALIZED_CONTEXT.search(hard_context_text)
+        and not numeric_values
+        and not qualitative_value
+        and not spelled_value
+        and not percent_value
+        and not basis_point_value
+    ):
+        return False
     if (
         field in SAFE_STRUCTURAL_VALUE_FIELDS
         and not HARD_REALIZED_CONTEXT.search(hard_context_text)
@@ -469,9 +1364,11 @@ def _string_has_performance_value(value: str, path: str = "") -> bool:
         )
     ):
         return False
+    if PERFORMANCE_PREDICATE_TERM.search(text):
+        return True
+    if percent_value or basis_point_value:
+        return True
     if outcome_context:
-        if governance_denial and not numeric_values and not qualitative_value and not spelled_value:
-            return False
         return True
     structural_target = STRUCTURAL_FORWARD_TARGET.search(text)
     if (
@@ -494,7 +1391,152 @@ def _string_has_performance_value(value: str, path: str = "") -> bool:
             for metric in metric_matches
         ):
             return True
-    return False
+    remainder = PERFORMANCE_VALUE_TERM.sub(" ", metric_scan_text)
+    qualification_tokens = set(re.findall(r"[a-z0-9]+", remainder))
+    if _terminal_r2_identity_version(text, field, metric_matches):
+        return False
+    return not qualification_tokens <= PERFORMANCE_REFERENCE_GLUE_TOKENS
+
+
+def _strip_performance_storage_denials(value: str) -> str:
+    # Existing registry governance prose may explicitly deny an alpha claim or
+    # record that an alpha identity is unresolved. Blank only those grammatical
+    # denials; adjacent economic conclusions remain available to the firewall.
+    for pattern in (
+        r"\bnot\s+(?:an?\s+)?(?:separate\s+)?alpha\s+claim\b",
+        r"\balpha\s+identity\s+(?:is|remain(?:s|ed)?)\s+"
+        r"(?:inconclusive|unproven|unresolved)\b",
+    ):
+        value = re.sub(
+            pattern,
+            lambda match: " " * len(match.group(0)),
+            value,
+            flags=re.IGNORECASE,
+        )
+    denial = re.compile(
+        r"\b(?:no|never)\b[^.;:\n]{0,160}?\b"
+        r"(?:available|imported|persisted|recorded|retained|stored)\b",
+        re.IGNORECASE,
+    )
+
+    def strip_if_metric_is_subject(match: re.Match[str]) -> str:
+        denial_text = match.group(0)
+        storage_matches = list(
+            re.finditer(
+                r"\b(?:available|imported|persisted|recorded|retained|stored)\b",
+                denial_text,
+                re.IGNORECASE,
+            )
+        )
+        if not storage_matches or re.search(
+            r"(?:=|\bequals?\b)", denial_text, re.IGNORECASE
+        ):
+            return denial_text
+        subject_tokens = _normalized_key(
+            denial_text[: storage_matches[-1].start()]
+        ).split("_")
+        if subject_tokens and subject_tokens[0] in {"no", "never"}:
+            subject_tokens.pop(0)
+        while (
+            subject_tokens
+            and subject_tokens[-1] in PERFORMANCE_STORAGE_AUXILIARY_TOKENS
+        ):
+            subject_tokens.pop()
+        metric_text = " ".join(subject_tokens)
+        metric_text = re.sub(r"\bpn\s+l\b", "pnl", metric_text)
+        metric_text = re.sub(r"\bprofit\s+and\s+loss\b", "pnl", metric_text)
+        metric_text = re.sub(r"\bmax\s+dd\b", "maxdd", metric_text)
+        metrics = list(PERFORMANCE_VALUE_TERM.finditer(metric_text))
+        remainder = PERFORMANCE_VALUE_TERM.sub(" ", metric_text)
+        remainder_tokens = set(re.findall(r"[a-z0-9]+", remainder))
+        structurally_bare = (
+            bool(metrics)
+            and metrics[0].start() <= 32
+            and remainder_tokens <= PERFORMANCE_STORAGE_DENIAL_GLUE_TOKENS
+        )
+        if (
+            structurally_bare
+            and not NUMERIC_VALUE.search(denial_text)
+            and not SPELLED_NUMBER_TERM.search(denial_text)
+            and not BASIS_POINT_VALUE_TERM.search(denial_text)
+        ):
+            return " " * len(denial_text)
+        return denial_text
+
+    return denial.sub(strip_if_metric_is_subject, value)
+
+
+def _string_has_performance_value(value: str, path: str = "") -> bool:
+    normalized_value = unicodedata.normalize("NFKC", value)
+    if _entire_opaque_structural_identity(normalized_value):
+        return False
+    text = _strip_performance_storage_denials(normalized_value)
+    coordination_separator = r"[\s._,/\\-]+"
+    punctuation_separator = r"\s*[._,/\\-]+\s*"
+    text = re.sub(
+        rf"\bp(?:{coordination_separator}and{coordination_separator}|[\s._,\\-]*&[\s._,\\-]*|"
+        rf"[\s._,\\-]*/[\s._,\\-]*)l\b",
+        "pnl",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        rf"\bprofit{coordination_separator}(?:and{coordination_separator})?loss\b",
+        "profit_loss",
+        text,
+        flags=re.IGNORECASE,
+    )
+    for pattern, replacement in (
+        (rf"\bsharpe{punctuation_separator}ratio\b", "sharpe_ratio"),
+        (rf"\beconomic{punctuation_separator}outcomes?\b", "economic_outcome"),
+        (rf"\brealized{punctuation_separator}performance\b", "realized_performance"),
+        (rf"\bmax(?:imum)?{punctuation_separator}drawdown\b", "max_drawdown"),
+        (rf"\bmax{punctuation_separator}dd\b", "maxdd"),
+    ):
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    text = re.sub(
+        r",(?=\s*[-+]?(?:\d+(?:\.\d+)?|\.\d+)\s*%?)", ":", text,
+    )
+    field = _normalized_key(path.rsplit(".", 1)[-1].split("[", 1)[0]) if path else ""
+    reference_field = field.endswith(PERFORMANCE_REFERENCE_FIELD_SUFFIXES)
+    identity_field = bool(
+        field in STRICT_STRUCTURAL_IDENTITY_FIELDS
+        or set(field.split("_"))
+        & {
+            "alias", "aliases", "code", "codes", "id", "ids", "identity",
+            "identities", "key", "keys", "label", "labels", "name", "names",
+            "type", "types",
+        }
+    )
+    if (
+        not reference_field
+        and identity_field
+        and PERFORMANCE_VALUE_TERM.search(_normalized_performance_text(text))
+        and _performance_qualification_present(text)
+    ):
+        # Identity metadata cannot use punctuation to separate a metric from
+        # its qualification. Reference fields retain their path/query-aware
+        # neutral-version handling below; ordinary prose remains clause-aware.
+        return True
+    if (
+        field in STRICT_STRUCTURAL_IDENTITY_FIELDS
+        or reference_field
+    ):
+        # Identity/reference separators are structural syntax, not semantic
+        # clause boundaries.  Evaluate the complete field so ``SHARPE. 1P2``
+        # and equivalent encoded qualifications cannot split from the metric.
+        return _performance_clause_has_value(text, path)
+    clauses = re.split(
+        r";|\n+|[.,](?=\s|$)|"
+        r"\b(?:although|and|but|however|though|while|whereas|yet)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return any(
+        _performance_clause_has_value(clause, path)
+        for clause in clauses
+        if clause.strip()
+    )
 
 
 def _performance_value_paths(value: Any, prefix: str = "") -> list[str]:
@@ -511,7 +1553,9 @@ def _performance_value_paths(value: Any, prefix: str = "") -> list[str]:
     return findings
 
 
-def _nonzero_post_2025_paths(value: Any, prefix: str = "") -> list[str]:
+def _nonzero_post_2025_paths(
+    value: Any, prefix: str = "", *, _counter_context: bool = False,
+) -> list[str]:
     findings: list[str] = []
     if isinstance(value, Mapping):
         for raw_key, child in value.items():
@@ -521,12 +1565,21 @@ def _nonzero_post_2025_paths(value: Any, prefix: str = "") -> list[str]:
                 re.search(r"(?:post_?2025|after_?2025|2026).*(?:count|counter|rows|samples|labels|observations)", key)
                 or re.search(r"(?:count|counter|rows|samples|labels|observations).*(?:post_?2025|after_?2025|2026)", key)
             )
-            if is_counter and isinstance(child, (int, float)) and not isinstance(child, bool) and child != 0:
-                findings.append(path)
-            findings.extend(_nonzero_post_2025_paths(child, path))
+            findings.extend(_nonzero_post_2025_paths(
+                child, path, _counter_context=_counter_context or is_counter,
+            ))
     elif isinstance(value, (list, tuple)):
         for index, child in enumerate(value):
-            findings.extend(_nonzero_post_2025_paths(child, f"{prefix}[{index}]"))
+            findings.extend(_nonzero_post_2025_paths(
+                child, f"{prefix}[{index}]", _counter_context=_counter_context,
+            ))
+    elif (
+        _counter_context
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value != 0
+    ):
+        findings.append(prefix or "<counter>")
     return findings
 
 

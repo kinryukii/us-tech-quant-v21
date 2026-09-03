@@ -11,6 +11,7 @@ from typing import Iterator
 
 import pytest
 
+import prospective_research_lifecycle as lifecycle
 import research_registry as rr
 
 
@@ -370,6 +371,29 @@ def test_12_nonzero_post_2025_counter_blocks_apply(tmp_path: Path, surface: str)
         rr.apply_patch(tmp_path, patch)
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"post_2025_observation_count": {"value": 1}},
+        {"post_2025_observation_count": {"items": [{"value": 0}, {"value": 1}]}},
+    ],
+)
+def test_nested_nonzero_post_2025_counter_context_is_not_lost(
+    metadata: dict[str, object],
+) -> None:
+    with pytest.raises(rr.RegistryError, match="POST_2025_COUNTER_NONZERO"):
+        rr._reject_outcome_fields({"validation": metadata})
+
+
+def test_nested_counter_zero_and_unrelated_numeric_metadata_remain_allowed() -> None:
+    rr._reject_outcome_fields({
+        "validation": {
+            "post_2025_observation_count": {"items": [{"value": 0}]},
+            "schema": {"value": 3},
+        },
+    })
+
+
 def test_13_snapshot_and_event_hashes_are_deterministic(tmp_path: Path) -> None:
     first_root = tmp_path / "one"
     second_root = tmp_path / "two"
@@ -691,6 +715,873 @@ def test_metric_name_governance_statement_without_value_is_allowed(tmp_path: Pat
         governance_note="No realized AUROC or Sharpe values are stored; evidence is unavailable.",
     )
     assert rr.preflight_proposal(tmp_path, {"candidate": candidate})["decision"] == "PASS_DISTINCT_INFORMATION_SOURCE"
+
+
+def test_overlay_registration_metadata_round_trips_without_performance_fields() -> None:
+    registration = {
+        "namespace": "OVERLAY",
+        "frozen_name": "RANGE_EXHAUSTION_SCORE_MARGIN_OVERLAY_R1",
+        "short_name": "RX_MARGIN_R1",
+        "prospective_shadow_only": True,
+        "canonical_promotion": False,
+        "production_authorization": False,
+    }
+    normalized = rr._normalize_entity(entity(
+        "RX_MARGIN_RANGE_EXHAUSTION_LINEAGE",
+        entity_type="RESEARCH_OVERLAY",
+        **registration,
+    ))
+
+    restored = rr._entity_from_storage(rr._entity_to_storage(normalized))
+
+    for key, expected in registration.items():
+        assert restored["metadata"][key] == expected
+        assert type(restored["metadata"][key]) is type(expected)
+    assert rr._performance_field_paths(restored["metadata"]) == []
+    assert rr._performance_value_paths(restored["metadata"]) == []
+
+
+@pytest.mark.parametrize(
+    "forbidden_key",
+    [
+        "realized_returns",
+        "prospective_economic_outcomes",
+        "sharpe",
+        "alpha",
+        "cagr",
+        "mdd",
+        "maxdd",
+        "economic_performance_conclusion",
+    ],
+)
+def test_overlay_registration_rejects_forbidden_economic_metadata_fields(
+    forbidden_key: str,
+) -> None:
+    raw = entity(
+        "RX_MARGIN_RANGE_EXHAUSTION_LINEAGE",
+        entity_type="RESEARCH_OVERLAY",
+        namespace="OVERLAY",
+        frozen_name="RANGE_EXHAUSTION_SCORE_MARGIN_OVERLAY_R1",
+        short_name="RX_MARGIN_R1",
+        prospective_shadow_only=True,
+        canonical_promotion=False,
+        production_authorization=False,
+    )
+    raw[forbidden_key] = None
+
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_FIELDS_FORBIDDEN"):
+        rr._normalize_entity(raw)
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "sharpe_ratio",
+        "sharpeRatio",
+        "SharpeRatio",
+        "Sharpe Ratio",
+        "Sharpe-Ratio",
+    ],
+)
+def test_economic_metric_key_normalization_handles_common_encodings(
+    variant: str,
+) -> None:
+    assert rr._normalized_key(variant) == "sharpe_ratio"
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_FIELDS_FORBIDDEN"):
+        rr._reject_outcome_fields({variant: 1.2})
+
+
+@pytest.mark.parametrize(
+    ("metric_key", "value"),
+    [
+        ("Sharpe12Pct", 1.2),
+        ("CAGR40pct", 0.4),
+    ],
+)
+def test_metric_to_digit_boundary_cannot_hide_economic_field(
+    metric_key: str, value: float
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_FIELDS_FORBIDDEN"):
+        rr._reject_outcome_fields({metric_key: value})
+
+
+@pytest.mark.parametrize(
+    "economic_text",
+    ["Sharpe12Pct", "Sharpe12Percent", "CAGR40pct"],
+)
+def test_metric_to_digit_boundary_cannot_hide_economic_value(
+    economic_text: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"notes": economic_text})
+
+
+def test_performance_boundary_normalization_preserves_compact_metric_codes() -> None:
+    assert rr._normalized_performance_key("R2") == "r2"
+    assert rr._normalized_performance_key("F1") == "f1"
+    assert rr._normalized_performance_key("r2Score") == "r2_score"
+    assert rr._normalized_performance_key("f1Score") == "f1_score"
+    assert rr._normalized_performance_key("R212Pct") == "r2_12_pct"
+    assert rr._normalized_performance_key("F140Percent") == "f1_40_percent"
+
+
+@pytest.mark.parametrize(
+    "qualified_metric",
+    [
+        "R212Pct",
+        "r212pct",
+        "R240Percent",
+        "r240percent",
+        "F112Pct",
+        "f112pct",
+        "F140Percent",
+        "f140percent",
+    ],
+)
+def test_compact_metric_code_digit_qualification_is_rejected_across_surfaces(
+    qualified_metric: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_FIELDS_FORBIDDEN"):
+        rr._reject_outcome_fields({qualified_metric: 1.2})
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"notes": qualified_metric})
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields(
+            {"artifact_ref": f"synthetic://registry/{qualified_metric}"}
+        )
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields(
+            {
+                "artifact_ref": (
+                    "synthetic://registry/item"
+                    f"?metric={qualified_metric}&value=stored"
+                )
+            }
+        )
+
+
+def test_f1_prefixed_sha256_remains_a_structural_fingerprint() -> None:
+    opaque_sha256 = "f1" + "a" * 62
+    normalized = rr._normalize_entity(
+        entity("OPAQUE_HASH_ENTITY", mechanism_fingerprint=opaque_sha256)
+    )
+    assert normalized["mechanism_fingerprint"] == opaque_sha256
+
+
+@pytest.mark.parametrize(
+    "qualified_identity",
+    [
+        "f1" + "a" * 62 + "-exceptional",
+        "f1abcdef-1234-4abc-8def-1234567890ab-exceptional",
+    ],
+)
+def test_opaque_identity_plus_qualification_is_not_exempt(
+    qualified_identity: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"notes": qualified_identity})
+
+
+def test_exact_uuid_remains_a_structural_identity() -> None:
+    rr._reject_outcome_fields(
+        {"identity_ref": "f1abcdef-1234-4abc-8def-1234567890ab"}
+    )
+
+
+def test_entire_short_hex_reference_segment_remains_opaque() -> None:
+    rr._reject_outcome_fields(
+        {"artifact_ref": "synthetic://registry/f1abcdef"}
+    )
+
+
+@pytest.mark.parametrize(
+    "qualified_reference",
+    [
+        "synthetic://registry/f1abcdef-exceptional",
+        "synthetic://registry/item?metric=f1abcdef&value=exceptional",
+    ],
+)
+def test_short_hex_reference_qualification_is_not_exempt(
+    qualified_reference: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"artifact_ref": qualified_reference})
+
+
+@pytest.mark.parametrize(
+    "economic_metadata",
+    [
+        {"sharpeRatio": 1.2},
+        {"SharpeRatio": 1.2},
+        {"P&L": -3.0},
+        {"P/L": -3.0},
+        {"realizedPnL": 1.2},
+        {"PnLValue": 1.2},
+        {"dailyMaxDD": -0.25},
+        {"label": "Sharpe", "value": 1.2},
+        {"label": ["Sharpe"], "value": 1.2},
+        {"label": "dailyPnL", "value": 1.2},
+        {"metric": "maxDrawdown", "value": -0.25},
+        {"metrics": [{"name": "CAGR", "value": 0.40}]},
+        {
+            "identity": {"namespace": "OVERLAY"},
+            "provenance": {
+                "artifact_ref": "synthetic://rx/artifact",
+                "nested": {"fieldName": "realizedPerformance", "result": 1.1},
+            },
+        },
+    ],
+)
+def test_overlay_registration_rejects_semantic_economic_metric_encodings(
+    economic_metadata: dict[str, object],
+) -> None:
+    raw = entity(
+        "RX_MARGIN_RANGE_EXHAUSTION_LINEAGE",
+        entity_type="RESEARCH_OVERLAY",
+        namespace="OVERLAY",
+        frozen_name="RANGE_EXHAUSTION_SCORE_MARGIN_OVERLAY_R1",
+        short_name="RX_MARGIN_R1",
+        prospective_shadow_only=True,
+        canonical_promotion=False,
+        production_authorization=False,
+        governance_metadata=economic_metadata,
+    )
+
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_FIELDS_FORBIDDEN"):
+        rr._normalize_entity(raw)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"label": "Sharpe", "wrapper": {"value": 1.2}},
+        {"metric": "maxDrawdown", "payload": {"result": {"value": -0.25}}},
+        {"name": "CAGR", "items": [{"value": 0.40}]},
+        {"name": "CAGR", "items": [0.40]},
+        {"label": "Sharpe", "wrapper": {"payload": [1.2]}},
+    ],
+)
+def test_metric_descriptor_context_survives_transparent_nested_containers(
+    metadata: dict[str, object],
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_FIELDS_FORBIDDEN"):
+        rr._reject_outcome_fields(metadata)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"label": "Sharpe", "wrapper": {"payload": ["exceptional"]}},
+        {"label": "Sharpe", "wrapper": {"payload": ["1.2"]}},
+        {"metric": "maxDrawdown", "wrapper": {"payload": ["25pct"]}},
+        {"name": "CAGR", "data": [{"nested": {"payload": "40%"}}]},
+        {"label": "alpha", "wrapper": {"payload": ["positive"]}},
+        {
+            "wrapper": {
+                "label": "Sharpe",
+                "data": [{"nested": {"payload": "outstanding"}}],
+            }
+        },
+    ],
+)
+def test_metric_descriptor_context_survives_transparent_textual_leaves(
+    metadata: dict[str, object],
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_FIELDS_FORBIDDEN"):
+        rr._reject_outcome_fields(metadata)
+
+
+def test_descriptor_text_propagation_does_not_ban_neutral_text_globally() -> None:
+    rr._reject_outcome_fields({
+        "label": "Sharpe",
+        "wrapper": {"payload": ["not stored", "a" * 64]},
+    })
+    rr._reject_outcome_fields({
+        "label": "schemaVersion",
+        "wrapper": {"payload": ["exceptional", "1.2"]},
+    })
+
+
+def test_neutral_descriptor_and_unassociated_numeric_scalars_remain_allowed() -> None:
+    rr._reject_outcome_fields({"label": "schemaVersion", "wrapper": {"value": 1.2}})
+    rr._reject_outcome_fields({"wrapper": {"value": 1.2}, "retry_count": 3})
+    rr._reject_outcome_fields({"name": "schemaVersion", "items": [0.40]})
+    rr._reject_outcome_fields({"wrapper": {"payload": [1.2]}})
+
+
+def test_overlay_registration_accepts_legitimate_numeric_governance_metadata() -> None:
+    contract_sha256 = fp("rx-frozen-contract")
+    artifact_sha256 = fp("rx-registration-artifact")
+    raw = entity(
+        "RX_MARGIN_RANGE_EXHAUSTION_LINEAGE",
+        entity_type="RESEARCH_OVERLAY",
+        namespace="OVERLAY",
+        frozen_name="RANGE_EXHAUSTION_SCORE_MARGIN_OVERLAY_R1",
+        short_name="RX_MARGIN_R1",
+        prospective_shadow_only=True,
+        canonical_promotion=False,
+        production_authorization=False,
+        governance_metadata={
+            "identity": {
+                "namespace": "OVERLAY",
+                "frozenName": "RANGE_EXHAUSTION_SCORE_MARGIN_OVERLAY_R1",
+                "shortName": "RX_MARGIN_R1",
+            },
+            "provenance": {
+                "schemaVersion": 1,
+                "contractSha256": contract_sha256,
+                "artifactSha256": artifact_sha256,
+                "artifactReference": "synthetic://rx/registration",
+            },
+            "lifecycleState": "REGISTERED_NOT_STARTED",
+            "prospectiveShadowOnly": True,
+            "canonicalPromotion": False,
+            "productionAuthorization": False,
+        },
+    )
+
+    normalized = rr._normalize_entity(raw)
+    metadata = normalized["metadata"]["governance_metadata"]
+
+    assert metadata["provenance"]["schemaVersion"] == 1
+    assert metadata["provenance"]["contractSha256"] == contract_sha256
+    assert metadata["provenance"]["artifactSha256"] == artifact_sha256
+    assert metadata["lifecycleState"] == "REGISTERED_NOT_STARTED"
+    assert metadata["prospectiveShadowOnly"] is True
+    assert metadata["canonicalPromotion"] is False
+    assert metadata["productionAuthorization"] is False
+    assert rr._performance_field_paths(metadata) == []
+    assert rr._performance_value_paths(metadata) == []
+
+
+@pytest.mark.parametrize(
+    "economic_text",
+    [
+        "holdout sharpeRatio = 1.2",
+        "holdout sharpe_ratio = 1.2",
+        "holdout maxDrawdown = -0.25",
+        "realizedPnL = 12",
+        "Realized performance was strong.",
+        "Economic performance was weak.",
+        "Sharpe.Ratio = 1.2",
+        "Sharpe, 1.2",
+        "P-and-L = 12",
+        "P.and.L = 12",
+        "economic.outcome was strong",
+    ],
+)
+def test_recursive_value_firewall_rejects_normalized_economic_text(
+    economic_text: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"notes": {"review": economic_text}})
+
+
+@pytest.mark.parametrize(
+    "economic_text",
+    [
+        "Sharpe was exceptional.",
+        "Sharpe is outstanding.",
+        "Sharpe remained favorable.",
+        "Sharpe ranked first.",
+        "Sharpe proved remarkable.",
+        "Sharpe: exceptional.",
+        "Exceptional Sharpe.",
+        "Sharpe—outstanding.",
+    ],
+)
+def test_recursive_value_firewall_rejects_structural_economic_conclusions(
+    economic_text: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"notes": economic_text})
+
+
+@pytest.mark.parametrize("field", ["artifact_ref", "canonical_name", "entity_id"])
+def test_identity_or_reference_field_cannot_hide_economic_conclusion(
+    field: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({field: "Sharpe: exceptional"})
+
+
+def test_opaque_metric_like_identity_and_reference_remain_allowed() -> None:
+    rr._reject_outcome_fields({
+        "entity_id": "RAW_A2_R2",
+        "canonical_name": "Bar Mechanism R2",
+        "artifact_ref": "synthetic://registry/SHARPE_ARTIFACT",
+    })
+    rr._reject_outcome_fields({
+        "entity_id": "BAR_VERSION_R2",
+        "canonical_name": "Bar Version R2",
+        "artifact_ref": "synthetic://registry/BAR_VERSION_R2",
+    })
+    rr._reject_outcome_fields({
+        "entity_id": "BAR12_R2",
+        "canonical_name": "Bar12 Version R2",
+        "artifact_ref": "synthetic://registry/BAR12_R2",
+    })
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "synthetic://registry/item?sharpe=exceptional",
+        "synthetic://registry/item?SharpeRatio=1.2",
+        "synthetic://registry/Sharpe12Pct",
+        "synthetic://registry/CAGR40pct",
+        "synthetic://registry/maxDrawdown25pct",
+        "synthetic://registry/item?metric=Sharpe12Pct&value=stored",
+        "synthetic://registry/%2553harpe%253D1.2",
+        "synthetic://registry/item#sharpe:exceptional",
+        "synthetic://registry/BAR_EXCEPTIONAL_R2",
+        "synthetic://registry/BarExceptional_R2",
+        "synthetic://registry/BAR_FORTY_PERCENT_R2",
+        "synthetic://registry/BAR12pct_R2",
+        "synthetic://registry/Bar12Pct_R2",
+        "synthetic://registry/f1abcdef-1234-4abc-8def-1234567890ab-exceptional",
+        (
+            "synthetic://registry/f1abcdef-1234-4abc-8def-1234567890ab"
+            "?metric=Sharpe&value=exceptional"
+        ),
+        "synthetic://registry/SHARPE_ARTIFACT?value=1.2",
+        "synthetic://registry/sharpe/artifact?value=1.2",
+        "synthetic://registry/MAX_DRAWDOWN_ARTIFACT?value=-0.25",
+        "synthetic://sharpe.registry/artifact?value=1.2",
+        "synthetic://registry/value/1.2?metric=Sharpe",
+        "synthetic://registry/SHARPE_ARTIFACT#value=1.2",
+        "synthetic://registry/item?value=1.2#metric=Sharpe",
+        "synthetic://registry/sharpe/1.2",
+        "synthetic://registry/SHARPE_ARTIFACT/value/1.2",
+        "synthetic://registry/sharpe/artifact/result/1.2",
+        "synthetic://registry/sharpe/artifact/score/12",
+        "synthetic://registry/SHARPE_ARTIFACT/exceptional",
+        "synthetic://registry/SHARPE_ARTIFACT/40pct",
+        "synthetic://registry/sharpe-exceptional.json",
+        "synthetic://registry/sharpe/exceptional",
+        "notes/sharpe-exceptional",
+        "notes/sharpe-exceptional1",
+        "notes/maxDrawdown-25pct",
+        "synthetic://registry/item?label=Sharpe&value=exceptional",
+        "artifact://x/result?metric=CAGR&value=40pct",
+        "synthetic://sharpe:exceptional@registry/item",
+    ],
+)
+def test_reference_shape_cannot_hide_economic_qualification(reference: str) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({
+            "provenance": {"artifact_refs": [reference]},
+        })
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "synthetic://registry/SHARPE_ARTIFACT",
+        "synthetic://registry/sharpe/artifact",
+        "synthetic://registry/item#sharpe-artifact",
+        "D:/contracts/SHARPE_ARTIFACT.json",
+        "artifact://registry/" + "a" * 64,
+        "D:/evidence/contracts/frozen_contract.json",
+        "synthetic://registry/%2552AW_A2_R2",
+        "synthetic://registry/f1abcdef-1234-4abc-8def-1234567890ab",
+        "synthetic://registry/SHARPE_ARTIFACT?version=1.2",
+        "synthetic://registry/sharpe/artifact?version=1.2",
+        "synthetic://registry/MAX_DRAWDOWN_ARTIFACT?version=1.2",
+        "synthetic://registry/SHARPE_ARTIFACT/version/1.2",
+        "synthetic://registry/sharpe/artifact/v/1.2",
+        "synthetic://registry/SHARPE_ARTIFACT/schema/2",
+        "synthetic://registry/SHARPE_ARTIFACT/build/123",
+        "synthetic://registry/SHARPE_ARTIFACT/revision/4",
+        "synthetic://registry/SHARPE_ARTIFACT/2024/",
+        "synthetic://registry/SHARPE_ARTIFACT/part/2",
+        "synthetic://registry/SHARPE_ARTIFACT/partition/12",
+        "synthetic://registry/SHARPE_ARTIFACT/2024/09/01",
+        "synthetic://registry/SHARPE_ARTIFACT/v1.2",
+        "synthetic://registry/sharpe/artifact/v1.2",
+    ],
+)
+def test_neutral_metric_like_opaque_references_remain_allowed(reference: str) -> None:
+    rr._reject_outcome_fields({"artifact_refs": [reference]})
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "artifact://x/sharpe/" + "a" * 64 + "/1.2",
+        "artifact://x/sharpe/12345678-1234-4abc-8def-1234567890ab/1.2",
+        "artifact://x/maxDrawdown/" + "a" * 64 + "/25pct",
+        "artifact://x/CAGR/12345678-1234-4abc-8def-1234567890ab/40pct",
+        "artifact://x/sharpe/" + "a" * 40 + "/1.2",
+        "artifact://x/sharpe/" + "a" * 64 + "/./1.2",
+        "artifact://x/sharpe/" + "a" * 64 + "/../1.2",
+        "artifact://sharpe/" + "a" * 64 + "/1.2",
+        "artifact://x/" + "a" * 64 + "/1.2?metric=Sharpe",
+        "sharpe://x/" + "a" * 64 + "/1.2",
+        "maxdrawdown://x/" + "a" * 64 + "/25pct",
+        "cagr://x/12345678-1234-4abc-8def-1234567890ab/40pct",
+        "artifact://sharpe@x/" + "a" * 64 + "/1.2",
+    ],
+)
+def test_opaque_identity_separator_does_not_reset_metric_context(reference: str) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"artifact_ref": reference})
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "artifact://x/item?metric=Sharpe&data=1.2",
+        "artifact://x/item?metric=Sharpe&data=1e2",
+        "artifact://x/item?metric=Sharpe&data=25bps",
+        "artifact://x/item?data=1.2&metric=Sharpe",
+        "artifact://x/item?metric=Sharpe&payload=1.2",
+        "artifact://x/item?label=Sharpe&x=exceptional",
+        "artifact://x/item?metric=CAGR&payload=40pct",
+        "artifact://x/item?label=Sharpe&wrapper=1.2",
+        "artifact://x/item#metric=Sharpe&data=1.2",
+        (
+            "artifact://x/item?metric=Sharpe&payload="
+            + "a" * 64
+            + "&data=1.2"
+        ),
+        (
+            "artifact://x/item?payload=40pct&opaque="
+            + "a" * 64
+            + "&metric=CAGR"
+        ),
+        (
+            "artifact://x/item?metric=maxDrawdown&token="
+            "12345678-1234-4abc-8def-1234567890ab&payload=25pct"
+        ),
+    ],
+)
+def test_query_semantic_unit_preserves_descriptor_context(
+    reference: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"artifact_ref": reference})
+
+
+def test_query_semantic_unit_allows_only_neutral_identity_and_version_values() -> None:
+    rr._reject_outcome_fields({
+        "artifact_ref": (
+            "artifact://x/item?metric=Sharpe&artifact_sha256="
+            + "a" * 64
+            + "&version=1.2"
+        )
+    })
+    rr._reject_outcome_fields({
+        "artifact_ref": "artifact://x/item?data=1.2",
+    })
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "artifact://x/item/" + "a" * 64 + "/1.2",
+        "artifact://x/item/12345678-1234-4abc-8def-1234567890ab/1.2",
+        "artifact://x/sharpe/" + "a" * 64 + "/version/1.2",
+        "artifact://sharpe/" + "a" * 64 + "/version/1.2",
+        "artifact://x/version/1.2?metric=Sharpe",
+    ],
+)
+def test_neutral_opaque_separator_references_remain_allowed(reference: str) -> None:
+    rr._reject_outcome_fields({"artifact_ref": reference})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entity_id", "R2_EXCEPTIONAL"),
+        ("entity_id", "BAR_EXCEPTIONAL_R2"),
+        ("entity_id", "BAR_FORTY_PERCENT_R2"),
+        ("entity_id", "BAR12pct_R2"),
+        ("canonical_name", "R2: exceptional"),
+        ("canonical_name", "BarExceptional_R2"),
+        ("canonical_name", "BarFortyPercent_R2"),
+        ("canonical_name", "Bar12Pct_R2"),
+        ("canonical_name", "exceptional R2"),
+        ("canonical_name", "Bar exceptional R2"),
+        ("canonical_name", "Bar Mechanism R2 exceptional"),
+    ],
+)
+def test_r2_version_identity_cannot_bypass_economic_qualification(
+    field: str, value: str
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({field: value})
+
+
+@pytest.mark.parametrize("version", ["R2", "r2", "V2", "v2", "R2.1", "R22", "V22"])
+def test_exact_full_field_identity_version_remains_structural(version: str) -> None:
+    rr._reject_outcome_fields({"canonical_name": version})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entity_id", "A2_COST_NAV_REPLAY_ENGINE"),
+        ("entity_id", "A2_ALPHA_SIGNAL_ENGINE"),
+        ("entity_id", "SHARPE2025"),
+        ("canonical_name", "A2_COST_NAV_REPLAY_ENGINE"),
+        ("entity_type", "ALPHA_COMPONENT"),
+    ],
+)
+def test_strict_full_field_structural_identity_is_allowed(
+    field: str, value: str,
+) -> None:
+    rr._reject_outcome_fields({field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entity_id", "A2_COST_NAV_REPLAY_ENGINE_EXCEPTIONAL"),
+        ("entity_id", "SHARPE_EXCEPTIONAL"),
+        ("entity_id", "SHARPE_1P2"),
+        ("entity_id", "SHARPE_0P8"),
+        ("entity_id", "SHARPE_MINUS_1P2"),
+        ("entity_id", "SHARPE_PLUS_1P2"),
+        ("entity_id", "CAGR_40PCT"),
+        ("entity_id", "CAGR_1e2"),
+        ("entity_id", "SHARPE_1E_2"),
+        ("entity_id", "SHARPE_1E_MINUS_2"),
+        ("entity_id", "SHARPE_25BPS"),
+        ("entity_id", "MDD_25_PERCENT"),
+        ("entity_id", "MAX_DRAWDOWN_25PCT"),
+        ("entity_id", "ALPHA_PLUS_50BP"),
+        ("entity_id", "ALPHA_MINUS_25BPS"),
+        ("entity_id", "RETURN_12P5PCT"),
+        ("entity_id", "PNL_PLUS_100BP"),
+        ("entity_id", "ALPHA_POSITIVE"),
+        ("entity_id", "SHARPE. POSITIVE"),
+        ("entity_id", "CAGR. 40PCT"),
+        ("entity_id", "ALPHA. PLUS_50BP"),
+        ("entity_id", "SHARPE_1EMINUS2"),
+        ("entity_id", "SHARPE_1EPLUS2"),
+        ("entity_id", "SHARPEEXCEPTIONAL"),
+        ("entity_id", "ALPHAPOSITIVE"),
+        ("entity_id", "ALPHAPLUS50BP"),
+        ("entity_id", "PNLPLUS100BP"),
+        ("entity_id", "SHARPE12"),
+        ("entity_id", "CAGR40"),
+        ("entity_id", "MDD25"),
+        ("entity_id", "ALPHA50"),
+        ("entity_id", "RETURN12"),
+        ("entity_id", "PNL100"),
+        ("canonical_name", "SHARPE_1P2"),
+        ("canonical_name", "SHARPE. 1P2"),
+        ("component_id", "SHARPE. 1P2"),
+        ("model_id", "SHARPE; POSITIVE"),
+        ("arbitrary_identity", "CAGR. 40PCT"),
+        ("canonical_name", "A2_COST_NAV_REPLAY_ENGINE_1.2"),
+        ("canonical_name", "sharpe-1.2"),
+        ("entity_type", "ALPHA_COMPONENT_POSITIVE"),
+    ],
+)
+def test_structural_identity_exemption_rejects_outcome_qualification(
+    field: str, value: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("entity_id", "SHARPE_1P2"),
+        ("entity_id", "SHARPE_0P8"),
+        ("entity_id", "SHARPE_MINUS_1P2"),
+        ("entity_id", "SHARPE_PLUS_1P2"),
+        ("entity_id", "SHARPE_1E2"),
+        ("entity_id", "SHARPE_1E_2"),
+        ("entity_id", "SHARPE_1E_MINUS_2"),
+        ("entity_id", "CAGR_40PCT"),
+        ("entity_id", "CAGR_40_PERCENT"),
+        ("entity_id", "MDD_25PCT"),
+        ("entity_id", "MAX_DRAWDOWN_25PCT"),
+        ("entity_id", "ALPHA_PLUS_50BP"),
+        ("entity_id", "ALPHA_MINUS_25BPS"),
+        ("entity_id", "RETURN_12P5PCT"),
+        ("entity_id", "PNL_PLUS_100BP"),
+        ("entity_id", "SHARPE. POSITIVE"),
+        ("entity_id", "CAGR. 40PCT"),
+        ("entity_id", "ALPHA. PLUS_50BP"),
+        ("entity_id", "SHARPE_1EMINUS2"),
+        ("entity_id", "SHARPE_1EPLUS2"),
+        ("entity_id", "SHARPEEXCEPTIONAL"),
+        ("entity_id", "ALPHAPOSITIVE"),
+        ("entity_id", "ALPHAPLUS50BP"),
+        ("entity_id", "PNLPLUS100BP"),
+        ("entity_id", "SHARPE12"),
+        ("entity_id", "CAGR40"),
+        ("entity_id", "MDD25"),
+        ("entity_id", "ALPHA50"),
+        ("entity_id", "RETURN12"),
+        ("entity_id", "PNL100"),
+        ("canonical_name", "SHARPE_1P2"),
+        ("canonical_name", "SHARPE. 1P2"),
+        ("component_id", "SHARPE. 1P2"),
+        ("model_id", "SHARPE; POSITIVE"),
+        ("arbitrary_identity", "CAGR. 40PCT"),
+    ],
+)
+def test_complete_entity_rejects_encoded_performance_identity(
+    field: str, value: str,
+) -> None:
+    candidate = entity(
+        "A2_SAFE_STRUCTURAL_COMPONENT",
+        name="A2_SAFE_STRUCTURAL_COMPONENT",
+    )
+    candidate[field] = value
+
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._normalize_entity(candidate)
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "SHARPE_1P2",
+        "SHARPE. 1P2",
+        "SHARPE; POSITIVE",
+        "CAGR. 40PCT",
+        "ALPHA. PLUS_50BP",
+        "SHARPE_1EMINUS2",
+        "SHARPE_1EPLUS2",
+        "SHARPEEXCEPTIONAL",
+        "ALPHAPOSITIVE",
+        "ALPHAPLUS50BP",
+        "PNLPLUS100BP",
+        "SHARPE12",
+        "CAGR40",
+        "MDD25",
+        "ALPHA50",
+        "RETURN12",
+        "PNL100",
+        "artifact://x/SHARPE_1P2",
+        "artifact://x/sharpe/1P2",
+        "artifact://x/item?metric=Sharpe&data=1P2",
+        "artifact://x/item?payload=1P2&metric=Sharpe",
+    ],
+)
+def test_reference_identity_exemption_rejects_encoded_performance_value(
+    reference: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"artifact_ref": reference})
+
+
+def test_existing_structural_registry_row_remains_consumable() -> None:
+    raw = entity(
+        "A2_COST_NAV_REPLAY_ENGINE",
+        entity_type="ALPHA_COMPONENT",
+        excluded_source_refs=[
+            "D:/us-tech-quant-results/A2_ALGORITHM_R2A_2026_FORWARD/contract.json",
+        ],
+        authoritative_artifact_refs=[
+            "D:/us-tech-quant-results/A2_RISK_OS_R2/risk_os_r2_final_summary.json",
+        ],
+        lifecycle_reason=(
+            "Required identity, PIT, replay, or forward-control infrastructure; "
+            "not a separate alpha claim."
+        ),
+        economic_role="INCREMENTAL_ALPHA",
+        information_family="PIT state rank sector and corrected return labels",
+        information_source="PIT state rank sector and corrected return labels",
+        model_family="Identity and recall diagnostic only; no fitted model",
+        portfolio_action="No policy and no strategy return",
+        outcome_horizon="Existing forward-return windows",
+        parent_entity_ids=["A2_COST_NAV_REPLAY_ENGINE"],
+    )
+
+    normalized = rr._normalize_entity(raw)
+    restored = rr._entity_from_storage(rr._entity_to_storage(normalized))
+
+    assert restored["entity_id"] == "A2_COST_NAV_REPLAY_ENGINE"
+    assert restored["metadata"]["lifecycle_reason"].endswith("alpha claim.")
+
+
+def test_configured_authoritative_registry_is_consumable_read_only() -> None:
+    repo = Path(rr.__file__).resolve().parent
+    config = json.loads((repo / "config" / "research_registry.json").read_text(encoding="utf-8"))
+    configured_root = Path(str(config["registry_root"]))
+    if not configured_root.is_absolute():
+        configured_root = (repo / configured_root).resolve()
+    if not configured_root.is_dir():
+        pytest.skip("configured authoritative registry is unavailable")
+
+    state = rr.current_state(configured_root)
+    query = rr.query_registry(configured_root)
+    lifecycle_registry = lifecycle._registry_module(repo)
+    lifecycle_root = lifecycle._registry_root(repo)
+    lifecycle_query = lifecycle_registry.query_registry(lifecycle_root)
+
+    assert state["status"] == "PASS"
+    assert query["status"] == "PASS"
+    assert lifecycle_query["status"] == "PASS"
+    assert query["head_sha256"] == lifecycle_query["head_sha256"]
+
+
+def test_realized_performance_governance_denial_without_value_remains_allowed() -> None:
+    metadata = {
+        "governance_note": (
+            "No realized performance or Sharpe values are stored; evidence is unavailable."
+        ),
+        "schemaVersion": 2,
+    }
+
+    rr._reject_outcome_fields(metadata)
+    assert rr._performance_field_paths(metadata) == []
+    assert rr._performance_value_paths(metadata) == []
+
+
+@pytest.mark.parametrize(
+    "economic_text",
+    [
+        "No Sharpe value of 1.2 is stored.",
+        "No realized performance of 25% is recorded.",
+        "No Sharpe result of twelve percent is retained.",
+        "No Sharpe result was excellent and stored.",
+        "No Sharpe = 1.2 is persisted.",
+        "No copy of the Sharpe result, rated exceptional, is stored.",
+    ],
+)
+def test_storage_denial_cannot_hide_embedded_economic_value(
+    economic_text: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"notes": economic_text})
+
+
+@pytest.mark.parametrize(
+    "mixed_text",
+    [
+        "No Sharpe values are stored; realized performance was positive.",
+        "No Sharpe values are stored; realized performance beat the benchmark.",
+        "No Sharpe values are stored and realized performance was positive.",
+        "No tests failed, realized performance outperformed the benchmark.",
+        "No files were changed because realized performance exceeded its benchmark.",
+        "No Sharpe values are stored or realized performance was excellent.",
+        "No Sharpe values are stored because realized performance was excellent.",
+        "No Sharpe values are stored despite realized performance exceeded its benchmark.",
+    ],
+)
+def test_governance_denial_cannot_suppress_separate_economic_conclusion(
+    mixed_text: str,
+) -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"notes": mixed_text})
+
+
+def test_prospective_economic_conclusion_text_is_rejected_but_denial_is_allowed() -> None:
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN"):
+        rr._reject_outcome_fields({"notes": "Prospective economic outcome was strong."})
+
+    rr._reject_outcome_fields({
+        "governance_note": "No prospective economic outcomes are stored."
+    })
 
 
 def test_structural_forward_target_identity_is_not_a_realized_metric(tmp_path: Path) -> None:
