@@ -1,0 +1,220 @@
+{
+  "binding_version": "A2_FORWARD_SHADOW_PRODUCTION_BINDING_R1",
+  "created_at": "2026-08-21T08:54:59.7867421Z",
+  "binding_scope": "EXACT_DATE_INFERENCE_TO_UNIFIED_TRANSACTION_STAGING_ONLY",
+  "training_allowed": false,
+  "parameter_search_allowed": false,
+  "threshold_search_allowed": false,
+  "model_selection_allowed": false,
+  "broker_action_allowed": false,
+  "registries": {
+    "ALPHA": {
+      "path": "D:/us-tech-quant/config/research_governance/alpha_registry.json",
+      "sha256": "b7beb4adb7fbe67048bedcb21a476a23bbed9295009805a0d432239576e404e3"
+    },
+    "RISK": {
+      "path": "D:/us-tech-quant/config/research_governance/risk_registry.json",
+      "sha256": "5e39ac60f7e31abc23dbe9160a0acc40ff2fe2a933aba7b17154c33691c2aa6a"
+    },
+    "EXECUTION": {
+      "path": "D:/us-tech-quant/config/research_governance/execution_registry.json",
+      "sha256": "0b55217475fd8e667a7f2fa95654cee622b7eca1d929705820d2b38f86b423cd"
+    }
+  },
+  "components": {
+    "ALPHA": {
+      "model_id": "A2_HGB",
+      "model_family": "ALPHA",
+      "role": "ALPHA_CHAMPION",
+      "status": "FROZEN_CHAMPION",
+      "freeze_id": "A_A2_QUARTERLY_13F_CLEAN_BASELINE_R1",
+      "selection_source": "PRE2026_ONLY",
+      "uses_2026_training": false,
+      "uses_2026_parameter_search": false,
+      "uses_2026_model_selection": false,
+      "artifacts": [
+        {
+          "artifact_id": "model",
+          "path": "D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/final_full_pre2026_hgb.joblib",
+          "sha256": "4f7eff07021bef084b0329dac8dabc31e9391c7c4945eb2955dc6c1339dcea0b"
+        },
+        {
+          "artifact_id": "pre_final_freeze",
+          "path": "D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/pre_final_freeze.json",
+          "sha256": "4078b6419ddf47ec09b073e2184780f7086f80abc627bad9a34e1b9aa7379115"
+        },
+        {
+          "artifact_id": "source_hash_manifest",
+          "path": "D:/us-tech-quant-results/A2_PIT13F_MATERIALIZATION_R1/source_hash_manifest.json",
+          "sha256": "d9f3032b4c154ebd62e88291a36e6a4f1d2d1680b6f3d95ccc4675813afcfd73"
+        },
+        {
+          "artifact_id": "frozen_contracts",
+          "path": "D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/audit/frozen_contracts_before_outcome_read.json",
+          "sha256": "5dbd9f90343645cb573dcb8c44bfc1934db54b792b884ff56524b860c676277d"
+        },
+        {
+          "artifact_id": "rebuild_summary",
+          "path": "D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/audit/fail_closed_or_pass_summary.json",
+          "sha256": "56b9f003d06dd0c2da3254ff68c20a0d1f5ba44c604bea94b62430be7ec9a552"
+        },
+        {
+          "artifact_id": "source",
+          "path": "D:/us-tech-quant/scripts/v22/abcde_a2_r1_nonlinear_cross_sectional_modeling.py",
+          "sha256": "fd4fe78d27bfbf57c89343d60550366ccf7fcbf3d6a65e7ef66f28405d050c19"
+        }
+      ],
+      "composite_sha256": "0aec4a9dcd264e07ab517d9f5d8718c77bee3008687f944d38a256d29caac601",
+      "entrypoints": [
+        {
+          "entrypoint_id": "A2_FROZEN_FEATURE_API",
+          "path": "D:/us-tech-quant/scripts/v22/abcde_a2_r1_nonlinear_cross_sectional_modeling.py",
+          "sha256": "fd4fe78d27bfbf57c89343d60550366ccf7fcbf3d6a65e7ef66f28405d050c19",
+          "api": "build_stock_state_features/materialize_feature_matrix"
+        },
+        {
+          "entrypoint_id": "A2_SAFE_EXACT_DATE_STAGING_API",
+          "path": "D:/us-tech-quant/scripts/v22/forward_shadow/exact_date_components.py",
+          "sha256": "25f00af711b5e0289cffcbbfe2abc117b692d5b183632f105b04d7fe14a648e5",
+          "api": "run_alpha_single_date"
+        }
+      ],
+      "execute_binding_status": "BOUND_SAFE_EXACT_DATE_ENTRYPOINT"
+    },
+    "RISK": {
+      "model_id": "R6_BAD_ASYMMETRY",
+      "model_family": "RISK",
+      "role": "RISK_CHAMPION",
+      "status": "B_PROSPECTIVE_SUPPORTED",
+      "freeze_id": "R6_BAD_ASYMMETRY_FROZEN_REFERENCE",
+      "selection_source": "PRE2026_ONLY",
+      "uses_2026_training": false,
+      "uses_2026_parameter_search": false,
+      "uses_2026_model_selection": false,
+      "training_end_date": "2025-12-09",
+      "artifacts": [
+        {
+          "artifact_id": "model",
+          "path": "D:/us-tech-quant-results/A2_STOCK_RISK_R11_PROSPECTIVE/r6_frozen_deploy_r1.joblib",
+          "sha256": "3e5f646fcfbf1b4e9196781f712305b044a7b2e57c0fe1b3fe202345561f4a08"
+        },
+        {
+          "artifact_id": "r10_freeze",
+          "path": "D:/us-tech-quant-results/A2_STOCK_RISK_R10_CLOSEOUT/r10_freeze_manifest.json",
+          "sha256": "cc7687e8161ff152bbdffba85998e6fa8721c92277ca5369ad3791aa930ce03c"
+        },
+        {
+          "artifact_id": "r11_preregistration",
+          "path": "D:/us-tech-quant-results/A2_STOCK_RISK_R11_PROSPECTIVE/r11_preregistered_evaluation_contract.json",
+          "sha256": "e3824cf004da24c9eceaed7018d790eed4110d6c921c4e1801a17672f67ac70a"
+        },
+        {
+          "artifact_id": "r11_run_manifest",
+          "path": "D:/us-tech-quant-results/A2_STOCK_RISK_R11_PROSPECTIVE/r11_run_manifest.json",
+          "sha256": "5dab281f628e2aa17e01f4bb163fa1577f3683d40a6e4e0d0497cf8284a56220"
+        },
+        {
+          "artifact_id": "source",
+          "path": "D:/us-tech-quant/scripts/v22/a2_stock_risk_r6.py",
+          "sha256": "9b9472bfb092d29c1354fd6be1d3fa06bdf6a0815bf2fc2247e9d42710fe06f5"
+        }
+      ],
+      "composite_sha256": "7449aba13ce40cacc6a8869e97b99ada877d7c2b4a3d6060ccb3505b11fa389d",
+      "entrypoints": [
+        {
+          "entrypoint_id": "R6_FROZEN_PROBABILITY_API",
+          "path": "D:/us-tech-quant/scripts/v22/a2_stock_risk_r6.py",
+          "sha256": "9b9472bfb092d29c1354fd6be1d3fa06bdf6a0815bf2fc2247e9d42710fe06f5",
+          "api": "predict_probability"
+        },
+        {
+          "entrypoint_id": "R6_SAFE_EXACT_DATE_STAGING_API",
+          "path": "D:/us-tech-quant/scripts/v22/forward_shadow/exact_date_components.py",
+          "sha256": "25f00af711b5e0289cffcbbfe2abc117b692d5b183632f105b04d7fe14a648e5",
+          "api": "run_risk_single_date"
+        }
+      ],
+      "execute_binding_status": "BOUND_SAFE_EXACT_DATE_ENTRYPOINT"
+    },
+    "EXECUTION": {
+      "model_id": "E5_COMBINED_CONSERVATIVE",
+      "model_family": "EXECUTION",
+      "role": "EXECUTION_CHAMPION",
+      "status": "PREFERRED_PRE2026",
+      "freeze_id": "E5_COMBINED_CONSERVATIVE_FROZEN_REFERENCE",
+      "selection_source": "PRE2026_ONLY",
+      "uses_2026_training": false,
+      "uses_2026_parameter_search": false,
+      "uses_2026_model_selection": false,
+      "artifacts": [
+        {
+          "artifact_id": "contract",
+          "path": "D:/us-tech-quant-results/A2_EXECUTION_EFFICIENCY_R2_PREREGISTERED_HYSTERESIS/execution_r2_preregistered_contract.json",
+          "sha256": "3dc30c8e49c38870fec41f65a07e83867a0cff7d3918a3a9502d7961eaf012da"
+        },
+        {
+          "artifact_id": "pairing_contract",
+          "path": "D:/us-tech-quant-results/A2_EXECUTION_EFFICIENCY_R2_PREREGISTERED_HYSTERESIS/replacement_pairing_contract.json",
+          "sha256": "7da37e2cb3dfb197ca19322aa5a87302d43e6d9cdddf2059373bb4f9c2bfa83f"
+        },
+        {
+          "artifact_id": "preferred_identity",
+          "path": "D:/us-tech-quant-results/A2_EXECUTION_EFFICIENCY_R2_PREREGISTERED_HYSTERESIS/preferred_overlay_identity.json",
+          "sha256": "76f29b895a336eb60da045973516542b935324b5c0e8013ac4e41db270ba8587"
+        },
+        {
+          "artifact_id": "source",
+          "path": "D:/us-tech-quant-results/A2_EXECUTION_EFFICIENCY_R2_PREREGISTERED_HYSTERESIS/run_a2_execution_efficiency_r2.py",
+          "sha256": "005fdbc3a50df5552b4837e2706b7184198c1d1bfcfd7d51d03d3f3b55aabfa6"
+        }
+      ],
+      "composite_sha256": "23febf349db93857695c0b930e79bb7d7d58ab7af7bbc2d05a0c89e069ddf794",
+      "entrypoints": [
+        {
+          "entrypoint_id": "E5_FROZEN_RULE_API",
+          "path": "D:/us-tech-quant-results/A2_EXECUTION_EFFICIENCY_R2_PREREGISTERED_HYSTERESIS/run_a2_execution_efficiency_r2.py",
+          "sha256": "005fdbc3a50df5552b4837e2706b7184198c1d1bfcfd7d51d03d3f3b55aabfa6",
+          "api": "suppress/build_executed_targets"
+        },
+        {
+          "entrypoint_id": "E5_SAFE_EXACT_DATE_STAGING_API",
+          "path": "D:/us-tech-quant/scripts/v22/forward_shadow/exact_date_components.py",
+          "sha256": "25f00af711b5e0289cffcbbfe2abc117b692d5b183632f105b04d7fe14a648e5",
+          "api": "run_execution_single_date"
+        }
+      ],
+      "execute_binding_status": "BOUND_SAFE_EXACT_DATE_ENTRYPOINT"
+    }
+  },
+  "roots": {
+    "alpha_legacy_shadow_root": "D:/us-tech-quant-results/A2_ALGORITHM_R2B_FORWARD_SHADOW_LEDGER",
+    "risk_legacy_shadow_root": "D:/us-tech-quant-results/A2_STOCK_RISK_R11_PROSPECTIVE",
+    "execution_legacy_shadow_root": "D:/us-tech-quant-results/A2_EXECUTION_R3_FORWARD_SHADOW",
+    "unified_staging_root": "D:/us-tech-quant-results/A2_FORWARD_SHADOW_UNIFIED_R1/staging",
+    "unified_authoritative_root": "D:/us-tech-quant-results/A2_FORWARD_SHADOW_UNIFIED_R1/authoritative",
+    "readiness_root": "D:/us-tech-quant-results/a2-forward-shadow-readiness",
+    "legacy_history_migrated": false
+  },
+  "readiness_sources": {
+    "canonical_pointer": {
+      "path": "D:/us-tech-quant-daily/current/V21.231_MOOMOO_ONLY_HISTORICAL_REFETCH_AND_CANONICAL_REBUILD/canonical_snapshot_pointer.json"
+    },
+    "trading_calendar": {
+      "path": "D:/us-tech-quant/config/research_governance/a2_forward_shadow_trading_calendar_r1.json",
+      "sha256": "98c7b41e0795eb9eb10f33e738c0b30c0fa5e3a793d4348fcf016108ba9dd3d5"
+    },
+    "universe_manifest": {
+      "path": "D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/universe/quarterly_universe_manifest.parquet",
+      "sha256": "f5c8546b4b4d98f768b6dfa5ab9dae3b0d16de087b097047eb13a717cbf9af91"
+    },
+    "universe_members": {
+      "path": "D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/universe/quarterly_universe_members.parquet",
+      "sha256": "ae8ef2fc359084f5e3bba0123bb322a699502efd024d3112f8892a35225138ca"
+    }
+  },
+  "runtime": {
+    "canonical_python": "D:/us-tech-quant-envs/us-tech-quant-main/Scripts/python.exe"
+  },
+  "unified_runner_config_contract_sha256": "21d4c75e73f74fb3e54dd9d91da7ed26fdc05151efcad0805fbfa380d5125d59",
+  "unified_runner_config_hash_definition": "CANONICAL_JSON_WITH_PRODUCTION_BINDING_SHA256_SET_TO_SELF_REFERENCE_EXCLUDED"
+}

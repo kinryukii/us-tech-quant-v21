@@ -29,7 +29,7 @@ documentation. Runtime routing remains defined by `config/storage_paths.json`.
 | Rebuildable and research cache | `D:\us-tech-quant-cache` | Classified before retention/deletion |
 | Daily state/output | `D:\us-tech-quant-daily` | Active lifecycle state |
 | Backtests | `D:\us-tech-quant-backtests` | Research evidence |
-| External worktrees | `D:\us-tech-quant_worktrees` | Preserve active/dirty worktrees |
+| External worktrees | `D:\us-tech-quant-worktrees` | Preserve active/dirty worktrees |
 
 All approved external roots must be distinct from, and must not be nested in,
 the repository root. Storage destination must be resolved before artifact
@@ -132,8 +132,22 @@ architectural need and explicit integration/migration ownership.
 Prefer focused modules, shared helpers, parameterization, and extensions to
 existing tests. Avoid copied runners, near-duplicate wrappers, generated source,
 embedded datasets, repeated policy prose, and version-suffix file families.
-The root Markdown policy owns human governance, the root TOML owns enforcement
-values, and the existing guard owns enforcement.
+This Markdown policy owns Anti-Bloat detail, the root TOML owns enforcement
+values, and the existing guard owns enforcement. Root AGENTS.md owns agent
+routing; domain/task rules cannot loosen this policy.
+
+REUSE BEFORE BUILD. EXTEND BEFORE PARALLELIZE. MINIMUM SUFFICIENT CHANGE.
+EVIDENCE BEFORE CLAIM. These apply to governance as well as application code.
+Do not create a second registry, policy engine, identity/data authority, generic
+orchestrator or wrapper stack for a routine fix. A necessary thin adapter must
+explain why direct reuse is insufficient and retain one business implementation.
+
+Do not make every debug output, draft or temporary result an immutable authority.
+Reuse the existing task record, registry and final report rather than adding
+per-debug permanent contracts, manifests, state machines or audit directories.
+Preserve genuine frozen evidence and existing retention obligations. Before
+retiring duplicate prose/code, check active references, callers, freeze contracts
+and audit uses; file count and length alone do not justify removal.
 
 ### Immutable frozen legacy baseline
 
@@ -186,7 +200,11 @@ When destination, ownership, lineage, retention, deletion safety, policy
 meaning, or authorization is unknown, stop the risky operation and preserve the
 item. Surface the uncertainty for review. Do not repair permissions, broaden
 authority, silently add an allowlist entry, or reinterpret a hard gate as a
-warning.
+warning. Continue independent authorized work. Ordinary test failures get bounded
+repair/retry; an unwritable unrelated cache may use an already-authorized external
+cache root. Explicit access denial must not be bypassed through another path,
+user, tool, permission change or privilege level. Incomplete accounting remains
+reported as incomplete, never as a global budget PASS.
 
 ## Policy change control
 

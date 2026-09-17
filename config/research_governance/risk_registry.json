@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0.0",
+  "registry_id": "A2_RISK_CHAMPION_CHALLENGER_REGISTRY_R1",
+  "model_family": "RISK",
+  "governance": {
+    "auto_promotion_forbidden": true,
+    "requires_explicit_user_authorization": true,
+    "allowed_state_path": [
+      "RESEARCH_CANDIDATE",
+      "VALID_PRE2026",
+      "STABLE_CHALLENGER",
+      "PROSPECTIVE_SHADOW",
+      "PROMOTION_ELIGIBLE",
+      "PROMOTED_CHAMPION"
+    ]
+  },
+  "models": [
+    {
+      "model_id": "R6_BAD_ASYMMETRY",
+      "model_family": "RISK",
+      "role": "RISK_CHAMPION",
+      "status": "B_PROSPECTIVE_SUPPORTED",
+      "created_at": "UNKNOWN",
+      "training_cutoff": "PRE2026",
+      "universe_id": "UNKNOWN",
+      "feature_set_id": "UNKNOWN",
+      "model_artifact": "D:/us-tech-quant-results/A2_STOCK_RISK_R11_PROSPECTIVE/r6_frozen_deploy_r1.joblib",
+      "model_sha256": "3e5f646fcfbf1b4e9196781f712305b044a7b2e57c0fe1b3fe202345561f4a08",
+      "config_artifact": "D:/us-tech-quant-results/A2_STOCK_RISK_R11_PROSPECTIVE/r11_preregistered_evaluation_contract.json",
+      "config_sha256": "e3824cf004da24c9eceaed7018d790eed4110d6c921c4e1801a17672f67ac70a",
+      "benchmark_id": "R6_BAD_ASYMMETRY_FROZEN_REFERENCE",
+      "research_run_id": "A2_STOCK_RISK_R11_PROSPECTIVE",
+      "promotion_state": "PROMOTED_CHAMPION",
+      "prospective_state": "B_PROSPECTIVE_SUPPORTED",
+      "uses_2026_training": false,
+      "uses_2026_parameter_search": false,
+      "uses_2026_model_selection": false,
+      "reported_reference_metrics": {
+        "precision": "APPROXIMATE_REPORTED_REFERENCE_ONLY",
+        "pre2026_auroc": "0.6499",
+        "2026_auroc": "0.7015",
+        "2026_ap_over_base": "1.5577"
+      },
+      "notes": "Preferred risk model. Risk evidence must be judged under risk-family criteria, never alpha promotion criteria."
+    }
+  ]
+}

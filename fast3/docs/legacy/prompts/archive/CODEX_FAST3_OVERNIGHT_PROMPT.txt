@@ -1,0 +1,51 @@
+﻿Read, in order:
+
+1. AGENTS.md
+2. FAST3_AUTONOMOUS_MASTER_DIRECTIVE.md, including Sections 18 and 19
+3. CODEX_GOAL.md
+4. CODEX_PLAN.md
+5. CODEX_STATUS.md
+
+Work autonomously through the night. Do not ask for ordinary approvals or stop for
+normal implementation, test, performance, path, serialization, or runner failures.
+
+Preserve existing correct work. Do not reset, clean, or discard the working tree.
+
+The desired outcome is a reliable FAST3 strategy that has passed frozen Atlas,
+Validation, and one-time Confirmation, followed by an idempotent zero-order
+Prospective Shadow recorder ready for manual daily execution. Do not guarantee or
+fabricate this outcome.
+
+First resolve or rigorously attribute the 95.12% mapping obstruction under the
+unchanged 98% gate. Then continue automatically through bounded predictability
+research, fixed-seed random continuous as-of backtests, frozen Confirmation, and
+shadow deployment when every gate passes.
+
+Use remaining quota only for high-value new evidence:
+- mapping and data-quality diagnosis
+- PIT feature and implementation repair
+- bounded predeclared model comparisons
+- fixed-seed random as-of robustness windows
+- cost, delay, year, session, ETF, drawdown, and concentration checks
+- independent code and leakage review
+- focused tests and full-data reruns
+
+Do not repeatedly rerun identical experiments or expand arbitrary parameter grids
+merely to consume usage. Record every experiment and the total number of attempts.
+
+Never:
+- modify canonical data
+- synthesize or interpolate ETF prices
+- use future information
+- tune on Confirmation
+- place real or paper-broker orders
+- create broker order objects
+- push or merge remotely
+- hide negative or inconclusive evidence
+
+When the objective ends, create the complete overnight package under:
+D:\us-tech-quant\.local_results\v22\FAST3_OVERNIGHT_AUTOPILOT
+
+Create OVERNIGHT_DONE.flag only after all final files are valid.
+
+Begin execution now. Do not merely restate the instructions.

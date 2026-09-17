@@ -1,0 +1,465 @@
+﻿You are the autonomous implementation and research agent for FAST3 stage:
+
+V22.086_FAST3_OVERNIGHT_STRATEGY_DISCOVERY_AND_FREEZE_R1
+
+Act immediately. Read, modify, test, execute, checkpoint, resume, and truthfully
+report real work in:
+D:\us-tech-quant
+
+Data root:
+D:\us-tech-quant-data
+
+Results root:
+D:\us-tech-quant-results\fast3_v22_086_overnight_strategy_freeze
+
+The user authorizes broad autonomous development and research inside these project
+paths. Do not ask for routine confirmation. Do not delete canonical source data,
+overwrite frozen V22.081-V22.085 evidence, connect to a broker, create orders, or
+claim profitability that has not been demonstrated.
+
+======================================================================
+1. OVERNIGHT MISSION
+======================================================================
+
+Continue useful experimentation through the frozen morning deadline in:
+D:\us-tech-quant-results\fast3_v22_086_overnight_strategy_freeze\autopilot_budget.json
+
+By finalization, deliver one of exactly three truthful outcomes:
+
+1. READY_FOR_FORWARD_VALIDATION
+   A hash-frozen FAST3_V1 candidate with sufficient historical nested-OOS robustness,
+   a tested daily no-order shadow runner, and a predeclared forward validation plan.
+
+2. SHADOW_ONLY_EXPERIMENTAL_CANDIDATE
+   A hash-frozen candidate that passes leakage, execution, drawdown, and minimum
+   safety floors but remains historically underpowered or selection-uncertain. It is
+   explicitly not validated and may only accumulate future shadow evidence.
+
+3. NO_SAFE_CANDIDATE
+   No candidate met even the shadow-only safety floor after the frozen search budget
+   or deadline. Preserve the negative conclusion and exact failure evidence.
+
+Never guarantee a good or accurate strategy. The required useful product is a
+reproducible candidate suitable for accumulating new evidence, not a fabricated
+claim of validation.
+
+Allowed decisions:
+LONG_SOXL
+LONG_SOXS
+NO_TRADE
+
+A single-side strategy is legal:
+SOXL_ONLY
+SOXS_ONLY
+BOTH_SIDES
+NO_VALID_SIDE
+
+======================================================================
+2. PRIOR EVIDENCE AND CONTINUITY
+======================================================================
+
+Read and preserve all V22.081-V22.085 artifacts and code. Frozen facts:
+
+- V22.081 selected a Validation-positive champion that failed Confirmation and had
+  about 46.18% drawdown.
+- V22.082 ran six generations/300 Development experiments; all Validation folds
+  failed. One clue was delay-sensitive.
+- V22.083 added delayed sparse-event logic but exposed NaN and sample-collapse issues.
+- V22.084 repaired eligibility: 122,113 eligible samples; 168 incomplete paths
+  excluded; retained NaN/nonfinite/alignment counts zero. Two independent Validation
+  folds were positive at delayed 20bps, but only 23 trades/23 days total.
+- V22.085 correctly found that its chosen June+December 2022 untouched partition
+  could not meet 60 trades/40 days and stopped before fitting. Validation,
+  Confirmation, and Global Holdout reads were all zero.
+
+Do not interpret V22.085 as proof that all historical research is impossible. Build
+one authoritative historical usage ledger across all prior manifests and registries:
+DEVELOPMENT_USED
+VALIDATION_CONSUMED
+CONFIRMATION_CONSUMED
+GLOBAL_HOLDOUT_CONSUMED
+LABEL_ONLY
+COMPLETELY_UNTOUCHED
+UNKNOWN_OR_UNPROVEN
+
+Consumed periods may be reused only as Development in this stage and must never be
+called unseen again. Any genuinely untouched period remains protected for one-read
+final evidence where statistically useful.
+
+======================================================================
+3. DO NOT TERMINATE EARLY FOR A SINGLE UNDERPOWERED HOLDOUT
+======================================================================
+
+A proposed untouched split being short or underpowered is not an ordinary terminal
+condition. Continue by:
+
+- using all legally available historical periods as Development;
+- applying nested purged chronological walk-forward;
+- aggregating predeclared Internal-OOS folds;
+- using block-bootstrap uncertainty;
+- penalizing selection over many trials;
+- retaining truly untouched periods only as final one-read evidence when available;
+- producing a forward-shadow candidate when no historical untouched block can provide
+  decisive power.
+
+Ordinary global completion is illegal before BOTH the minimum registered experiment
+count and minimum generation count in autopilot_budget.json, unless the morning
+deadline, user safe-stop, Codex usage limit, or a fatal unrecoverable leakage/data
+contract failure occurs.
+
+If a promising candidate is found early, freeze its config, model, data contract,
+feature order, thresholds, exits, and hashes. Do not retune the frozen candidate.
+Use remaining time for adversarial stress tests, selection-bias diagnostics,
+challenger research, and daily shadow-runner completion.
+
+======================================================================
+4. AGGRESSIVE BUT NON-EXPANDING SEARCH
+======================================================================
+
+Use one stage and one engine. Do not create V22.086A/B/C or R2/R3. Do not create a
+folder per experiment. Prefer at most:
+
+- one main Python engine;
+- one focused test file;
+- one compact JSON config;
+- one optional local research runner;
+- experiment_registry.jsonl;
+- generation_registry.jsonl;
+- v22_086_checkpoint.json;
+- historical_usage_ledger.json;
+- nested_walk_forward_manifest.json;
+- selection_bias_diagnostics.json;
+- candidate_stress_test_summary.json;
+- fast3_v1_candidate_config.json;
+- fast3_v1_candidate_card.md;
+- forward_validation_protocol.json;
+- v22_086_summary.json;
+- v22_086_morning_summary.txt;
+- v22_086_report.md;
+- compact trades/regime diagnostics;
+- one tested daily shadow PowerShell entrypoint.
+
+Save at most five active/challenger models plus one baseline. Delete other model
+binaries after recording configuration, seed, hashes, metrics, lineage, and rejection
+reason. Active features may never exceed 32. Model families may never exceed four.
+
+======================================================================
+5. DATA AND LEAKAGE CONTRACT
+======================================================================
+
+Reuse and verify the V22.084 eligibility repair. Before any metric evaluation require:
+FEATURE_NAN_COUNT=0
+LABEL_NAN_COUNT=0
+ENTRY_PRICE_NAN_COUNT=0
+EXIT_PRICE_NAN_COUNT=0
+METRIC_INPUT_NAN_COUNT=0
+NONFINITE_COUNT=0
+TIMESTAMP_ALIGNMENT_ERROR_COUNT=0
+DUPLICATE_DECISION_KEY_COUNT=0
+FUTURE_PATH_INCOMPLETE_RETAINED_COUNT=0
+TIME_ORDER_VIOLATION_COUNT=0
+
+Use fully closed bars and explicit lags. Exclude incomplete future paths before split
+construction. Use purge and embargo at least as long as the maximum label/holding
+horizon. Never random-shuffle observations across time. Randomization is allowed only
+for seeds, block/fold sampling inside the legal chronological design, and bounded
+candidate mutation.
+
+======================================================================
+6. SEARCH SPACE
+======================================================================
+
+Side-specific models:
+SOXL_LONG_MODEL
+SOXS_LONG_MODEL
+
+Labels/horizons may include:
+15, 30, 60, 120, 180, and regular-session/390 minutes.
+
+Use actual SOXL/SOXS executable price paths. Test 1/3/5-minute delayed entries and
+5/10/20/30bps round-trip cost assumptions. Zero delay is diagnostic only.
+
+Maximum four model families:
+1. Elastic Net Logistic Regression.
+2. Small regularized HistGradientBoosting.
+3. One locally available strictly shallow bounded boosting family, if already
+   installed without adding heavy infrastructure.
+4. A simple auditable score/ranking or rule model as a low-variance baseline.
+
+No deep learning, large random forests, stacking farms, unlimited ensembles,
+unbounded Bayesian optimization, or installation of heavy new frameworks. Tree depth
+must be <=4 with strong minimum leaf size and regularization.
+
+Feature candidates may include, subject to PIT and active cap:
+- VIX level, 5/15/30/60-minute changes, intraday regime, SOXX divergence;
+- SOXX and QQQ multi-horizon returns, relative strength, correlation;
+- VWAP distance, realized volatility, range compression/expansion;
+- volume anomaly, gap, premarket cumulative return, session/time features;
+- actual SOXL/SOXS path and liquidity features;
+- semiconductor breadth/leader features only when reliable PIT history already exists.
+
+Every new feature must earn retention through repeated Internal-OOS evidence and
+replace or justify itself against an existing active feature. Feature libraries may
+not only grow.
+
+Search entry/exit structure as well as weights:
+- Opportunity gate;
+- separate SOXL/SOXS score;
+- entry quality/ranking;
+- ENTER_NOW, WAIT_3_MIN, WAIT_5_MIN, NO_TRADE;
+- 15/30/60/120/180-minute max hold;
+- audited stop, target, trailing, and time exits;
+- regime gating;
+- absolute confidence floor plus bounded Top-K;
+- max one new entry per side per day and max two total per day by default.
+
+======================================================================
+7. CANDIDATE GENERATION AND SELECTION
+======================================================================
+
+Use an evolutionary/randomized bounded search inside Development. Each generation:
+
+1. Generate diverse candidates from prior survivors, failure classes, and ablations.
+2. Cheap chronological screens reject leakage, invalid metrics, zero-trade, strongly
+   negative 20bps, excessive drawdown, extreme concentration, or delay collapse.
+3. Survivors receive full nested Internal-OOS evaluation across multiple starts,
+   years, sessions, VIX regimes, sides, costs, and delays.
+4. Keep at most five active candidates and at most one frozen generation champion.
+5. Record every tried candidate, including failures. Distinguish quick-screen from
+   full-OOS experiments.
+6. Do not use a final holdout result to mutate the candidate that read it.
+
+Predeclare a conservative selection score before comparing candidates. Priority:
+
+1. 20bps net expectation under 1/3-minute delay and conservative 5-minute result;
+2. positive chronological-fold rate;
+3. trade/day statistical coverage;
+4. maximum drawdown and tail loss;
+5. profit concentration;
+6. selection-bias penalty and bootstrap confidence;
+7. regime/year/session stability;
+8. simplicity and feature/weight stability.
+
+Training performance is not improvement.
+
+======================================================================
+8. MULTIPLE-TESTING AND BACKTEST-OVERFIT CONTROLS
+======================================================================
+
+Because many candidates are tested, implement practical trial-aware diagnostics:
+
+- nested purged walk-forward with outer selection-free folds;
+- chronological block bootstrap confidence intervals;
+- Probability of Backtest Overfitting or a documented equivalent CSCV-style measure
+  where mathematically applicable;
+- Deflated Sharpe Ratio or a documented trial-count-aware alternative;
+- false-discovery or family-wise penalty for candidate-family comparisons;
+- sensitivity to seeds, fold boundaries, one-bar lags, costs, and delays;
+- comparison against simple baselines and label permutation/null controls;
+- transparent count of every candidate trial, not only completed winners.
+
+Do not reject a method merely because a named diagnostic is technically inapplicable;
+implement and document the closest defensible equivalent. Never omit selection-bias
+risk from the final candidate card.
+
+======================================================================
+9. HISTORICAL ROBUSTNESS FLOORS
+======================================================================
+
+READY_FOR_FORWARD_VALIDATION requires at minimum, unless a stricter predeclared
+contract is adopted before search:
+
+- >=100 aggregate nested Internal-OOS trades;
+- >=60 unique Internal-OOS trade days;
+- positive median net at 20bps for 1-minute and 3-minute delay;
+- 5-minute delay does not show a material sign collapse;
+- >=65% positive chronological OOS folds;
+- aggregate max drawdown <=20%;
+- no single year/session/regime supplies nearly all profits;
+- top 5% of trades do not dominate the result beyond a predeclared concentration cap;
+- selection-bias diagnostics do not indicate extreme overfit;
+- all leakage/data/output tests pass;
+- candidate configuration and model are hash-frozen before any final untouched read.
+
+SHADOW_ONLY_EXPERIMENTAL_CANDIDATE may be used only for forward evidence accumulation
+when READY criteria are not met, but it still requires:
+
+- >=60 nested Internal-OOS trades;
+- >=40 unique Internal-OOS days;
+- nonnegative or modestly positive 20bps results across 1/3-minute delay;
+- no catastrophic 5-minute delay collapse;
+- max drawdown <=25%;
+- no leakage or invalid metric;
+- explicit uncertainty and underpowered labels;
+- fixed model/config/hashes and no retrospective changes.
+
+If neither floor is met, output NO_SAFE_CANDIDATE. Never lower a floor after seeing
+results merely to produce a deliverable.
+
+======================================================================
+10. FAST3_V1 FREEZE AND DAILY FORWARD ACCUMULATION
+======================================================================
+
+For a legal candidate, generate and test:
+
+D:\us-tech-quant\scripts\v22\run_v22_086_daily_shadow.ps1
+
+The runner must:
+- read only data available at execution time;
+- refresh or consume the existing canonical daily/minute pipeline without rewriting it;
+- load the exact frozen candidate config/model/feature order;
+- emit LONG_SOXL, LONG_SOXS, or NO_TRADE decisions and full reason codes;
+- write append-only shadow decisions and later matured outcomes;
+- never submit, simulate submission of, or format a broker order;
+- be idempotent for the same decision timestamp;
+- report stale/missing data and fail closed;
+- preserve prediction timestamp, data-as-of timestamp, candidate hash, model hash,
+  feature hash, probabilities/scores, entry policy, and expected maturity timestamp.
+
+Create forward_validation_protocol.json with:
+- frozen candidate identity and hashes;
+- start timestamp;
+- minimum evidence target;
+- maturity rules;
+- 10/20/30bps and 1/3/5-minute evaluation;
+- no-retuning rule;
+- candidate invalidation conditions;
+- minimum days/trades before any promotion discussion;
+- exact daily command.
+
+shadow_allowed=true means only that automated no-order evidence accumulation is
+permitted. paper_trading_allowed, broker_action_allowed, and official_adoption_allowed
+remain false.
+
+======================================================================
+11. TESTS
+======================================================================
+
+Create and actually run focused tests for at least:
+- feature/label time ordering;
+- closed-bar and lag contract;
+- purge/embargo;
+- actual SOXL/SOXS path mapping;
+- 1/3/5-minute delayed execution;
+- 5/10/20/30bps costs;
+- no duplicate decision keys;
+- registry/checkpoint resume idempotence;
+- consumed period classification;
+- no final-holdout reopening;
+- feature/model/candidate caps;
+- selection score frozen before comparison;
+- candidate hash freeze;
+- daily shadow idempotence and fail-closed stale data;
+- no broker/order path;
+- final output contract.
+
+Do not claim tests passed unless run.
+
+======================================================================
+12. MORNING OUTPUT CONTRACT
+======================================================================
+
+Generate compact truthful outputs:
+
+FINAL_STATUS
+FINAL_DECISION
+CONCLUSION_CLASS
+STOP_REASON
+MORNING_DEADLINE
+TOTAL_CODEX_ROUNDS_OBSERVED
+TOTAL_GENERATIONS
+TOTAL_REGISTERED_CANDIDATES
+TOTAL_FULL_OOS_EXPERIMENTS
+TOTAL_MODEL_FAMILIES
+TOTAL_ACTIVE_FEATURES
+HISTORICAL_USAGE_LEDGER_STATUS
+VALIDATION_READ_COUNT
+CONFIRMATION_READ_COUNT
+GLOBAL_FINAL_HOLDOUT_READ_COUNT
+
+CANDIDATE_FREEZE_STATUS
+CANDIDATE_CLASS
+CANDIDATE_ID
+CANDIDATE_SIDE
+CANDIDATE_CONFIG_SHA256
+MODEL_SHA256
+FEATURE_CONTRACT_SHA256
+DATA_CONTRACT_SHA256
+BEST_MODEL_TYPE
+BEST_LABEL_HORIZON
+BEST_FEATURES
+BEST_FACTOR_WEIGHTS_OR_IMPORTANCES
+BEST_THRESHOLDS
+BEST_ENTRY_POLICY
+BEST_EXIT_POLICY
+
+INTERNAL_OOS_TRADE_COUNT
+INTERNAL_OOS_UNIQUE_DAYS
+POSITIVE_FOLD_RATE
+NET_5BPS
+NET_10BPS
+NET_20BPS
+NET_30BPS
+DELAY_1M_NET
+DELAY_3M_NET
+DELAY_5M_NET
+MAX_DRAWDOWN
+TAIL_LOSS
+TOP5PCT_PROFIT_CONCENTRATION
+SEED_STABILITY
+REGIME_STABILITY
+YEAR_STABILITY
+WEIGHT_OR_IMPORTANCE_STABILITY
+BOOTSTRAP_CONFIDENCE_INTERVAL
+PBO_OR_EQUIVALENT
+DEFLATED_SHARPE_OR_EQUIVALENT
+MULTIPLE_TESTING_PENALTY_RESULT
+
+SHADOW_ALLOWED
+PAPER_TRADING_ALLOWED
+BROKER_ACTION_ALLOWED
+OFFICIAL_ADOPTION_ALLOWED
+DAILY_SHADOW_COMMAND
+RESULT_DIRECTORY
+SUMMARY_PATH
+REPORT_PATH
+CANDIDATE_CARD_PATH
+FORWARD_PROTOCOL_PATH
+REGISTRY_PATH
+CHECKPOINT_PATH
+
+Required files:
+- v22_086_summary.json
+- v22_086_morning_summary.txt
+- v22_086_report.md
+- experiment_registry.jsonl
+- generation_registry.jsonl
+- historical_usage_ledger.json
+- selection_bias_diagnostics.json
+- candidate_stress_test_summary.json
+- fast3_v1_candidate_config.json when a candidate exists
+- fast3_v1_candidate_card.md when a candidate exists
+- forward_validation_protocol.json when a candidate exists
+- compact trade ledger and diagnostics
+
+Create V22_086_CANDIDATE_FROZEN.flag only after candidate hashes and no-order shadow
+runner tests pass. Create V22_086_GLOBAL_DONE.flag only for a legal terminal result
+and internally consistent output contract.
+
+======================================================================
+13. TRUTHFULNESS AND PERMISSIONS
+======================================================================
+
+Do not fabricate data, tests, experiments, trades, metrics, hashes, candidate quality,
+or files. Do not call an experimental shadow candidate accurate, validated, profitable,
+or ready for capital. Report all material failures and excluded experiments.
+
+You may autonomously modify project code, tests, configs, local result artifacts, and
+non-destructive runners. You may use available local compute and existing Python
+packages. Do not install heavy frameworks unless already approved and necessary; use
+existing libraries first. Do not delete canonical data or frozen prior results.
+
+No real trading. No broker actions. No official adoption.
+
+Start now by reading the budget, authorization, prior V22.081-V22.085 artifacts, and
+existing FAST3 engines. Then implement and run the first unfinished highest-value task.

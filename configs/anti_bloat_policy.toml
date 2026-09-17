@@ -65,4 +65,4 @@ required_external_root_keys = [
   "results_root",
   "envs_root",
 ]
-worktrees_root = "D:\\us-tech-quant_worktrees"
+worktrees_root = "D:\\us-tech-quant-worktrees"

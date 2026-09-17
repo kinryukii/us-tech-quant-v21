@@ -1,0 +1,73 @@
+{
+  "schema_version": "FAST6_DATA_R1_CONFIG_V1",
+  "archive_start": "2020-01-01",
+  "archive_end": "2025-01-30",
+  "canonical_data_root": "D:\\us-tech-quant-data",
+  "external_results_root": "D:\\us-tech-quant-results",
+  "raw_root": "D:\\us-tech-quant-cache\\fast6\\FAST6_DATA_R1\\raw",
+  "result_root": "D:\\us-tech-quant-results\\frozen\\fast6\\FAST6_DATA_R1_MACRO_EVENT_ARCHIVE",
+  "recovery_result_root": "D:\\us-tech-quant-results\\frozen\\fast6\\FAST6_DATA_R1R_BLS_STATIC_OFFICIAL_PATCH",
+  "recovery_waiting_root": "D:\\us-tech-quant-results\\runtime\\fast6\\FAST6_DATA_R1R_WAITING",
+  "bls_static_calendar_path": "D:\\us-tech-quant-data\\macro_event\\raw_official\\bls_calendar\\BLS_RELEASE_CALENDAR_2020_2025.csv",
+  "bls_api": {
+    "endpoint": "https://api.bls.gov/publicAPI/v2/timeseries/data/",
+    "start_year": "2019",
+    "end_year": "2025",
+    "series": {
+      "CUSR0000SA0": {"event_family": "CPI", "event_type": "CPI", "units": "INDEX_1982_84_100", "seasonal_adjustment": "SEASONALLY_ADJUSTED", "revision_status": "REVISION_PRONE"},
+      "CUSR0000SA0L1E": {"event_family": "CPI", "event_type": "CORE_CPI", "units": "INDEX_1982_84_100", "seasonal_adjustment": "SEASONALLY_ADJUSTED", "revision_status": "REVISION_PRONE"},
+      "WPSFD4": {"event_family": "PPI", "event_type": "PPI", "units": "INDEX_200911_100", "seasonal_adjustment": "SEASONALLY_ADJUSTED", "revision_status": "REVISION_PRONE"},
+      "LNS14000000": {"event_family": "EMPLOYMENT_SITUATION", "event_type": "UNEMPLOYMENT_RATE", "units": "PERCENT", "seasonal_adjustment": "SEASONALLY_ADJUSTED", "revision_status": "REVISION_PRONE"},
+      "CES0000000001": {"event_family": "EMPLOYMENT_SITUATION", "event_type": "EMPLOYMENT_NFP", "units": "THOUSANDS_OF_PERSONS", "seasonal_adjustment": "SEASONALLY_ADJUSTED", "revision_status": "REVISION_PRONE"},
+      "CES0500000003": {"event_family": "EMPLOYMENT_SITUATION", "event_type": "AVERAGE_HOURLY_EARNINGS", "units": "DOLLARS_PER_HOUR", "seasonal_adjustment": "SEASONALLY_ADJUSTED", "revision_status": "REVISION_PRONE"}
+    }
+  },
+  "candidate_source": {
+    "path": "D:\\us-tech-quant-results\\frozen\\fast4\\fast4_r1_full_economic_ensemble_20260812T123322Z\\FAST4_R1_HISTORICAL_PIT_MATRIX.parquet",
+    "timestamp_column": "decision_timestamp_utc"
+  },
+  "network": {"timeout_seconds": 20, "max_retries": 1, "backoff_seconds": 0.1},
+  "event_families": {
+    "CPI": {
+      "source": "U.S. Bureau of Labor Statistics",
+      "adapter": "bls",
+      "event_types": ["CPI", "CORE_CPI"],
+      "calendar_source": "LOCAL_FROZEN_OFFICIAL_BLS_RELEASE_CALENDAR_CSV",
+      "value_source": "BLS_PUBLIC_DATA_API",
+      "release_label": "Consumer Price Index"
+    },
+    "PPI": {
+      "source": "U.S. Bureau of Labor Statistics", "adapter": "bls", "event_types": ["PPI"],
+      "calendar_source": "LOCAL_FROZEN_OFFICIAL_BLS_RELEASE_CALENDAR_CSV",
+      "value_source": "BLS_PUBLIC_DATA_API", "release_label": "Producer Price Index"
+    },
+    "EMPLOYMENT_NFP": {
+      "source": "U.S. Bureau of Labor Statistics", "adapter": "bls",
+      "event_types": ["EMPLOYMENT_NFP", "UNEMPLOYMENT_RATE", "AVERAGE_HOURLY_EARNINGS"],
+      "calendar_source": "LOCAL_FROZEN_OFFICIAL_BLS_RELEASE_CALENDAR_CSV",
+      "value_source": "BLS_PUBLIC_DATA_API", "release_label": "Employment Situation"
+    },
+    "FOMC": {
+      "source": "Board of Governors of the Federal Reserve System", "adapter": "fomc",
+      "event_types": ["FOMC_RATE_DECISION_STATEMENT"],
+      "calendar_urls": [
+        "https://www.federalreserve.gov/monetarypolicy/fomchistorical2020.htm",
+        "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+      ],
+      "release_label": "FOMC statement"
+    },
+    "PCE": {
+      "source": "U.S. Bureau of Economic Analysis", "adapter": "bea",
+      "event_types": ["PCE", "CORE_PCE"],
+      "calendar_urls": ["https://www.bea.gov/news/schedule"],
+      "archive_url": "https://www.bea.gov/news/archive", "release_label": "Personal Income and Outlays"
+    },
+    "GDP": {
+      "source": "U.S. Bureau of Economic Analysis", "adapter": "bea",
+      "event_types": ["GDP"],
+      "calendar_urls": ["https://www.bea.gov/news/schedule"],
+      "archive_url": "https://www.bea.gov/news/archive", "release_label": "Gross Domestic Product"
+    }
+  },
+  "feature_budget": 60
+}

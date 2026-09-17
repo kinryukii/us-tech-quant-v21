@@ -1,0 +1,1 @@
+"""Demo display configuration."""

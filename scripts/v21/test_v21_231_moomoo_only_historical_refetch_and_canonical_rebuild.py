@@ -311,3 +311,60 @@ def test_policy_violation_fails(tmp_path):
     root = make_repo(tmp_path, guard_ok=False)
     summary = v231.run(root, tmp_path / "out", cache_root=tmp_path / "cache", no_network=True)
     assert summary["final_status"] == v231.FAIL_SOURCE
+
+
+def _make_incremental_parent(cache: Path, snapshot: str = "parent") -> None:
+    fields = "ticker,moomoo_symbol,market,date,open,high,low,close,volume,turnover,adjustment,source,source_policy,snapshot_id,fetched_at_utc\n"
+    for adjustment, folder in (("raw", "daily_raw"), ("qfq", "daily_qfq")):
+        for ticker in ("DRAM", "NVDA", "MU"):
+            write(
+                cache / f"raw/moomoo/{folder}/snapshot_id={snapshot}/{ticker}.csv",
+                fields + f"{ticker},US.{ticker},US,2026-08-19,10,11,9,10.5,1000,10500,{adjustment},MOOMOO_OPEND,MOOMOO_ONLY,{snapshot},2026-08-20T00:00:00Z\n",
+            )
+
+
+def test_incremental_only_requests_exact_date_and_preserves_parent_history(tmp_path, monkeypatch):
+    root = make_repo(tmp_path); cache = tmp_path / "cache"; out = tmp_path / "out"
+    _make_incremental_parent(cache)
+    requested = []
+    monkeypatch.setattr(v231, "active_abcde_universe", lambda: {"DRAM", "NVDA", "MU"})
+
+    def exact_fetch(item, snapshot):
+        requested.append((item["ticker"], item["adjustment"], item["planned_start_date"], item["planned_end_date"]))
+        return [{
+            "ticker": item["ticker"], "moomoo_symbol": item["moomoo_symbol"], "market": "US", "date": "2026-08-20",
+            "open": 12, "high": 13, "low": 11, "close": 12.5, "volume": 1200, "turnover": 15000,
+            "adjustment": item["adjustment"], "source": "MOOMOO_OPEND", "source_policy": "MOOMOO_ONLY",
+            "snapshot_id": snapshot, "fetched_at_utc": "2026-08-21T00:00:00Z",
+        }]
+
+    monkeypatch.setattr(v231, "mock_fetch", exact_fetch)
+    summary = v231.run(root, out, cache_root=cache, snapshot_id="child", start_date="2026-08-20", end_date="2026-08-20",
+                       no_network=True, sleep_seconds=0, incremental_only=True, parent_snapshot_id="parent")
+    assert not summary["final_status"].startswith("FAIL_")
+    assert summary["network_fetch_scope"] == "EXACT_DATE_ONLY"
+    assert summary["historical_deep_refetch_run"] is False
+    assert len(requested) == 6 and all(start == end == "2026-08-20" for _, _, start, end in requested)
+    assert summary["dram_intraday_attempted_count"] == 0
+    raw = read_csv(Path(json.loads((out / "canonical_snapshot_pointer.json").read_text())["canonical_raw_path"]))
+    assert {(row["ticker"], row["date"]) for row in raw} == {(ticker, day) for ticker in ("DRAM", "NVDA", "MU") for day in ("2026-08-19", "2026-08-20")}
+
+
+def test_incremental_only_fails_closed_on_incomplete_target_date(tmp_path, monkeypatch):
+    root = make_repo(tmp_path); cache = tmp_path / "cache"; out = tmp_path / "out"
+    _make_incremental_parent(cache)
+    monkeypatch.setattr(v231, "active_abcde_universe", lambda: {"DRAM", "NVDA", "MU"})
+    original = v231.mock_fetch
+    monkeypatch.setattr(v231, "mock_fetch", lambda item, snapshot: [] if item["ticker"] == "MU" else [{**original(item, snapshot)[0], "date": "2026-08-20"}])
+    summary = v231.run(root, out, cache_root=cache, snapshot_id="child", start_date="2026-08-20", end_date="2026-08-20",
+                       no_network=True, sleep_seconds=0, incremental_only=True, parent_snapshot_id="parent")
+    assert summary["final_status"] == v231.FAIL_DAILY
+    assert summary["stale_ticker_count"] > 0
+
+
+def test_incremental_only_requires_one_explicit_target_date(tmp_path):
+    root = make_repo(tmp_path)
+    summary = v231.run(root, tmp_path / "out", cache_root=tmp_path / "cache", snapshot_id="child", end_date="2026-08-20",
+                       no_network=True, sleep_seconds=0, incremental_only=True, parent_snapshot_id="parent")
+    assert summary["final_status"] == v231.FAIL_INPUT
+    assert summary["historical_deep_refetch_run"] is False

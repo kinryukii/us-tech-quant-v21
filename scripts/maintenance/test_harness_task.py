@@ -3880,6 +3880,207 @@ def test_r3_deterministic_long_task_chaos_scenario_completes_without_human_contr
     assert "WAITING_HUMAN" not in events
 
 
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Run synthetic tests using 2026 dates.",
+        "Run synthetic 2026 timestamp tests.",
+        "Run mock fixtures with 2026-01-01 dates.",
+    ],
+)
+def test_synthetic_dates_do_not_require_a_real_evaluation_contract(goal: str) -> None:
+    contract = module._task_contract(goal, "auto", "independent-code")
+    assert contract["TASK_SCOPE"] == "independent-code"
+    assert contract["TASK_KIND"] == "independent-code"
+    assert module.hard_guard_conflicts(goal) == []
+
+
+def test_synthetic_fixture_context_does_not_hide_real_outcome_selection() -> None:
+    goal = (
+        "Run synthetic tests using 2026 dates; "
+        "use 2026 outcomes to select the model."
+    )
+    contract = module._task_contract(goal, "maintenance", "independent-code")
+    assert contract["TASK_SCOPE"] == "2026-optimization"
+    assert module.hard_guard_conflicts(goal) == ["EXPOSED_2026_OPTIMIZATION"]
+    assert module.infer_scope(
+        "Run synthetic tests using real 2026 outcomes.", "independent-code",
+    ) == "2026-evaluation"
+
+
+@pytest.mark.parametrize(
+    "goal",
+    [
+        "Run synthetic 2026 fixtures on canonical market data.",
+        "Run synthetic tests using 2026 dates from actual market returns.",
+        "Run synthetic 2026 tests using a mixed-year file.",
+        "Run synthetic tests using 2026 dates from an unknown source.",
+        "Run synthetic tests using 2026 dates; read the existing returns file.",
+    ],
+)
+def test_synthetic_date_source_qualifications_keep_evaluation_scope(goal: str) -> None:
+    assert module.infer_scope(goal, "independent-code") == "2026-evaluation"
+
+
+@pytest.mark.parametrize(
+    ("goal", "expected_code", "expected_scope"),
+    [
+        ("Run synthetic tests using 2026 dates.", 0, "independent-code"),
+        ("Run synthetic 2026 timestamp tests.", 0, "independent-code"),
+        ("Run mock fixtures with 2026-01-01 dates.", 0, "independent-code"),
+        ("Run synthetic 2026 fixtures on canonical market data.", 2, "2026-evaluation"),
+        ("Run synthetic tests using 2026 dates from actual market returns.", 2, "2026-evaluation"),
+        ("Run synthetic 2026 tests using a mixed-year file.", 2, "2026-evaluation"),
+        ("Run synthetic tests using 2026 dates from an unknown source.", 2, "2026-evaluation"),
+        ("Run synthetic tests using 2026 dates; use 2026 outcomes to select the model.", 2, "2026-optimization"),
+    ],
+)
+def test_governance_date_request_real_start_stops_before_external_execution(
+    goal: str, expected_code: int, expected_scope: str,
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Execute the real public start handler and state writes in existing external
+    # fixtures; sentinels protect the handoff, not arbitrary operating-system I/O.
+    for name in (
+        "_load_prospective_lifecycle", "_load_r1", "_storage_paths",
+        "_discover_existing", "_create_worktree", "_run_codex_turn", "run_task",
+    ):
+        monkeypatch.setattr(module, name, lambda *args, _name=name, **kwargs: pytest.fail(_name))
+    launches: list[str] = []
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda task_id: launches.append(task_id) or 4242)
+    args = argparse.Namespace(
+        goal=goal, task_id="governance-date-start", task_kind="auto",
+        task_scope="independent-code", max_corrections=2, foreground=False,
+    )
+    assert module.command_start(args) == expected_code
+    state = module.load_state(args.task_id)
+    assert state["TASK_SCOPE"] == expected_scope
+    if expected_code == 0:
+        assert launches == [args.task_id]
+        assert state["RESEARCH_START_DECISION"] == "NOT_APPLICABLE_NON_RESEARCH_TASK"
+    else:
+        assert launches == []
+        assert state["HARNESS_STATE"] == "BLOCKED"
+
+
+@pytest.mark.parametrize("scope", ["pre2026-research", "2026-evaluation", "2026-optimization", "all"])
+def test_effective_research_scope_cannot_skip_lifecycle_with_maintenance_kind(
+    scope: str, isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(module, "_load_prospective_lifecycle", lambda: pytest.fail("no research spec was supplied"))
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda *args: pytest.fail("research gate must block"))
+    args = argparse.Namespace(
+        goal="Inspect the requested task contract.", task_id="scope-gate",
+        task_kind="maintenance", task_scope=scope,
+        max_corrections=2, foreground=False,
+    )
+    assert module.command_start(args) == 2
+    state = module.load_state(args.task_id)
+    assert state["TASK_KIND"] == "maintenance"
+    assert state["TASK_SCOPE"] == scope
+    assert state["HARNESS_STATE"] == "BLOCKED"
+    assert not module._research_start_gate_passed(state)
+    state["RESEARCH_START_DECISION"] = "ALLOW_NEW_RESEARCH"
+    assert module._research_start_gate_passed(state)
+    assert "PROSPECTIVE RESEARCH COMPLETION CONTRACT" in module._worker_prompt(state)
+
+
+@pytest.mark.parametrize("requested_scope", ["independent-code", "frozen-dependent"])
+def test_actual_training_action_cannot_use_maintenance_kind_to_skip_start_gate(
+    requested_scope: str, isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(module, "_load_prospective_lifecycle", lambda: pytest.fail("missing spec must block first"))
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda *args: pytest.fail("research cannot dispatch"))
+    monkeypatch.setattr(module, "_run_codex_turn", lambda *args, **kwargs: pytest.fail("research cannot dispatch"))
+    args = argparse.Namespace(
+        goal="Train a model on pre-2026 data.", task_id="maintenance-training",
+        task_kind="maintenance", task_scope=requested_scope,
+        max_corrections=2, foreground=False,
+    )
+    assert module.command_start(args) == 2
+    state = module.load_state(args.task_id)
+    expected_scope = "frozen-dependent" if requested_scope == "frozen-dependent" else "pre2026-research"
+    assert state["TASK_SCOPE"] == expected_scope
+    assert state["SAFETY_FLAGS"]["MODEL_TRAINING_OR_SELECTION"] is True
+    assert not module._research_start_gate_passed(state)
+    with pytest.raises(module.HarnessError, match="RESEARCH_START_GATE_NOT_PASSED_AT_FINALIZATION"):
+        module._prepare_prospective_completion(args.task_id)
+    state.update({"HARNESS_STATE": "RUNNING", "NEXT_ACTION_CODE": "WORKER"})
+    module._write_state_unlocked(args.task_id, state)
+    module._dispatch(args.task_id)
+    blocked = module.load_state(args.task_id)
+    assert blocked["HARNESS_STATE"] == "BLOCKED"
+    assert any(row["code"] == "RESEARCH_START_GATE_NOT_PASSED" for row in blocked["ACTIVE_BLOCKERS"])
+
+
+def test_frozen_hash_only_engineering_does_not_require_research_lifecycle(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(module, "_load_prospective_lifecycle", lambda: pytest.fail("engineering task must not load research lifecycle"))
+    calls: list[str] = []
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda task_id: calls.append(task_id) or 4242)
+    args = argparse.Namespace(
+        goal="Validate frozen baseline hashes.", task_id="frozen-hash-engineering",
+        task_kind="maintenance", task_scope="frozen-dependent",
+        max_corrections=2, foreground=False,
+    )
+    assert module.command_start(args) == 0
+    state = module.load_state(args.task_id)
+    assert state["TASK_SCOPE"] == "frozen-dependent"
+    assert state["RESEARCH_START_DECISION"] == "NOT_APPLICABLE_NON_RESEARCH_TASK"
+    assert calls == [args.task_id]
+    assert module._prepare_prospective_completion(args.task_id) is None
+
+
+def test_unknown_scope_cannot_skip_start_or_dispatch_gate(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(module, "_spawn_supervisor", lambda *args: pytest.fail("unknown scope cannot dispatch"))
+    args = argparse.Namespace(
+        goal="Inspect one parser.", task_id="unknown-scope", task_kind="maintenance",
+        task_scope="unrecognized-scope", max_corrections=2, foreground=False,
+    )
+    with pytest.raises(module.HarnessError, match="UNKNOWN_TASK_SCOPE"):
+        module.command_start(args)
+    assert not module.task_dir(args.task_id).exists()
+    with pytest.raises(module.HarnessError, match="UNKNOWN_TASK_SCOPE"):
+        module._research_start_gate_passed({"TASK_KIND": "maintenance", "TASK_SCOPE": "unrecognized-scope"})
+
+
+def test_outcome_blind_preflight_optimization_blocker_is_classified_as_overfit() -> None:
+    overfit, _ = module._guard_summary({
+        "task_scope": "2026-optimization", "applicable_hard_blocker_count": 1,
+        "findings": [{
+            "level": "HARD_BLOCKER", "code": "2026_OPTIMIZATION_FORBIDDEN",
+            "blocks": ["2026-optimization"], "detail": "No outcome read is needed.",
+        }],
+    })
+    assert overfit == "HARD_BLOCKER"
+
+
+def test_unchecked_research_content_is_not_reported_as_overfit_pass() -> None:
+    overfit, anti = module._guard_summary({
+        "task_scope": "independent-code", "applicable_hard_blocker_count": 0,
+        "findings": [{"level": "INFORMATIONAL", "code": "RESEARCH_CONTENT_CHECKS_NOT_CHECKED",
+                      "detail": "not checked", "blocks": []}],
+    })
+    assert overfit == "NOT_CHECKED_FOR_SCOPE"
+    assert anti == "PASS"
+
+
+def test_all_harness_roles_route_to_the_same_project_instructions() -> None:
+    state = module._new_state("test-task", "Repair one parser", "independent-code", 2)
+    for prompt in (
+        module._planner_prompt(state), module._worker_prompt(state),
+        module._review_prompt(state),
+    ):
+        assert module.PROJECT_INSTRUCTION_ROUTING in prompt
+        assert prompt.count(module.PROJECT_INSTRUCTION_ROUTING) == 1
+    worker = module._worker_prompt(state)
+    assert "Report RETRY when repair remains" in worker
+    assert "never weaken a guard or frozen expectation" in worker
+
+
 def test_negative_frozen_constraints_do_not_create_dependency_scope() -> None:
     goal = "Harness-only discovery fix; do not touch frozen outputs; do not modify frozen baselines; avoid canonical data."
     assert module.infer_scope(goal, "independent-code") == "independent-code"
@@ -4538,6 +4739,10 @@ def test_unwritable_pytest_basetemp_fails_closed_before_worker_launch(
     ("goal", "expected"),
     [
         ("No model training.", "independent-code"),
+        ("Maintain launch scripts; no real research or model training.", "independent-code"),
+        ("Maintain launch scripts; do not perform research or train a model.", "independent-code"),
+        ("No real research or model training, but train a model on pre-2026 data.", "pre2026-research"),
+        ("Do not perform research or train a model, but use 2026 holdout outcomes to tune a threshold.", "2026-evaluation"),
         ("Do not perform quantitative research.", "independent-code"),
         ("Harness maintenance: inspect research outputs.", "independent-code"),
         ("Summarize existing research outputs without running research.", "independent-code"),
@@ -5374,25 +5579,15 @@ FINAL TRAINING / FREEZE
 
 
 @pytest.fixture
-def local_persisted_start_roots(monkeypatch: pytest.MonkeyPatch):
-    token = hashlib.sha256(str(id(monkeypatch)).encode("ascii")).hexdigest()[:12]
-    root = (REPOSITORY_ROOT / f".harness-real-goal-test-{token}").resolve()
-    assert root.parent == REPOSITORY_ROOT
-    root.mkdir()
-    try:
-        repository = root / "primary-repository"
-        repository.mkdir()
-        monkeypatch.setattr(module, "REPO", repository)
-        monkeypatch.setattr(
-            module, "_capture_start_repo_identity",
-            lambda: ("f" * 40, str(repository.resolve())),
-        )
-        monkeypatch.setenv("USTQ_HARNESS_STATE_ROOT", str(root / "daily" / "harness_r2"))
-        monkeypatch.setenv("USTQ_HARNESS_WORKTREE_ROOT", str(root / "worktrees"))
-        yield root
-    finally:
-        assert root.parent == REPOSITORY_ROOT
-        shutil.rmtree(root)
+def local_persisted_start_roots(
+    isolated_roots: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+):
+    # Reuse the existing external fixture; start-handler tests create no repo temp.
+    monkeypatch.setattr(
+        module, "_capture_start_repo_identity",
+        lambda: ("f" * 40, str(module.REPO.resolve())),
+    )
+    yield isolated_roots[0].parents[1]
 
 
 @pytest.mark.parametrize("goal_length", [9_155, 12_000])
@@ -6090,6 +6285,16 @@ def test_environment_limited_delegation_requires_known_inventory_and_passed_guar
         "OVERFIT_GUARD": "PASS", "ANTI_BLOAT": "PASS", "REUSE_GUARD": "PASS_SEARCH_RECORDED",
     })
 
+    assert module._worker_test_environment_delegation_allowed(state, 0)[0] is True
+    state["OVERFIT_GUARD"] = "NOT_CHECKED_FOR_SCOPE"
+    assert module._worker_test_environment_delegation_allowed(state, 0)[0] is True
+    for research_scope in ("pre2026-research", "frozen-dependent", "2026-evaluation", "all", "UNKNOWN"):
+        state["TASK_SCOPE"] = research_scope
+        assert module._worker_test_environment_delegation_allowed(state, 0)[0] is False
+    state["TASK_SCOPE"] = "independent-code"
+    state["TASK_KIND"] = "pre2026-research"
+    assert module._worker_test_environment_delegation_allowed(state, 0)[0] is False
+    state["TASK_KIND"] = "independent-code"
     assert module._worker_test_environment_delegation_allowed(state, 0)[0] is True
     state["OVERFIT_GUARD"] = "HARD_BLOCKER"
     assert module._worker_test_environment_delegation_allowed(state, 0)[0] is False

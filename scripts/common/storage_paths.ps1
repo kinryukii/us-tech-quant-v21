@@ -5,6 +5,8 @@ function Get-UstqStoragePaths {
     $keys = 'repo_root','data_root','cache_root','daily_root','backtest_root','results_root','envs_root'
     $out = @{}
     foreach ($key in $keys) { $envName = 'USTQ_' + $key.ToUpper(); $out[$key] = if ([Environment]::GetEnvironmentVariable($envName)) {[Environment]::GetEnvironmentVariable($envName)} else {$cfg.$key} }
+    # An explicitly selected checkout takes precedence over stale copied routing.
+    if ($PSBoundParameters.ContainsKey('RepoRoot')) { $out['repo_root'] = $repo }
     $canonical = Join-Path $out['envs_root'] 'us-tech-quant-main\Scripts\python.exe'
     $out['python_exe'] = if ($env:USTQ_PYTHON_EXE) {$env:USTQ_PYTHON_EXE} else {$canonical}
     return $out

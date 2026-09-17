@@ -1,0 +1,75 @@
+﻿You are authorized to execute the new independent stage
+V22.081_FAST3_BOUNDED_SELF_IMPROVEMENT_ENGINE_R1.
+
+This is not a request to reopen or alter closed Generation 2/3/3R2/3R3 results.
+Read the new authorization at:
+D:\us-tech-quant\FAST3_V22_081_AUTHORIZATION.md
+
+Then inspect the existing repository, current Git status, V22.078, V22.080A,
+V22.080B, existing FAST3 agent utilities, canonical contracts, and prior result
+artifacts. Preserve all truthful prior conclusions and reuse correct components.
+Do not reset, clean, delete, or replace the working tree.
+
+Your objective is to implement and actually run one compact, bounded, resumable
+self-improvement engine that repeatedly performs randomized contiguous historical
+as-of training and Development-internal OOS evaluation, learns factor weights or
+compact model parameters, prunes unstable candidates, and continues until a defined
+budget or evidence stop is reached.
+
+Critical interpretation:
+- Repeated training is explicitly authorized inside the frozen Development pool.
+- Candidate failure is not a terminal stage result while experiment budget remains.
+- A normal Codex turn ending is not a terminal result. Persist a checkpoint and let
+  the launcher resume the same objective.
+- Validation and Confirmation are not adaptive feedback. Open Validation once only
+  after the Development champion is frozen. Open Confirmation once only if Validation
+  passes. Never retune after either holdout is read.
+- Do not create V22.081A/B/C, R2/R3, or a new generation merely because an experiment
+  or implementation attempt fails.
+
+Use these roots:
+- repo: D:\us-tech-quant
+- canonical data: D:\us-tech-quant-data
+- results: D:\us-tech-quant-results\fast3_v22_081_bounded_self_improvement
+
+Start by auditing reusable code and freezing the time/split contract before reading
+new economic results. Prefer one main Python program, one focused test file, one
+PowerShell runner, one compact config, and one unified registry. The entire stage
+must not exceed six repository files unless an already existing file is edited in
+place instead of creating a new one.
+
+Implement the real loop, not a placeholder:
+1. register fixed seeds and contiguous time windows;
+2. build PIT features and labels with purge/embargo;
+3. fit factor weights or compact models on inner train;
+4. score inner chronological OOS using real SOXL/SOXS execution OHLC;
+5. evaluate 5/10/20/30bps and 0/1/3/5 minute delays;
+6. record every candidate including failures;
+7. retain at most three candidates;
+8. generate bounded mutations from Development-internal OOS evidence;
+9. continue until budget or evidence stop;
+10. freeze one champion and apply the one-time holdout gates.
+
+The optimization target must penalize drawdown, instability, concentration,
+turnover, weight drift, seed sensitivity, regime dependence, and complexity. Do not
+optimize cumulative return alone. Keep NO_TRADE as an explicit action.
+
+VIX features are required when reliable timestamped local data are available. If VIX
+is not locally available under a defensible PIT contract, record the precise data
+blocker and continue with the remaining valid feature families; do not fabricate or
+silently substitute current web data.
+
+Never modify canonical input. Never interpolate or synthesize prices. Never use
+SOXX return times three as ETF execution. Never create orders or access broker
+execution. Keep all broker, paper-broker-order, and official-adoption flags false.
+Never push or merge remotely. Never hide negative evidence.
+
+During this Codex turn, do as much actual implementation, testing, training, and
+backtesting as resources allow. Update the stage checkpoint and registry after each
+material experiment. When the turn must end before the stage is terminal, do not
+create V22_081_DONE.flag. Instead write a truthful resumable checkpoint with the next
+high-value action.
+
+Create V22_081_DONE.flag only after a legal terminal condition in the authorization
+has been reached and all final outputs validate. Begin execution now; do not merely
+summarize this prompt.

@@ -1,0 +1,17 @@
+﻿{
+    "patch":  "FAST3_V22_085_AGGRESSIVE_SEARCH_PATCH",
+    "applied_at":  "2026-08-02T02:25:16.5140823+09:00",
+    "repo_root":  "D:\\us-tech-quant",
+    "data_root":  "D:\\us-tech-quant-data",
+    "results_root":  "D:\\us-tech-quant-results",
+    "max_rounds":  160,
+    "max_generations":  8,
+    "experiments_per_generation":  40,
+    "max_total_experiments":  320,
+    "v22_081_preserved":  true,
+    "v22_082_preserved":  true,
+    "v22_083_preserved":  true,
+    "v22_084_preserved":  true,
+    "broker_action_allowed":  false,
+    "official_adoption_allowed":  false
+}

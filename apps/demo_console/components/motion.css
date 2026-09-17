@@ -1,0 +1,56 @@
+/* Content is visible without this stylesheet or JavaScript. Only opt-in polish. */
+html[data-uq-motion="enabled"] [data-testid="stButton"] button {
+  transition: transform 160ms ease, box-shadow 180ms ease, background 160ms ease;
+}
+html[data-uq-motion="enabled"] [data-testid="stButton"] button:not(:disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px #273a2515;
+}
+html[data-uq-motion="enabled"] [data-testid="stButton"] button:not(:disabled):active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px #273a2510;
+}
+html[data-uq-motion="enabled"] :is(
+  .st-key-uq_chart_panel, .st-key-uq_inspector,
+  .st-key-uq_history_portfolio, .st-key-uq_history_security,
+  .st-key-uq_performance_path, .st-key-uq_execution_quality,
+  .st-key-uq_holding_matrix, .st-key-uq_demo_tour,
+  .st-key-uq_decision_focus, .st-key-uq_research_workspace,
+  .st-key-ml_engine_workspace, .uq-ml-method-sheet
+) {
+  transition: box-shadow 200ms ease, border-color 200ms ease;
+}
+html[data-uq-motion="enabled"] :is(
+  .st-key-uq_chart_panel, .st-key-uq_inspector,
+  .st-key-uq_history_portfolio, .st-key-uq_history_security,
+  .st-key-uq_performance_path, .st-key-uq_execution_quality,
+  .st-key-uq_holding_matrix, .st-key-uq_demo_tour,
+  .st-key-uq_decision_focus, .st-key-uq_research_workspace,
+  .st-key-ml_engine_workspace, .uq-ml-method-sheet
+):hover {
+  box-shadow: 0 8px 26px #273a2508;
+  border-color: #a2b493;
+}
+/* Match reduced motion across the complete UI, including native sidebar/tab
+   transitions and future replay-progress descendants or pseudo-elements.
+   Final colors/widths and interaction state still update immediately. */
+html[data-uq-motion="disabled"] *,
+html[data-uq-motion="disabled"] *::before,
+html[data-uq-motion="disabled"] *::after {
+  transition: none !important;
+  animation: none !important;
+  scroll-behavior: auto !important;
+}
+html[data-uq-motion="disabled"] [data-testid="stButton"] button:hover {
+  transform: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+  [data-testid="stButton"] button:hover {
+    transform: none !important;
+  }
+}

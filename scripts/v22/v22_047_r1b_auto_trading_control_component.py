@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import math
@@ -26,6 +27,10 @@ ENTRY_ACTIONS = ("ENTER_LONG", "REBALANCE_LONG")
 EXIT_ACTIONS = ("EXIT",)
 ALL_ACTIONS = ENTRY_ACTIONS + EXIT_ACTIONS + ("HOLD",)
 LIVE_CONFIRMATION_EXPECTED = "I_ACCEPT_REAL_MONEY_EQUITY_EXECUTION"
+A2_SHADOW_PROFILE_ID = "A2_MULTI_POSITION_SHADOW"
+A2_MAX_TARGET_POSITIONS = 20
+A2_MAX_TARGET_WEIGHT = 1.0 / A2_MAX_TARGET_POSITIONS
+A2_NUMERICAL_TOLERANCE = 1e-10
 
 
 class ComponentError(RuntimeError):
@@ -73,7 +78,7 @@ class OrderIntent:
     action: str
     side: str
     symbol: str
-    quantity: int
+    quantity: int | float
     order_type: str
     limit_price: float | None
     notional_usd: float
@@ -569,6 +574,142 @@ def build_order_intent(
             created_at_utc=created,
         )
     return None
+
+
+def build_a2_shadow_order_intents(
+    policy_plan: Mapping[str, Any],
+    market_prices: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate an A2 Top20 target and emit existing OrderIntent objects in SHADOW only."""
+    if policy_plan.get("safety_profile_id") != A2_SHADOW_PROFILE_ID:
+        raise ComponentError("A2_SHADOW_PROFILE_REQUIRED")
+    if policy_plan.get("broker_submission_allowed") is not False:
+        raise ComponentError("A2_SHADOW_BROKER_SUBMISSION_FORBIDDEN")
+    authorized = {str(value).upper() for value in policy_plan.get("authorized_top20", [])}
+    if len(authorized) > A2_MAX_TARGET_POSITIONS:
+        raise ComponentError("A2_MAX_TARGET_POSITIONS_EXCEEDED")
+    if len(authorized) != A2_MAX_TARGET_POSITIONS:
+        raise ComponentError("A2_AUTHORIZED_TOP20_SCOPE_INVALID")
+    raw_targets = policy_plan.get("target_weights")
+    if not isinstance(raw_targets, Mapping):
+        raise ComponentError("A2_TARGET_WEIGHTS_REQUIRED")
+    targets = {str(symbol).upper(): float(weight) for symbol, weight in raw_targets.items()}
+    if not all(math.isfinite(weight) for weight in targets.values()):
+        raise ComponentError("A2_TARGET_WEIGHT_NONFINITE")
+    if any(weight < -A2_NUMERICAL_TOLERANCE for weight in targets.values()):
+        raise ComponentError("A2_SHORT_TARGET_FORBIDDEN")
+    positive = {symbol for symbol, weight in targets.items() if weight > A2_NUMERICAL_TOLERANCE}
+    if len(positive) > A2_MAX_TARGET_POSITIONS:
+        raise ComponentError("A2_MAX_TARGET_POSITIONS_EXCEEDED")
+    if positive != authorized:
+        raise ComponentError("A2_TARGET_OUTSIDE_AUTHORIZED_TOP20")
+    if any(targets[symbol] > A2_MAX_TARGET_WEIGHT + A2_NUMERICAL_TOLERANCE for symbol in positive):
+        raise ComponentError("A2_MAX_TARGET_WEIGHT_EXCEEDED")
+    target_gross = float(sum(max(weight, 0.0) for weight in targets.values()))
+    target_cash = float(policy_plan.get("target_cash_weight", math.nan))
+    if not math.isfinite(target_cash) or target_cash < -A2_NUMERICAL_TOLERANCE:
+        raise ComponentError("A2_NEGATIVE_TARGET_CASH_FORBIDDEN")
+    if target_gross > 1.0 + A2_NUMERICAL_TOLERANCE:
+        raise ComponentError("A2_TARGET_LEVERAGE_FORBIDDEN")
+    if abs(target_gross + target_cash - 1.0) > A2_NUMERICAL_TOLERANCE:
+        raise ComponentError("A2_TARGET_CASH_IDENTITY_FAILURE")
+
+    state = policy_plan.get("current_portfolio")
+    if not isinstance(state, Mapping):
+        raise ComponentError("A2_CURRENT_PORTFOLIO_REQUIRED")
+    total_equity = float(state.get("total_equity", math.nan))
+    current_cash = float(state.get("cash", math.nan))
+    positions = state.get("positions")
+    if not math.isfinite(total_equity) or total_equity <= 0 or not math.isfinite(current_cash) or current_cash < -A2_NUMERICAL_TOLERANCE:
+        raise ComponentError("A2_CURRENT_PORTFOLIO_INVALID")
+    if not isinstance(positions, list):
+        raise ComponentError("A2_CURRENT_POSITIONS_INVALID")
+    recomputed_equity = current_cash
+    for row in positions:
+        shares = float(row.get("shares", math.nan))
+        mark = float(row.get("mark_price", math.nan))
+        if not math.isfinite(shares) or shares < -A2_NUMERICAL_TOLERANCE:
+            raise ComponentError("A2_CURRENT_SHORT_FORBIDDEN")
+        if not math.isfinite(mark) or mark <= 0:
+            raise ComponentError("A2_CURRENT_MARK_INVALID")
+        recomputed_equity += shares * mark
+    if abs(recomputed_equity - total_equity) > A2_NUMERICAL_TOLERANCE * max(1.0, total_equity):
+        raise ComponentError("A2_CURRENT_EQUITY_IDENTITY_FAILURE")
+
+    actions = policy_plan.get("actions")
+    if not isinstance(actions, list):
+        raise ComponentError("A2_ACTIONS_REQUIRED")
+    prices = {str(symbol).upper(): float(value) for symbol, value in market_prices.items()}
+    intents: list[OrderIntent] = []
+    allowed_actions = {"BUY", "ADD", "HOLD", "REDUCE", "EXIT"}
+    target_date = str(policy_plan.get("target_date", ""))
+    created = f"{target_date}T00:00:00+00:00" if len(target_date) == 10 else target_date
+    seen: set[str] = set()
+    for row in sorted(actions, key=lambda value: str(value.get("security", ""))):
+        symbol = str(row.get("security", "")).upper()
+        action = str(row.get("action", "")).upper()
+        current_weight = float(row.get("current_weight", math.nan))
+        target_weight = float(row.get("target_weight", math.nan))
+        delta_weight = float(row.get("delta_weight", math.nan))
+        planned_delta = float(row.get("planned_delta_weight", math.nan))
+        if not symbol or symbol in seen or action not in allowed_actions:
+            raise ComponentError("A2_ACTION_CONTRACT_INVALID")
+        seen.add(symbol)
+        if not all(math.isfinite(value) for value in (current_weight, target_weight, delta_weight, planned_delta)):
+            raise ComponentError("A2_ACTION_WEIGHT_INVALID")
+        if abs(delta_weight - (target_weight - current_weight)) > A2_NUMERICAL_TOLERANCE:
+            raise ComponentError("A2_ACTION_DELTA_IDENTITY_FAILURE")
+        if target_weight > A2_NUMERICAL_TOLERANCE and symbol not in authorized:
+            raise ComponentError("A2_ACTION_TARGET_OUTSIDE_AUTHORIZED_TOP20")
+        expected = (
+            "BUY" if current_weight <= A2_NUMERICAL_TOLERANCE and target_weight > A2_NUMERICAL_TOLERANCE
+            else "ADD" if target_weight > current_weight + A2_NUMERICAL_TOLERANCE
+            else "EXIT" if target_weight <= A2_NUMERICAL_TOLERANCE and current_weight > A2_NUMERICAL_TOLERANCE
+            else "REDUCE" if target_weight < current_weight - A2_NUMERICAL_TOLERANCE
+            else "HOLD"
+        )
+        if action != expected:
+            raise ComponentError("A2_ACTION_CLASSIFICATION_INVALID")
+        if symbol not in authorized and action != "EXIT":
+            raise ComponentError("A2_OUT_OF_SCOPE_SYMBOL_NOT_EXIT_ONLY")
+        if action == "HOLD":
+            continue
+        price = prices.get(symbol, row.get("current_mark_price"))
+        price = float(price) if price is not None else math.nan
+        if not math.isfinite(price) or price <= 0:
+            raise ComponentError(f"A2_SHADOW_PRICE_REQUIRED:{symbol}")
+        notional = abs(planned_delta) * total_equity
+        quantity = round(notional / price, 8)
+        if quantity <= A2_NUMERICAL_TOLERANCE:
+            continue
+        side = "BUY" if action in {"BUY", "ADD"} else "SELL"
+        seed = f"{A2_SHADOW_PROFILE_ID}|{target_date}|{symbol}|{action}|{quantity:.8f}|{price:.8f}"
+        intents.append(OrderIntent(
+            intent_id=f"A2_SHADOW_{hashlib.sha256(seed.encode()).hexdigest()[:24]}",
+            action=action,
+            side=side,
+            symbol=symbol,
+            quantity=quantity,
+            order_type="LIMIT",
+            limit_price=price,
+            notional_usd=round(quantity * price, 8),
+            reason_code="A2_SHADOW_PLAN_ONLY",
+            strategy_reason_code=str(row.get("reason", "RAW_A2_TARGET_DELTA")),
+            benchmark_symbol=BENCHMARK_SYMBOL,
+            benchmark_status="A2_SHADOW_PROFILE",
+            created_at_utc=created,
+        ))
+    return {
+        "status": "PASS",
+        "profile_id": A2_SHADOW_PROFILE_ID,
+        "shadow_only": True,
+        "broker_submission_allowed": False,
+        "authorized_top20": sorted(authorized),
+        "target_position_count": len(positive),
+        "target_gross_exposure": target_gross,
+        "target_cash_weight": max(0.0, target_cash),
+        "order_intents": [asdict(intent) for intent in intents],
+    }
 
 
 def resolve_plugin_path(repo_root: Path, config: Mapping[str, Any], cli_path: Path | None) -> Path:

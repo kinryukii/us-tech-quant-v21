@@ -29,6 +29,10 @@ def resolve(repo_root: Path | None = None, **overrides: str | Path | None) -> St
     for key, default in DEFAULTS.items():
         value = overrides.get(key) or os.environ.get(ENV[key]) or cfg.get(key) or default
         values[key] = Path(value).expanduser().resolve()
+    # The explicit checkout selects both the config and the returned repository.
+    # A copied config (or inherited environment) may still name the old checkout.
+    if repo_root is not None:
+        values["repo_root"] = repo
     paths = StoragePaths(**values); validate(paths); return paths
 
 def validate(paths: StoragePaths, require_writable: bool = False) -> None:

@@ -1,0 +1,18 @@
+{
+  "status": "FROZEN_IMMUTABLE",
+  "freeze_id": "SYNTHETIC_BAD_HASH_FIXTURE",
+  "training_cutoff": "2025-12-31",
+  "universe_id": "U_SYNTHETIC",
+  "data_manifest_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "model_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "artifacts": {
+    "fixture": {
+      "path": "D:/us-tech-quant/scripts/v22/fixtures/attribution/tiny_portfolio_fixture.json",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "strategy_id": "A2",
+      "model_id": "A2_HGB",
+      "date_start": "2024-12-31",
+      "date_end": "2025-01-02"
+    }
+  }
+}

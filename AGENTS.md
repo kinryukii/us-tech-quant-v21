@@ -1,141 +1,127 @@
-# US Tech Quant agent map
+# US Tech Quant project instructions
 
-This repository is the lightweight code/control plane for a research-first U.S.
-technology quantitative system. It does not authorize production trading. Large
-data, environments, backtests, daily state, and results live in external roots.
+Research-first code/control plane for U.S. technology quantitative work.
+Backtests and governance validation never authorize production trading.
 
-## Read first
+## Authority and required reading
 
-1. Read `docs/governance/ANTI_BLOAT_POLICY.md`; its hard gates are mandatory.
-2. Read `docs/PROJECT_MAP.md`; it maps domains, status evidence, and frozen assets.
-3. Run the cheap preflight:
-   `& D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe scripts\maintenance\harness_preflight.py`
-4. Inspect `git status --short` and relevant processes before writing. Preserve
-   unrelated work in a dirty tree and do not stop workers.
+- Follow the platform instruction hierarchy and the current human task scope.
+  Root rules apply project-wide; local instructions and task templates may add
+  constraints, never relax PIT, freezes, safety, or authorization boundaries.
+- Read `docs/governance/ANTI_BLOAT_POLICY.md` and `docs/PROJECT_MAP.md` before
+  material work. Links do not load their targets automatically.
+- Before research/data work, read the map's contract rules and the applicable
+  registry/contract through an authorized read path. Before Harness work, read
+  its map entry and paired tests.
+- Accepted registries/manifests establish identity and status; the map navigates.
+  Missing/conflicting acceptance means UNKNOWN; HEAD, timestamps and candidates
+  do not imply acceptance. Preserve historical records and frozen raw bytes.
+- Governance edits never expand authorization. Work remains bounded by the
+  permissions and hard rules effective at task start.
 
-## One-task autonomous Harness
+## Four protections
 
-Use `scripts/maintenance/harness_task.py` only for one bounded, human-authorized
-task. It runs R1 preflight, records reuse discovery, creates a branch worktree
-under `D:\us-tech-quant-worktrees`, dispatches a Codex worker, validates and
-reviews the diff, then stops. It never merges into the primary tree, deletes a
-worktree, promotes research, or invents a second task.
+1. Prevent engineering and governance bloat: REUSE BEFORE BUILD.
+   EXTEND BEFORE PARALLELIZE. MINIMUM SUFFICIENT CHANGE. EVIDENCE BEFORE CLAIM.
+2. Prevent overfitting and result-driven rule changes across the full selection
+   process, not only the final fit. Preserve failed trials and exposed windows.
+3. Prevent future-data and future-information leakage through the whole PIT
+   chain, including availability, revisions, identity and label maturity.
+4. Prevent duplicate implementation and research: resolve canonical identity,
+   aliases, prior failures and closed/parked conclusions before new work.
 
-- Start: `& D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -B scripts\maintenance\harness_task.py start --goal "<bounded task>"`
-- Observe: use `status`, `inspect`, or `timeline` after the script name.
-- Control: use `pause`, `resume`, `steer "<instruction>"`, `review`, or `stop`.
-- State and compact timeline live under `D:\us-tech-quant-daily\harness_r2`;
-  active task worktrees and useful diffs are preserved for human integration.
-- Pause and stop are cooperative: no new action is dispatched, and an active
-  Codex turn is asked to reach a safe checkpoint rather than killed mid-write.
-- Steering is recorded and takes effect at the next safe boundary. It cannot
-  weaken the pre-2026, PIT, frozen-asset, canonical-data, or Anti-Bloat gates.
-- A scoped blocker stops only the affected task surface. An unavailable external
-  worktree is a hard blocker for autonomous mutation, not for read-only work.
+## Research and information boundaries
 
-## Harness priorities
+- Training, fitting, calibration, preprocessing and all feature/model/threshold/
+  universe/portfolio/cost/execution-rule selection must be strictly before
+  `2026-01-01`; obey any earlier fold cutoff and label-maturity boundary too.
+- Distinguish exploration, candidate freeze, confirmatory evaluation and forward
+  observation. Declare train/validation/test/holdout/prospective roles. Read the
+  map's detailed contract rules before changing or evaluating a research design.
+- 2026+ information requires separate applicable read/evaluation authorization;
+  it cannot feed tuning, winner selection or refitting. A2 exposure is already
+  recorded: a new session, name or freeze cannot restore pristine holdout status.
+- A date in documentation or a synthetic test is not real-result access.
+  Do not use model/train/2026 keyword bans to reject legal pre-2026 work.
+  Governance development grants no real 2026 data, label or outcome access.
+- Read permission is content-specific. Reports, logs and caches can expose results.
+  Never load a prohibited mixed-year file whole and filter afterward. Use a
+  proven isolated source/read boundary; if unavailable, stop that dependent unit.
+- Information must be available by its decision timestamp. Preserve availability,
+  revision, identity, maturity, purge and embargo lineage as detailed in the map;
+  today's database or mappings cannot substitute for authoritative PIT inputs.
+- Missing authoritative PIT input makes the affected result untestable; do not
+  guess, silently fill or fabricate a mapping. Continue independent legal work.
+- Follow the map's pre-evaluation freeze and trial-record rules. Negative or
+  untestable results can complete research; never weaken a rule or frozen
+  expectation to obtain PASS or preserve a false independent-test claim.
 
-Apply these in order:
+## Discover, reuse and preserve
 
-1. Prevent overfitting, lookahead, and data leakage.
-2. Prevent repository, artifact, dependency, and process bloat.
-3. Prevent duplicate implementation and rebuilding existing components.
-4. Preserve human observability and control.
-5. Complete the single authorized task without expanding its goal.
+- First inspect `git status --short` and relevant processes. Preserve unrelated
+  dirty files, other branches/worktrees and running workers; never stop them.
+- Search names with `rg --files | rg -i '<concept>'`, then relevant symbols with
+  `rg -n -i '<terms>' scripts fast3 tests config docs` and root canonical modules.
+  Check callers, tests, configs, aliases, manifests and accepted prior conclusions.
+- Classify AUTHORITATIVE / ACTIVE / FROZEN / SUPERSEDED / EXPERIMENTAL / UNKNOWN.
+  Prefer the existing canonical implementation. Explain any necessary thin
+  adapter or new component; it must not become a second business implementation.
+- Apply the Anti-Bloat policy to code and governance. No parallel authorities or
+  per-debug governance trees. Check callers, freezes and retention before retiring
+  content; length, age or similar names alone never justify deletion.
+- Frozen assets stay byte-identical; verify identity before use. Hash recording
+  alone does not freeze active governance: follow its actual change-control rules.
+- Preserve `fast3/docs/governance/anti_bloat_frozen_legacy_baseline.json` and its
+  exact path/rule/SHA contract. Never rewrite historical hashes to hide changes.
+- New A2 work uses `scripts/research/a2/<category>/` and corresponding tests.
+  Reuse maintenance/Harness/ops entrypoints and protected compatibility paths;
+  do not create version-suffix families.
 
-Functional success cannot override a hard research or Anti-Bloat gate.
+## Storage and bounded autonomy
 
-## Hard research boundaries
+- Resolve destinations first via `config/storage_paths.json` and
+  `scripts/common/storage_paths.py` / `.ps1`. Canonical data_root is read-only.
+  Results, backtests, daily state, environments and caches stay in external roots.
+- Use `D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe`.
+  No repository `.venv`, unnecessary dependency, background service or new CI.
+- Complete authorized locating, edits, focused refactors, deterministic bug fixes,
+  tests, review and delivery autonomously. Fix stale schemas/assertions only with
+  authority evidence; never substitute favorable expectations for a real freeze.
+- Use bounded repair/retry for ordinary failures. An unwritable cache may be
+  redirected to an already-authorized external cache; keep unrelated work moving.
+  Explicit access denial must not be bypassed via another path, tool, user or ACL.
+- Stop only the affected operation for real permission, safety, PIT, freeze,
+  budget, destructive-action or live-trading boundaries. WAITING_HUMAN is not
+  the default response to a test failure. Never escalate privileges or permissions.
+- No `reset --hard`, `git clean`, `git add -A`, broad deletion, cross-branch merge,
+  push, research reopening, promotion, data purchase or Moomoo history fetch
+  without applicable task authorization. Governance work implies none of these.
 
-- Default training boundary: every training and label-maturity timestamp must be
-  strictly earlier than `2026-01-01`.
-- Treat 2026+ as holdout, evaluation, prospective, or forward-monitoring data.
-  Never use it for fitting, feature/parameter/threshold/portfolio-rule search,
-  model selection, experiment winner selection, or feedback into those steps.
-- A2's 2026 outcome has already been exposed. See the project map and preflight.
-  Do not optimize against it or restore a pristine-holdout claim.
-- For every decision timestamp, information availability must be no later than
-  that timestamp. Preserve existing PIT, purge, embargo, and maturity guards.
-- Declare train, validation, test, holdout, and prospective roles in research
-  contracts. A strong backtest is evidence, never production authorization.
-- Do not weaken a temporal, holdout, frozen, or promotion gate to improve a
-  result or make a test pass. Boundary weakening requires explicit human approval.
+## Validation and completion
 
-## Frozen and protected assets
-
-- Canonical data under `D:\us-tech-quant-data` is read-only by default.
-- Results and evidence under the approved external roots are preserved.
-- Hash-identified models, configs, manifests, baselines, and forward contracts
-  are frozen. Verify their registry/manifest identity before depending on them.
-- `fast3/docs/governance/anti_bloat_frozen_legacy_baseline.json` is an immutable,
-  exact-path/rule/SHA legacy baseline; do not edit or extend it casually.
-- Do not modify frozen source or outputs. Do not delete old research because it
-  appears duplicated or superseded.
-
-## Search before create
-
-Use `DISCOVER -> CLASSIFY -> REUSE/EXTEND -> CREATE ONLY IF NECESSARY`.
-
-Before adding a module, runner, loader, feature, model/risk/execution wrapper,
-guard, audit, report, backtest, or preflight:
-
-- Search filenames: `rg --files | rg -i '<concept>'`.
-- Search symbols and semantics: `rg -n -i '<terms>' scripts fast3 tests config docs`.
-- Check callers, paired tests, configs, registries, manifests, and older versions.
-- Classify matches as `AUTHORITATIVE`, `ACTIVE`, `FROZEN`, `SUPERSEDED`,
-  `EXPERIMENTAL`, or `UNKNOWN`. When evidence is insufficient, use `UNKNOWN`.
-- Prefer an authoritative or active implementation; extend it when responsibilities
-  match. Reference frozen code but do not modify it.
-- Create only if reuse is unsafe/impossible, would violate a freeze, or clean
-  separation is technically necessary. Record the reason briefly in the report.
-
-Never infer status from an `R1/R2/R3`, `final`, or newer-looking filename.
-
-## Storage and runtime
-
-- Resolve destinations through `config/storage_paths.json` and
-  `scripts/common/storage_paths.py` / `.ps1`.
-- Canonical runtime:
-  `D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe`.
-- A repository-local `.venv` is forbidden. Add no dependency unless necessary;
-  keep package caches and environments external.
-- Write large/rebuildable cache to `D:\us-tech-quant-cache`, backtests to
-  `D:\us-tech-quant-backtests`, daily state to `D:\us-tech-quant-daily`, and
-  durable research evidence to `D:\us-tech-quant-results`.
-- Choose the destination before writing. Prefer a few authoritative artifacts;
-  remove task-created temporary files after validation.
-
-## Preflight and tests
-
-The preflight is read-only and task-scoped. Its default scope is independent code
-development; use `--task-scope 2026-optimization`, `2026-evaluation`,
-`pre2026-research`, `historical-fetch`, or `frozen-dependent` when applicable.
-A scoped hard blocker stops only matching work; a global hard blocker stops all
-material work. Soft warnings do not stop independent safe phases.
-
-Run focused tests with the canonical runtime, for example:
-
-`& D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -m pytest -q <test-path>`
-
-Run Anti-Bloat consistency with:
-
-`& D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -m pytest -q scripts\maintenance\test_anti_bloat_policy_consistency.py`
-
-## Default work loop
-
-`DISCOVER -> SEARCH_EXISTING -> CHECK_BOUNDARIES -> IMPLEMENT_MINIMAL_CHANGE -> TARGETED_TEST -> RESEARCH_VALIDATION (when applicable) -> SELF_REVIEW -> CLEANUP -> REPORT`
-
-Continue safe independent phases after an unrelated failure. Use `HARD_BLOCKER`
-only for invalid research, leakage, corruption, frozen-asset violation,
-destructive modification, or materially incorrect results. Use `SOFT_WARNING`
-for real but task-independent issues and `INFORMATIONAL` for context.
-
-## Do not
-
-- Do not fetch Moomoo history during ordinary development or Harness validation.
-- Do not mutate canonical data, active experiments, research result directories,
-  frozen baselines, or unrelated dirty files.
-- Do not add orchestration platforms, dashboards, databases, background daemons,
-  new CI systems, or large audit/documentation trees for routine work.
-- Do not create version-suffix families when an existing implementation should be
-  repaired or extended. Do not perform broad cleanup without explicit authority.
+- Use the existing read-only `scripts/maintenance/harness_preflight.py` only when
+  its actual reads are authorized. Its `independent-code` path checks Git/control
+  metadata, source identities and the repository budget without reading research
+  contracts, model artifacts, holdout outcomes or arbitrary changed data files.
+  Documentation and maintenance code use that no-result scope. Research checks
+  omitted for the scope are NOT_CHECKED, never research clearance. A research
+  scope label does not grant content-read permission or bypass hard gates.
+- Focused tests: `& D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -B -m pytest -q <test-path>`.
+- Default development acceptance: run that Python's `-B -m pytest -q` from the
+  repository root with no test path. The exact reviewed `pytest.ini` entries cover
+  storage/maintenance, preflight read boundaries and synthetic R1D/R1E lifecycle.
+  Additional tests require review before selection; full Harness task tests and
+  historical research tests are not part of default acceptance.
+- Anti-Bloat consistency: `& D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -B -m pytest -q scripts/maintenance/test_anti_bloat_policy_consistency.py`.
+  Use an authorized external temporary/cache root; preserve inaccessible residue.
+- Harness is optional for one human-authorized goal; see the map for start/control
+  commands. Do not launch a real Harness/research task to test these instructions.
+- Complete DISCOVER -> REUSE -> CHECK_BOUNDARIES -> MINIMAL_CHANGE -> TARGETED_TEST
+  -> APPLICABLE_RESEARCH_VALIDATION -> REVIEW -> TASK_TEMP_CLEANUP -> REPORT.
+- Separately verify references, executable behavior and isolated instruction
+  loading. Text search and model self-report cannot prove access enforcement.
+- Deliver one results_root report: changes, authority/reuse, tests, evidence and
+  gaps. Distinguish document update, loading, interception, research validity and
+  live readiness; never claim an untested layer passed.
+- Functional success cannot override a hard research or Anti-Bloat gate. Finish
+  when the authorized objective is met; do not invent a follow-on audit task.

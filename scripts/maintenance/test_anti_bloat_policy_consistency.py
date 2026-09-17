@@ -55,6 +55,8 @@ def test_canonical_runtime_and_external_roots_are_outside_repository() -> None:
     }
 
     storage_policy = policy["storage"]
+    assert storage_policy["worktrees_root"] == r"D:\us-tech-quant-worktrees"
+    assert storage_policy["worktrees_root"] != r"D:\us-tech-quant_worktrees"
     storage_config_path = ROOT / storage_policy["runtime_paths_config"]
     storage_paths = json.loads(storage_config_path.read_text(encoding="utf-8"))
     external_roots = [

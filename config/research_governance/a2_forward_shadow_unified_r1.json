@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0.0",
+  "runner_id": "A2_FORWARD_SHADOW_UNIFIED_RUNNER_R1",
+  "require_frozen_hashes": true,
+  "append_only": true,
+  "allow_overwrite": false,
+  "allow_duplicate_identical": false,
+  "require_same_target_date": true,
+  "require_lineage_match": true,
+  "auto_canonical_refresh": false,
+  "broker_action_allowed": false,
+  "training_allowed": false,
+  "parameter_search_allowed": false,
+  "model_selection_allowed": false,
+  "staging_root": "D:/us-tech-quant-results/A2_FORWARD_SHADOW_UNIFIED_R1/staging",
+  "authoritative_shadow_root": "D:/us-tech-quant-results/A2_FORWARD_SHADOW_UNIFIED_R1/authoritative",
+  "readiness_root": "D:/us-tech-quant-results/a2-forward-shadow-readiness",
+  "production_binding_manifest": "D:/us-tech-quant/config/research_governance/a2_forward_shadow_production_binding_r1.json",
+  "production_binding_sha256": "750871bd7e23fca7f1c09d071e6082b7fcd0c22fbf8bc4d9c72217f3b50cf5e0",
+  "history_hash_chain_enabled": true,
+  "retain_failed_staging": true,
+  "risk_must_be_subset_of_alpha": true,
+  "require_risk_for_every_alpha": false,
+  "execution_must_be_subset_of_alpha": true,
+  "allow_execution_subset_with_reason": true,
+  "registry_paths": {
+    "ALPHA": "config/research_governance/alpha_registry.json",
+    "RISK": "config/research_governance/risk_registry.json",
+    "EXECUTION": "config/research_governance/execution_registry.json"
+  },
+  "production_adapters": {
+    "ALPHA": "forward_shadow.production_binding:create_alpha_adapter",
+    "RISK": "forward_shadow.production_binding:create_risk_adapter",
+    "EXECUTION": "forward_shadow.production_binding:create_execution_adapter"
+  }
+}

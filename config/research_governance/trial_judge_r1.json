@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0.0",
+  "judge_id": "A2_RESEARCH_TRIAL_JUDGE_R1",
+  "2026_training_forbidden": true,
+  "auto_promotion_forbidden": true,
+  "threshold_policy": "Scientific edge thresholds are informational until explicitly preregistered for a trial family.",
+  "thresholds": {
+    "model_family": "ALPHA",
+    "predictive_metric": "rank_ic",
+    "economic_metric": "sharpe",
+    "stability_metric": "rank_ic",
+    "predictive_min_delta": null,
+    "economic_min_delta": null,
+    "minimum_common_folds": 3,
+    "minimum_positive_fold_ratio": 0.5,
+    "maximum_fold_metric_std": null,
+    "maximum_turnover": null,
+    "maximum_winner_damage": null,
+    "dominance_metric": "sharpe",
+    "dominance_group_by": "fold",
+    "dominance_min_share": 0.5
+  }
+}

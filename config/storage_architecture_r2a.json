@@ -1,0 +1,13 @@
+{
+  "architecture": "STORAGE_ARCHITECTURE_R2A_CODE_ONLY_REPO_PER_TICKER_DATA_ISOLATED_BACKTESTS",
+  "repo_root": "D:\\us-tech-quant",
+  "data_root": "D:\\us-tech-quant-data",
+  "backtest_root": "D:\\us-tech-quant-backtests",
+  "daily_root": "D:\\us-tech-quant-daily",
+  "cache_root": "D:\\us-tech-quant-cache",
+  "daily_output_root_default": "outputs/v22",
+  "daily_output_root_switch_approved": false,
+  "broker_action_allowed": false,
+  "official_adoption_allowed": false,
+  "research_only": true
+}

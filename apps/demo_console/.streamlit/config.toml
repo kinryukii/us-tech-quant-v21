@@ -1,0 +1,30 @@
+# Script-local theme for the research terminal.
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = false
+
+[theme]
+base = "light"
+primaryColor = "#235c48"
+backgroundColor = "#f7f8f5"
+secondaryBackgroundColor = "#eef1ea"
+textColor = "#202a28"
+font = "Segoe UI, Microsoft YaHei UI, Yu Gothic UI, sans-serif"
+borderColor = "#dde3dd"
+baseRadius = "6px"
+buttonRadius = "5px"
+headingFontWeights = [550, 550, 550, 500, 500, 500]
+baseFontSize = 16
+dataframeHeaderBackgroundColor = "#f1f4ed"
+dataframeBorderColor = "#dde3dd"
+chartCategoricalColors = ["#2357d9", "#d97706", "#087f71", "#884ac7"]
+
+[theme.sidebar]
+backgroundColor = "#18211f"
+secondaryBackgroundColor = "#25312b"
+textColor = "#dfe7db"
+primaryColor = "#91ab76"
+borderColor = "#435148"

@@ -1,0 +1,9 @@
+{
+  "pre2026_research_complete": true,
+  "pre2026_selection_complete": true,
+  "pre2026_champion_frozen": true,
+  "2026_outcome_read_count_at_freeze": 0,
+  "artifact_hashes": {
+    "tiny_immutable_ledger.fixture": "27df20eae8db7c04816c5f5fe5d8bb0ce799452d010f937e416d95c15febba88"
+  }
+}

@@ -70,7 +70,11 @@ tmp/
 temp/
 
 # Archives / compressed backups
-archive/
+archive/*
+!archive/research/
+archive/research/*
+!archive/research/closed/
+!archive/research/closed/**
 *.zip
 *.7z
 *.rar
@@ -87,6 +91,12 @@ outputs/
 
 # Local runtime state / raw inputs
 data/
+!scripts/research/a2/data/
+!scripts/research/a2/data/*.py
+!tests/research/a2/data/
+!tests/research/a2/data/*.py
+!archive/research/closed/a2/data/
+!archive/research/closed/a2/data/*.py
 inputs/
 state/
 large_files_over_50mb.txt

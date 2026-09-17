@@ -72,6 +72,17 @@ INTERVAL_FIELDS = [
     "data_sha256", "error_code", "error_message", "updated_utc",
 ]
 
+# The legacy V11 mapping treated GE's temporary 2024 ex-distribution
+# when-issued symbol as the permanent security symbol.  Keep the immutable PIT
+# source intact and correct the transport identity at the existing mapping
+# boundary.  CUSIP 369604103 is the pre-2021 reverse-split identity and
+# 369604301 is the current identity; both trade through the regular-way GE
+# history rather than GE.WI.
+SECURITY_IDENTITY_OVERRIDES = {
+    "369604103": {"ticker": "GE", "moomoo_transport_code": "US.GE"},
+    "369604301": {"ticker": "GE", "moomoo_transport_code": "US.GE"},
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -133,6 +144,23 @@ def interval_path(code: str, start: str, end: str) -> Path:
     return INTERVAL_DATA / f"{safe_key(code)}_{token}.parquet"
 
 
+def apply_security_identity_overrides(intervals: pd.DataFrame) -> pd.DataFrame:
+    """Correct verified CUSIP identities without mutating frozen inputs."""
+    out = intervals.copy()
+    security_ids = out.security_id.fillna("").astype(str)
+    for security_id, identity in SECURITY_IDENTITY_OVERRIDES.items():
+        mask = security_ids.eq(security_id)
+        out.loc[mask, "ticker"] = identity["ticker"]
+        out.loc[mask, "moomoo_transport_code"] = identity["moomoo_transport_code"]
+        if "mapping_status" in out:
+            out.loc[mask, "mapping_status"] = "RESOLVED"
+        if "mapping_source" in out:
+            out.loc[mask, "mapping_source"] = "A2_CUSIP_IDENTITY_OVERRIDE_R1"
+        if "mapping_confidence" in out:
+            out.loc[mask, "mapping_confidence"] = "CUSIP_VERIFIED"
+    return out
+
+
 def normalize_frame(frame: pd.DataFrame, ticker: str, code: str, origin: str) -> pd.DataFrame:
     columns = ["ticker", "moomoo_code", "date", "open", "high", "low", "close", "volume", "turnover", "adjustment", "source", "origin"]
     if frame.empty:
@@ -167,6 +195,7 @@ def load_mapping() -> tuple[pd.DataFrame, dict[str, dict[str, Any]]]:
     intervals["ticker"] = intervals.ticker.fillna("").astype(str).str.upper()
     intervals["moomoo_transport_code"] = intervals.moomoo_transport_code.fillna("").astype(str)
     intervals["security_id"] = intervals.security_id.fillna("").astype(str)
+    intervals = apply_security_identity_overrides(intervals)
     mapped: dict[str, dict[str, Any]] = {}
     for code, group in intervals.loc[intervals.moomoo_transport_code.ne("")].groupby("moomoo_transport_code"):
         tickers = sorted(set(group.ticker) - {""})
@@ -313,6 +342,164 @@ def local_history(member: dict[str, Any], canonical: dict[str, pd.DataFrame], pr
     return normalize_frame(merged, ticker, code, "MERGED_LOCAL_VALIDATED")
 
 
+def asof_history_window(
+    frame: pd.DataFrame,
+    as_of_date: str | pd.Timestamp | None,
+    *,
+    date_column: str = "date",
+    current_mode: bool = False,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Return the only rows an historical readiness decision may observe.
+
+    Historical callers must provide ``as_of_date``.  ``current_mode`` is an
+    explicit compatibility path for operational callers that intentionally
+    use all currently available rows; it is never an implicit fallback.
+    """
+    if date_column not in frame.columns:
+        raise RuntimeError(f"ASOF_DATE_COLUMN_MISSING:{date_column}")
+    if as_of_date is None and not current_mode:
+        raise RuntimeError("ASOF_DATE_REQUIRED_FOR_HISTORICAL_READINESS")
+    result = frame.copy()
+    parsed = pd.to_datetime(result[date_column], errors="coerce").dt.normalize()
+    invalid_date_count = int(parsed.isna().sum())
+    result[date_column] = parsed
+    local_latest = "" if parsed.dropna().empty else str(parsed.max().date())
+    if current_mode:
+        used = result.loc[parsed.notna()].copy()
+        effective_as_of = local_latest
+    else:
+        target = pd.Timestamp(as_of_date).normalize()
+        used = result.loc[parsed.notna() & parsed.le(target)].copy()
+        effective_as_of = str(target.date())
+    used = used.sort_values(date_column, kind="stable").reset_index(drop=True)
+    max_used = "" if used.empty else str(used[date_column].max().date())
+    return used, {
+        "as_of_date": effective_as_of,
+        "current_mode": bool(current_mode),
+        "local_latest_date": local_latest,
+        "local_data_extends_beyond_asof": bool(not current_mode and local_latest and local_latest > effective_as_of),
+        "asof_rows_used_max_date": max_used,
+        "invalid_date_count": invalid_date_count,
+    }
+
+
+def asof_feature_readiness(
+    frame: pd.DataFrame,
+    as_of_date: str | pd.Timestamp | None,
+    *,
+    required_observations: int = 121,
+    date_column: str = "date",
+    current_mode: bool = False,
+) -> dict[str, Any]:
+    """Evaluate the frozen price/volume warmup after the as-of mask."""
+    used, audit = asof_history_window(
+        frame, as_of_date, date_column=date_column, current_mode=current_mode,
+    )
+    required_fields = {"close", "volume"}
+    missing = sorted(required_fields - set(used.columns))
+    if missing:
+        raise RuntimeError(f"FEATURE_INPUT_FIELDS_MISSING:{','.join(missing)}")
+    numeric = used[["close", "volume"]].apply(pd.to_numeric, errors="coerce")
+    valid = np.isfinite(numeric).all(axis=1) & numeric.close.gt(0) & numeric.volume.ge(0)
+    valid_dates = used.loc[valid, date_column].drop_duplicates()
+    observation_count = int(valid_dates.nunique())
+    audit.update({
+        "required_observations": int(required_observations),
+        "observation_count_asof": observation_count,
+        "feature_input_max_date": "" if valid_dates.empty else str(valid_dates.max().date()),
+        "model_safe": observation_count >= int(required_observations),
+    })
+    return audit
+
+
+def authoritative_model_safe_coverage(
+    raw: pd.DataFrame,
+    qfq: pd.DataFrame,
+    required_tickers: Iterable[str],
+    as_of_date: str | pd.Timestamp | None,
+    *,
+    required_observations: int = 121,
+) -> dict[str, Any]:
+    """Compute target-date coverage without consulting post-target rows."""
+    required = sorted({str(ticker).strip().upper() for ticker in required_tickers if str(ticker).strip()})
+    raw_used, raw_audit = asof_history_window(raw, as_of_date)
+    qfq_used, qfq_audit = asof_history_window(qfq, as_of_date)
+    raw_used["_coverage_ticker"] = raw_used.ticker.astype(str).str.upper()
+    qfq_used["_coverage_ticker"] = qfq_used.ticker.astype(str).str.upper()
+    raw_groups = {ticker: group for ticker, group in raw_used.groupby("_coverage_ticker", sort=False)}
+    qfq_groups = {ticker: group for ticker, group in qfq_used.groupby("_coverage_ticker", sort=False)}
+    target = str(pd.Timestamp(as_of_date).date())
+    results: list[dict[str, Any]] = []
+    for ticker in required:
+        r = raw_groups.get(ticker, raw_used.iloc[0:0])
+        q = qfq_groups.get(ticker, qfq_used.iloc[0:0])
+        r_target = r.loc[r.date.eq(pd.Timestamp(target))]
+        q_target = q.loc[q.date.eq(pd.Timestamp(target))]
+        feature = asof_feature_readiness(q, target, required_observations=required_observations)
+        raw_target_ready = len(r_target) == 1
+        qfq_target_ready = len(q_target) == 1
+        model_safe = raw_target_ready and qfq_target_ready and bool(feature["model_safe"])
+        results.append({
+            "ticker": ticker,
+            "as_of_date": target,
+            "raw_target_ready": raw_target_ready,
+            "qfq_target_ready": qfq_target_ready,
+            "observation_count_asof": feature["observation_count_asof"],
+            "max_used_date": feature["asof_rows_used_max_date"],
+            "local_data_extends_beyond_asof": feature["local_data_extends_beyond_asof"],
+            "model_safe": model_safe,
+        })
+    safe = sorted(row["ticker"] for row in results if row["model_safe"])
+    max_dates = [value for value in (raw_audit["asof_rows_used_max_date"], qfq_audit["asof_rows_used_max_date"]) if value]
+    return {
+        "as_of_date": target,
+        "required_count": len(required),
+        "model_safe_count": len(safe),
+        "model_safe_tickers": safe,
+        "rows": results,
+        "max_used_date": max(max_dates, default=""),
+        "local_data_extends_beyond_asof": bool(raw_audit["local_data_extends_beyond_asof"] or qfq_audit["local_data_extends_beyond_asof"]),
+        "raw_qfq_asof_guard": True,
+        "feature_input_asof_guard": True,
+        "observation_count_asof_guard": True,
+    }
+
+
+def frozen_queue_security_id_hash(rows: Iterable[dict[str, Any]]) -> str:
+    identities = sorted(str(row["security_id"]).strip() for row in rows)
+    return hashlib.sha256(("\n".join(identities) + "\n").encode("utf-8")).hexdigest()
+
+
+def load_frozen_backfill_queue(
+    queue_path: Path,
+    manifest_path: Path,
+    expected_manifest_sha256: str,
+) -> dict[str, Any]:
+    """Validate a frozen queue before a future runner constructs API work."""
+    require(bool(expected_manifest_sha256), "QUEUE_MANIFEST_EXPECTED_HASH_REQUIRED")
+    require(sha256(manifest_path) == expected_manifest_sha256, "QUEUE_MANIFEST_HASH_MISMATCH")
+    manifest = json_read(manifest_path)
+    require(sha256(queue_path) == manifest.get("queue_file_sha256"), "QUEUE_FILE_HASH_MISMATCH")
+    rows = pd.read_csv(queue_path, dtype=str).fillna("").to_dict("records")
+    required_fields = {"security_id", "symbol", "moomoo_code", "fetch_priority", "queue_reason"}
+    require(all(required_fields <= set(row) for row in rows), "QUEUE_SCHEMA_MISMATCH")
+    require(len(rows) == int(manifest.get("queue_count", -1)), "QUEUE_COUNT_MISMATCH")
+    require(len({row["security_id"] for row in rows}) == len(rows), "QUEUE_SECURITY_ID_DUPLICATE")
+    require(frozen_queue_security_id_hash(rows) == manifest.get("security_id_set_sha256"), "QUEUE_SECURITY_ID_SET_HASH_MISMATCH")
+    priority = {"P0_MINIMAL_GAP": 0, "P1_PARTIAL_HISTORY": 1, "P2_FULL_HISTORY": 2}
+    require(all(row["fetch_priority"] in priority for row in rows), "QUEUE_PRIORITY_INVALID")
+    expected_order = sorted(rows, key=lambda row: (priority[row["fetch_priority"]], row["security_id"]))
+    require(rows == expected_order, "QUEUE_ORDER_NOT_DETERMINISTIC")
+    require(all(row["queue_reason"] == "FAIL_MOOMOO_WEEKLY_QUOTA_DEFERRED" for row in rows), "QUEUE_REASON_NOT_QUOTA_DEFERRED")
+    return {
+        "status": "PASS",
+        "queue_count": len(rows),
+        "execution_order": [row["security_id"] for row in rows],
+        "moomoo_api_request_count": 0,
+        "rows": rows,
+    }
+
+
 def planned_ranges(member: dict[str, Any], frame: pd.DataFrame) -> list[tuple[str, str]]:
     start = pd.Timestamp(member["required_history_start"])
     if frame.empty:
@@ -431,7 +618,10 @@ def fetch_all() -> None:
             code, ticker = member["moomoo_code"], member["ticker"]
             if code in done:
                 continue
-            before = local_history(member, canonical, prior)
+            before, _ = asof_history_window(
+                local_history(member, canonical, prior),
+                FIXED_CUTOFF,
+            )
             initial_count = len(before)
             ranges = planned_ranges(member, before)
             new_frames: list[pd.DataFrame] = []
@@ -544,7 +734,11 @@ def build_feature_outputs() -> dict[str, Any]:
             pieces.append(part.assign(priority=2))
     prices = pd.concat(pieces, ignore_index=True)
     prices["trade_date"] = pd.to_datetime(prices.trade_date).dt.normalize()
-    prices = prices.loc[prices.trade_date <= FIXED_CUTOFF]
+    prices, prices_asof_audit = asof_history_window(
+        prices,
+        FIXED_CUTOFF,
+        date_column="trade_date",
+    )
     prices = prices.sort_values(["ticker", "trade_date", "priority"], kind="mergesort").drop_duplicates(["ticker", "trade_date"], keep="last")
     prices["autype"] = "qfq"; prices["source"] = "MOOMOO_OPEND"
     require("QQQ" in set(prices.ticker), "QQQ_MISSING_FOR_CALENDAR")
@@ -579,6 +773,9 @@ def build_feature_outputs() -> dict[str, Any]:
         "incremental_feature_min_date": "" if incremental.empty else str(incremental.as_of_date.min().date()),
         "incremental_feature_max_date": "" if incremental.empty else str(incremental.as_of_date.max().date()),
         "feature_timestamp_violation_count": int((feature_rows.feature_max_timestamp > feature_rows.as_of_date).sum()),
+        "as_of_date": str(FIXED_CUTOFF.date()),
+        "max_used_date": prices_asof_audit["asof_rows_used_max_date"],
+        "local_data_extends_beyond_asof": prices_asof_audit["local_data_extends_beyond_asof"],
         "2026_training_rows": 0, "2026_parameter_search_count": 0, "2026_model_selection_count": 0,
     }
     json_write(WORK / "coverage_after_completion.json", result)

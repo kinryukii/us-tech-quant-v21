@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param([string]$RepoRoot = "D:\us-tech-quant", [string]$TaskPrefix = "US-Tech-Quant-V22.047-R1E")
 $ErrorActionPreference = "Stop"
-$Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+. (Join-Path $RepoRoot "scripts\common\storage_paths.ps1")
+$Storage = Get-UstqStoragePaths -RepoRoot $RepoRoot
+$Python = $Storage.python_exe
+if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { throw "Python not found: $Python" }
 $Main = Join-Path $RepoRoot "scripts\v22\v22_047_r1e_windows_service_hardening.py"
 $Output = Join-Path $RepoRoot "outputs\v22\V22.047_R1E_WINDOWS_AUTOSTART_SERVICE_HARDENING_AND_DASHBOARD_V2_SHADOW_ONLY"
-if (-not (Test-Path -LiteralPath $Python)) { throw "Python not found: $Python" }
 if (-not (Test-Path -LiteralPath $Main)) { throw "R1E module not found: $Main" }
 New-Item -ItemType Directory -Path $Output -Force | Out-Null
 & $Python -m py_compile $Main

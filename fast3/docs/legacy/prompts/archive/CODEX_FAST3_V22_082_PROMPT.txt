@@ -1,0 +1,162 @@
+﻿You are authorized to implement and run the new independent stage:
+V22.082_FAST3_BOUNDED_MULTIGENERATION_AUTOPILOT_R1.
+
+Read the full authorization first:
+D:\us-tech-quant\FAST3_V22_082_AUTHORIZATION.md
+
+Read the frozen runtime budget:
+D:\us-tech-quant-results\fast3_v22_082_multigeneration_autopilot\autopilot_budget.json
+
+Repository and data roots:
+- repo: D:\us-tech-quant
+- canonical data: D:\us-tech-quant-data
+- new results: D:\us-tech-quant-results\fast3_v22_082_multigeneration_autopilot
+- prior V22.081 results: D:\us-tech-quant-results\fast3_v22_081_bounded_self_improvement
+
+The user explicitly authorizes autonomous implementation, testing, training,
+randomized contiguous-time backtesting, bounded model/factor/threshold adjustment,
+failure diagnosis, and automatic advancement across generations. Do not wait for
+step-by-step confirmation for non-destructive research choices.
+
+The critical correction relative to V22.081 is:
+- A candidate failure is not terminal.
+- A generation-level Validation or Confirmation failure closes only that generation.
+- After a failed generation is truthfully frozen, automatically diagnose the failure,
+  advance to the next predeclared untouched outer fold, create a bounded next-generation
+  hypothesis, and continue training while global budget remains.
+- Never retune against or reopen any consumed Validation/Confirmation holdout.
+- Only a GLOBAL stop condition may create V22_082_GLOBAL_DONE.flag.
+
+Begin by auditing, without altering, all relevant V22.081 implementation and artifacts:
+- v22_081_summary.json
+- v22_081_report.md
+- experiment_registry.jsonl
+- champion_config.json
+- the actual V22.081 engine, tests, and config
+
+Preserve V22.081's truthful FAIL_CONFIRMATION conclusion. Use it only as prior failure
+diagnostics. Mark its holdouts consumed. Do not rerun or optimize against them. You may
+reuse sound code and features, but do not overwrite frozen V22.081 results.
+
+Before reading any new V22.082 economic holdout result, freeze a global split schedule
+and write its hash. Prefer chronological expanding-window generations:
+observed history -> inner Development search -> one-time Validation -> one-time
+Confirmation; then, after generation closure, advance to a strictly later untouched
+outer fold. If the local date span cannot support the requested number of genuinely
+untouched chronological generations, predeclare the maximum defensible disjoint fold
+schedule and stop truthfully when it is exhausted. Do not fabricate untouched data.
+
+Implement one compact, resumable multigeneration engine. Do not create V22.082A/B/C,
+R2/R3, or separate code copies per generation. Reuse or extract the V22.081 engine as
+the base. The V22.082 implementation should normally add no more than four core files:
+1. one main multigeneration Python engine;
+2. one focused test file;
+3. one compact JSON config/contract;
+4. at most one PowerShell execution wrapper if existing launchers cannot invoke it.
+The orchestration prompt/authorization/status files already installed by the package
+are not a reason to create more implementation files.
+
+Use a fixed result layout rather than version proliferation:
+- v22_082_global_checkpoint.json
+- v22_082_global_summary.json
+- latest_generation_summary.json (overwrite atomically)
+- generation_registry.jsonl
+- experiment_registry.jsonl
+- split_schedule.json and SHA256
+- champion_config.json (current global champion only)
+- v22_082_report.md
+- V22_082_GLOBAL_DONE.flag only at legal global termination
+Do not create a directory or report for every experiment. Keep at most three active
+candidate model artifacts; delete superseded model binaries after metrics are safely
+registered.
+
+For every generation:
+1. select its predeclared outer fold without seeing its results;
+2. run randomized contiguous as-of inner Development experiments with purge/embargo;
+3. fit compact factor weights/models only on past data;
+4. evaluate real SOXL/SOXS executable OHLC at 5/10/20/30 bps and 0/1/3/5 minute delay;
+5. retain at most three candidates;
+6. freeze exactly one champion;
+7. open Validation once;
+8. only if Validation passes, open Confirmation once;
+9. freeze the generation result and append one generation-registry record;
+10. if failed and global stop is not met, classify failure and automatically create the
+    bounded mutation plan for the next generation and continue.
+
+A generation failure diagnosis must use explicit classes such as:
+- NO_DEVELOPMENT_EDGE
+- VALIDATION_SIGN_REVERSAL
+- CONFIRMATION_SIGN_REVERSAL
+- EXCESS_DRAWDOWN
+- COST_FRAGILITY
+- DELAY_FRAGILITY
+- REGIME_INSTABILITY
+- YEAR_CONCENTRATION
+- SESSION_CONCENTRATION
+- SEED_INSTABILITY
+- WEIGHT_INSTABILITY
+- TRADE_CONCENTRATION
+- DATA_OR_LINEAGE_BLOCKER
+
+Bounded next-generation responses are authorized. Based on failure class, adjust only
+a small number of dimensions, for example:
+- raise or recalibrate NO_TRADE thresholds;
+- impose a hard drawdown gate;
+- reduce model depth/feature count;
+- remove unstable or sign-flipping factors;
+- separate Opportunity, Direction, and Entry outputs;
+- add reliable PIT VIX/regime interactions;
+- change a predeclared label horizon;
+- strengthen probability calibration;
+- revise exit/holding rules within the frozen search space;
+- require stronger 20 bps and delay robustness.
+Each generation mutation plan may change at most one model family, three hyperparameters,
+two thresholds, one label horizon, and one exit rule. Record parent generation and
+mutation reason. Do not patch directly to a holdout's individual trades or dates.
+
+Required modeling behavior:
+- explicit NO_TRADE action;
+- Opportunity, Direction, Entry separation when defensible;
+- Logistic/Elastic Net/limited trees/limited random forest/small HistGradientBoosting;
+- at most five model families, 40 active features, and three active candidates;
+- VIX features only from reliable local timestamped PIT data;
+- real SOXL/SOXS execution prices, never SOXX return multiplied by three;
+- no deep learning or unbounded hyperparameter optimization.
+
+Optimization must not maximize cumulative return alone. Penalize drawdown, turnover,
+complexity, probability miscalibration, seed/year/session/regime instability, weight
+drift, concentration in fewer than 5% of trades, cost fragility, and delay fragility.
+A 46% drawdown cannot be accepted merely because average return is positive. Use a
+predeclared hard drawdown gate appropriate to the label/holding horizon and report it.
+
+Global stop conditions are bounded by autopilot_budget.json. Continue across failed
+generations until one of these occurs:
+- a generation passes all frozen gates and is eligible only for zero-order prospective
+  shadow research;
+- maximum generations reached;
+- maximum total experiments reached;
+- three consecutive generations show no material outer-fold improvement;
+- three consecutive generations fail with the same material Confirmation failure class;
+- no defensible untouched outer fold remains;
+- all authorized compact model families are exhausted with stable negative evidence;
+- a real external data/login/credential blocker prevents further legal research.
+A normal Codex turn ending, an individual test failure, a generation FAIL_VALIDATION,
+or a generation FAIL_CONFIRMATION is not a global stop.
+
+After every material experiment and generation transition, atomically update the global
+checkpoint and registries. On a Codex turn boundary, leave a truthful next_action and do
+not create the global done flag. The launcher will resume you.
+
+Required safety flags always remain false:
+BROKER_ACTION_ALLOWED=false
+PAPER_BROKER_ORDER_ALLOWED=false
+ORDER_GENERATION_ALLOWED=false
+OFFICIAL_ADOPTION_ALLOWED=false
+REMOTE_PUSH_ALLOWED=false
+
+Never modify canonical data, synthesize/interpolate OHLC, access broker execution,
+create orders, reset/clean Git, push/merge remotely, hide failures, or claim tests/runs
+that did not occur.
+
+Now perform the actual audit, implementation, tests, real experiments, generation
+transitions, and reporting. Do not merely restate this prompt.

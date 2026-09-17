@@ -256,7 +256,7 @@ class MoomooReadOnlyBridge:
         except OSError:
             return False
 
-    def market_snapshot(self) -> dict[str, Any]:
+    def market_snapshot(self, *, include_history: bool = True) -> dict[str, Any]:
         sdk = self._sdk()
         context = None
         now = utc_now()
@@ -292,7 +292,7 @@ class MoomooReadOnlyBridge:
                     "data_fresh": fresh,
                 }
             klines: dict[str, Any] = {}
-            for ktype in KLINE_TYPES:
+            for ktype in KLINE_TYPES if include_history else ():
                 try:
                     result = context.request_history_kline(
                         code=BENCHMARK_SYMBOL,
@@ -438,6 +438,7 @@ class SingleInstance:
     def __init__(self, path: Path):
         self.path = path
         self.acquired = False
+        self._handle = None
 
     @staticmethod
     def alive(pid: int) -> bool:
@@ -446,13 +447,24 @@ class SingleInstance:
         if os.name == "nt":
             try:
                 import ctypes
-                handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+                from ctypes import wintypes
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                kernel.OpenProcess.restype = wintypes.HANDLE
+                kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+                kernel.WaitForSingleObject.restype = wintypes.DWORD
+                kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+                handle = kernel.OpenProcess(0x100000, False, pid)  # SYNCHRONIZE
                 if not handle:
-                    return False
-                ctypes.windll.kernel32.CloseHandle(handle)
-                return True
+                    # ERROR_INVALID_PARAMETER confirms an absent PID. Access
+                    # denial or any other unknown result must preserve its lock.
+                    return ctypes.get_last_error() != 87
+                try:
+                    return kernel.WaitForSingleObject(handle, 0) != 0  # Only WAIT_OBJECT_0 proves exit.
+                finally:
+                    kernel.CloseHandle(handle)
             except Exception:
-                return False
+                return True
         try:
             os.kill(pid, 0)
             return True
@@ -460,34 +472,68 @@ class SingleInstance:
             return False
 
     def acquire(self) -> None:
+        if self.acquired:
+            raise R1DError(f"ENGINE_ALREADY_RUNNING:{os.getpid()}")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        for _ in range(2):
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            created = True
+        except FileExistsError:
+            fd = os.open(self.path, os.O_RDWR)
+            created = False
+        handle = os.fdopen(fd, "r+b", buffering=0)
+        try:
             try:
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(fd, "w", encoding="ascii") as handle:
-                    handle.write(str(os.getpid()))
-                self.acquired = True
-                return
-            except FileExistsError:
-                try:
-                    pid = int(self.path.read_text(encoding="ascii").strip())
-                except Exception:
-                    pid = -1
-                if self.alive(pid):
-                    raise R1DError(f"ENGINE_ALREADY_RUNNING:{pid}")
-                try:
-                    self.path.unlink()
-                except FileNotFoundError:
-                    pass
-        raise R1DError("SINGLE_INSTANCE_LOCK_FAILED")
+                if os.name == "nt":
+                    import msvcrt
+                    # Lock beyond PID text and reader buffers without growing the file.
+                    handle.seek(1024 * 1024)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                import errno
+                if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                    raise R1DError("ENGINE_ALREADY_RUNNING:OS_LOCK_HELD") from exc
+                raise
+            handle.seek(0)
+            previous = handle.read(64).decode("ascii").strip()
+            if not created:
+                if not previous.isdecimal() or int(previous) <= 0:
+                    raise R1DError("SINGLE_INSTANCE_OWNER_UNKNOWN")
+                if self.alive(int(previous)):
+                    raise R1DError(f"ENGINE_ALREADY_RUNNING:{previous}")
+            # Keep the same file identity: competing stale owners cannot unlink
+            # a newly acquired lock between checking its old PID and claiming it.
+            handle.seek(0)
+            handle.truncate()
+            handle.write(str(os.getpid()).encode("ascii"))
+            self._handle = handle
+            self.acquired = True
+        except BaseException:
+            handle.close()
+            raise
 
     def release(self) -> None:
-        if self.acquired:
-            try:
+        if not self.acquired:
+            return
+        handle = self._handle
+        self._handle = None
+        self.acquired = False
+        try:
+            identity = os.fstat(handle.fileno())
+            handle.seek(0)
+            owner = handle.read(64).decode("ascii").strip()
+        finally:
+            handle.close()
+        try:
+            if (owner == str(os.getpid())
+                    and os.path.samestat(identity, self.path.stat())
+                    and self.path.read_text(encoding="ascii").strip() == owner):
                 self.path.unlink()
-            except FileNotFoundError:
-                pass
-            self.acquired = False
+        except FileNotFoundError:
+            pass
 
 
 class Engine:
@@ -510,6 +556,7 @@ class Engine:
         self.max_quote_age = float(cfg["risk"]["max_quote_age_seconds"])
         self.bridge = bridge or MoomooReadOnlyBridge(self.profile, self.output_dir, self.max_quote_age)
         self.previous_state = read_json(self.output_dir / "engine_state.json", {}) or {}
+        self.recovery_detected = bool(self.previous_state) and self.previous_state.get("engine_status") not in {"STOPPED", "CLEAN_STOP"}
         self.running = True
         ensure_csv(self.output_dir / "error_ledger.csv",
                    ("timestamp_utc", "severity", "stage", "error", "fail_closed"))
@@ -677,7 +724,7 @@ class Engine:
             self._write_error("ACCOUNT_BRIDGE", error)
             account = failed_account(error)
         strategy, control, intent = self._strategy_and_control(market, account, switch)
-        recovered = bool(self.previous_state) and self.previous_state.get("engine_status") not in {"STOPPED", "CLEAN_STOP"}
+        recovered = self.recovery_detected
         reconciled = bool(account.get("account_snapshot_ready"))
         state = {
             "schema_version": 1, "revision": REVISION, "stage": STAGE,
@@ -734,7 +781,17 @@ class Engine:
             state = read_json(self.output_dir / "engine_state.json", {}) or {}
             state.update({"engine_status": "CLEAN_STOP", "stopped_at_utc": utc_iso(), "broker_action_allowed": False, "trade_api_called": False})
             atomic_json(self.output_dir / "engine_state.json", state)
+            atomic_json(self.output_dir / "engine_heartbeat.json", {"timestamp_utc": utc_iso(), "pid": os.getpid(), "status": "STOPPED"})
             return 0
+        except Exception as exc:
+            error = f"{type(exc).__name__}:{exc}"
+            self._write_error("ENGINE_FATAL", error)
+            state = read_json(self.output_dir / "engine_state.json", {}) or {}
+            state.update({"engine_status": "FAILED", "stopped_at_utc": utc_iso(), "error": error,
+                          "broker_action_allowed": False, "trade_api_called": False})
+            atomic_json(self.output_dir / "engine_state.json", state)
+            atomic_json(self.output_dir / "engine_heartbeat.json", {"timestamp_utc": utc_iso(), "pid": os.getpid(), "status": "FAILED"})
+            return 2
         finally:
             self.lock.release()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -49,6 +50,21 @@ def make_snapshot(cache_root: Path, snapshot_id: str, latest: str, raw: bool = T
         write_csv(directory / module.CANON_RAW, rows(latest, "raw"))
     if qfq:
         write_csv(directory / module.CANON_QFQ, rows(latest, "qfq"))
+    return directory
+
+
+def make_promoted_snapshot(cache_root: Path, suffix: str, latest: str = "2026-07-08") -> Path:
+    snapshot_id = f"v22_040_promoted_{suffix}"
+    directory = make_snapshot(cache_root, snapshot_id, latest)
+    module.write_json_atomic(
+        directory / "canonical_manifest.json",
+        {
+            "snapshot_id": snapshot_id,
+            "canonical_raw_path": str(directory / module.CANON_RAW),
+            "canonical_qfq_path": str(directory / module.CANON_QFQ),
+            "latest_date": latest,
+        },
+    )
     return directory
 
 
@@ -408,3 +424,333 @@ def test_running_heartbeat_fields_are_written_before_v21_231_completes(tmp_path)
     assert observed["stage_attempted"] is True
     assert observed["broker_action_allowed"] is False
     assert observed["official_adoption_allowed"] is False
+
+
+def test_post_supersession_hook_not_called_when_promotion_fails(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    calls = []
+    summary = module.run(
+        repo,
+        target_date="2026-07-08",
+        cache_root=cache,
+        fetch_runner=fetch_runner_factory(cache, "2026-07-08", qfq=False),
+        dedup_runner=lambda **kwargs: calls.append(kwargs) or {"status": "PASS"},
+    )
+    assert summary["final_status"] == module.FAIL_STATUS
+    assert calls == []
+
+
+def test_hook_receives_pre_refresh_current_only_after_valid_promotion(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    old_current = make_promoted_snapshot(cache, "20260701_000000_000001", "2026-07-07")
+    write_pointer(repo, cache, old_current, old_current.name.removeprefix("snapshot_id="))
+    observed = {}
+
+    def dedup_runner(**kwargs):
+        observed.update(kwargs)
+        return {"status": "NO_EXACT_DUPLICATE", "files_hashed": 0}
+
+    summary = module.run(
+        repo,
+        target_date="2026-07-08",
+        cache_root=cache,
+        fetch_runner=fetch_runner_factory(cache, "2026-07-08"),
+        stage_runner=stage_runner_factory(),
+        dedup_runner=dedup_runner,
+    )
+    assert summary["final_status"] == module.PASS_STATUS
+    assert observed["superseded_snapshot"].resolve() == old_current.resolve()
+    assert observed["current_snapshot"].resolve() != old_current.resolve()
+    assert summary["post_supersession_dedup_status"] == "NO_EXACT_DUPLICATE"
+
+
+def test_disabled_post_supersession_hook_preserves_existing_flow(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    calls = []
+    summary = module.run(
+        repo,
+        target_date="2026-07-08",
+        cache_root=cache,
+        fetch_runner=fetch_runner_factory(cache, "2026-07-08"),
+        stage_runner=stage_runner_factory(),
+        dedup_runner=lambda **kwargs: calls.append(kwargs) or {"status": "PASS"},
+        post_supersession_dedup_enabled=False,
+    )
+    assert summary["final_status"] == module.PASS_STATUS
+    assert summary["post_supersession_dedup_status"] == "DISABLED"
+    assert calls == []
+
+
+def test_dedup_permission_exception_does_not_reclassify_committed_promotion(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    old_current = make_promoted_snapshot(cache, "20260701_000000_000001", "2026-07-07")
+    write_pointer(repo, cache, old_current, old_current.name.removeprefix("snapshot_id="))
+
+    def permission_failure(**kwargs):
+        raise PermissionError("synthetic closeout denial")
+
+    summary = module.run(
+        repo,
+        target_date="2026-07-08",
+        cache_root=cache,
+        fetch_runner=fetch_runner_factory(cache, "2026-07-08"),
+        stage_runner=stage_runner_factory(),
+        dedup_runner=permission_failure,
+    )
+    assert summary["final_status"] == module.PASS_STATUS
+    assert summary["canonical_pointer_updated"] is True
+    assert summary["post_supersession_dedup_status"] == "SKIPPED_OPERATIONAL_EXCEPTION"
+    assert "PermissionError" in summary["post_supersession_dedup_reason"]
+
+
+def test_dedup_integrity_anomaly_is_surfaced_without_touching_new_current(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    old_current = make_promoted_snapshot(cache, "20260701_000000_000001", "2026-07-07")
+    write_pointer(repo, cache, old_current, old_current.name.removeprefix("snapshot_id="))
+    summary = module.run(
+        repo,
+        target_date="2026-07-08",
+        cache_root=cache,
+        fetch_runner=fetch_runner_factory(cache, "2026-07-08"),
+        stage_runner=stage_runner_factory(),
+        dedup_runner=lambda **kwargs: {
+            "status": "FAIL_INTEGRITY",
+            "reason": "synthetic historical rollback failure",
+            "integrity_anomaly": True,
+        },
+    )
+    assert summary["final_status"] == module.PASS_STATUS
+    assert summary["canonical_pointer_updated"] is True
+    assert summary["post_supersession_dedup_status"] == "FAIL_INTEGRITY"
+    assert summary["post_supersession_dedup_integrity_anomaly"] is True
+
+
+def test_normal_changed_snapshot_fast_rejects_without_payload_hash(tmp_path):
+    cache = tmp_path / "cache"
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001")
+    with (source / module.CANON_RAW).open("a", encoding="utf-8") as handle:
+        handle.write("extra,row,makes,size,different\n")
+    result = module.dedup_superseded_snapshot(
+        target, target.parent, current, candidate_dirs=[source, current]
+    )
+    assert result["status"] == "NO_EXACT_DUPLICATE"
+    assert result["files_hashed"] == 0
+    assert result["duration_ms"] >= 0
+
+
+def test_exact_retry_dedups_preserves_paths_manifest_and_current(tmp_path):
+    cache = tmp_path / "cache"
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001", "2026-07-09")
+    manifest_before = module.sha256_file(target / "canonical_manifest.json")
+    current_before = [_identity(current / name) for name in (module.CANON_RAW, module.CANON_QFQ)]
+    result = module.dedup_superseded_snapshot(
+        target, target.parent, current, candidate_dirs=[source, current]
+    )
+    assert result["status"] == "PASS"
+    assert result["converted_file_count"] == 2
+    assert all((target / name).exists() and os.path.samefile(source / name, target / name)
+               for name in (module.CANON_RAW, module.CANON_QFQ))
+    assert module.sha256_file(target / "canonical_manifest.json") == manifest_before
+    assert [_identity(current / name) for name in (module.CANON_RAW, module.CANON_QFQ)] == current_before
+    assert result["current_canonical_hardlink_participation_count"] == 0
+
+
+def _identity(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_dev, stat.st_ino
+
+
+def test_current_with_same_hash_is_excluded_and_stays_independent(tmp_path):
+    cache = tmp_path / "cache"
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001")
+    before = [_identity(current / name) for name in (module.CANON_RAW, module.CANON_QFQ)]
+    result = module.dedup_superseded_snapshot(
+        target, target.parent, current, candidate_dirs=[current, source]
+    )
+    assert result["status"] == "PASS"
+    assert result["source_snapshot"] == str(source)
+    assert [_identity(current / name) for name in (module.CANON_RAW, module.CANON_QFQ)] == before
+    assert not any(os.path.samefile(current / name, source / name) for name in (module.CANON_RAW, module.CANON_QFQ))
+
+
+def test_metadata_mismatch_fails_closed(tmp_path):
+    cache = tmp_path / "cache"
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001", "2026-07-09")
+    result = module.dedup_superseded_snapshot(
+        target,
+        target.parent,
+        current,
+        candidate_dirs=[source],
+        metadata_check=lambda source_path, target_path: False,
+    )
+    assert result["status"] == "SKIPPED_METADATA_INCOMPATIBLE"
+    assert result["converted_file_count"] == 0
+
+
+def test_permission_failure_is_nonfatal_and_other_targets_continue(tmp_path):
+    cache = tmp_path / "cache"
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001", "2026-07-09")
+    calls = []
+
+    def transaction(source_path, target_path, expected_hash):
+        calls.append(target_path)
+        if len(calls) == 1:
+            return {"status": "SKIPPED_PERMISSION", "bytes_reclaimed": 0}
+        return module._transactional_hardlink_replace(source_path, target_path, expected_hash)
+
+    result = module.dedup_superseded_snapshot(
+        target, target.parent, current, candidate_dirs=[source], transaction=transaction
+    )
+    assert result["status"] == "PASS_WITH_OPERATIONAL_SKIPS"
+    assert result["converted_file_count"] == 1
+    assert result["skipped_file_count"] == 1
+
+
+def test_hash_change_before_transaction_is_safely_skipped(tmp_path):
+    cache = tmp_path / "cache"
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001", "2026-07-09")
+    calls = []
+
+    def changed_transaction(source_path, target_path, expected_hash):
+        calls.append(target_path)
+        return {"status": "SKIPPED_CHANGED", "bytes_reclaimed": 0}
+
+    result = module.dedup_superseded_snapshot(
+        target, target.parent, current, candidate_dirs=[source], transaction=changed_transaction
+    )
+    assert len(calls) == 2
+    assert result["converted_file_count"] == 0
+    assert result["status"] == "SKIPPED_OPERATIONAL"
+
+
+def test_transaction_rolls_back_after_post_replace_validation_failure(tmp_path):
+    source, target = tmp_path / "source.bin", tmp_path / "target.bin"
+    source.write_bytes(b"same bytes")
+    target.write_bytes(b"same bytes")
+    target_identity = _identity(target)
+
+    def fail_validation(source_path, target_path):
+        raise RuntimeError("synthetic post-replace failure")
+
+    result = module._transactional_hardlink_replace(
+        source, target, module.sha256_file(source), after_replace=fail_validation
+    )
+    assert result["status"] == "SKIPPED_ROLLED_BACK"
+    assert _identity(target) == target_identity
+    assert target.read_bytes() == b"same bytes"
+
+
+def test_transaction_surfaces_rollback_failure_and_preserves_recovery_link(tmp_path):
+    source, target = tmp_path / "source.bin", tmp_path / "target.bin"
+    source.write_bytes(b"same bytes")
+    target.write_bytes(b"same bytes")
+    calls = 0
+
+    def replace(source_path, target_path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            os.replace(source_path, target_path)
+        else:
+            raise PermissionError("synthetic rollback denial")
+
+    result = module._transactional_hardlink_replace(
+        source,
+        target,
+        module.sha256_file(source),
+        replace=replace,
+        after_replace=lambda source_path, target_path: (_ for _ in ()).throw(RuntimeError("fail")),
+    )
+    rollback = target.with_name(f".{target.name}.post_dedup_rollback.tmp")
+    assert result["status"] == "FAIL_INTEGRITY"
+    assert rollback.exists()
+    os.replace(rollback, target)
+
+
+def test_second_execution_is_idempotent(tmp_path):
+    cache = tmp_path / "cache"
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001", "2026-07-09")
+    first = module.dedup_superseded_snapshot(target, target.parent, current, candidate_dirs=[source])
+    second = module.dedup_superseded_snapshot(target, target.parent, current, candidate_dirs=[source])
+    assert first["converted_file_count"] == 2
+    assert second["status"] == "ALREADY_SHARED"
+    assert second["converted_file_count"] == 0
+
+
+def test_interrupted_transaction_recovers_from_filesystem_identity(tmp_path):
+    source, target = tmp_path / "source.bin", tmp_path / "target.bin"
+    source.write_bytes(b"same bytes")
+    target.write_bytes(b"same bytes")
+    temp_link = target.with_name(f".{target.name}.post_dedup_link.tmp")
+    rollback_link = target.with_name(f".{target.name}.post_dedup_rollback.tmp")
+    os.link(source, temp_link)
+    os.link(target, rollback_link)
+    os.replace(temp_link, target)  # simulated interruption before rollback cleanup
+    result = module._transactional_hardlink_replace(source, target, module.sha256_file(source))
+    assert result["status"] == "ALREADY_CONVERTED_RECOVERED"
+    assert os.path.samefile(source, target)
+    assert not rollback_link.exists()
+
+
+def test_dry_run_has_zero_filesystem_mutation(tmp_path):
+    cache = tmp_path / "cache"
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001", "2026-07-09")
+    identities = [_identity(target / name) for name in (module.CANON_RAW, module.CANON_QFQ)]
+    result = module.dedup_superseded_snapshot(
+        target, target.parent, current, dry_run=True, candidate_dirs=[source]
+    )
+    assert result["status"] == "DRY_RUN_EXACT_DUPLICATE"
+    assert result["would_convert_file_count"] == 2
+    assert result["converted_file_count"] == 0
+    assert [_identity(target / name) for name in (module.CANON_RAW, module.CANON_QFQ)] == identities
+
+
+def test_candidate_scope_is_explicit_and_never_scans_unrelated_cache(tmp_path):
+    cache = tmp_path / "cache"
+    source = make_promoted_snapshot(cache, "20260701_000000_000001")
+    target = make_promoted_snapshot(cache, "20260702_000000_000001")
+    current = make_promoted_snapshot(cache, "20260703_000000_000001", "2026-07-09")
+    unrelated = cache / "large_unrelated_namespace"
+    unrelated.mkdir(parents=True)
+    (unrelated / "must_not_be_read.bin").write_bytes(b"unrelated")
+    result = module.dedup_superseded_snapshot(
+        target, target.parent, current, dry_run=True, candidate_dirs=[source]
+    )
+    assert result["status"] == "DRY_RUN_EXACT_DUPLICATE"
+    assert unrelated.joinpath("must_not_be_read.bin").read_bytes() == b"unrelated"
+
+
+def test_synthetic_promotion_keeps_new_current_physically_isolated(tmp_path):
+    repo, cache = tmp_path / "repo", tmp_path / "cache"
+    historical_0 = make_promoted_snapshot(cache, "20260701_000000_000001")
+    current_1 = make_promoted_snapshot(cache, "20260702_000000_000001")
+    write_pointer(repo, cache, current_1, current_1.name.removeprefix("snapshot_id="))
+    summary = module.run(
+        repo,
+        target_date="2026-07-08",
+        cache_root=cache,
+        fetch_runner=fetch_runner_factory(cache, "2026-07-08", snapshot_id="staging_2"),
+        stage_runner=stage_runner_factory(),
+    )
+    new_current = Path(json.loads((repo / module.V231_REL / "canonical_snapshot_pointer.json").read_text(encoding="utf-8"))["canonical_snapshot_dir"])
+    assert summary["final_status"] == module.PASS_STATUS
+    assert summary["post_supersession_dedup_status"] == "PASS"
+    assert all(os.path.samefile(historical_0 / name, current_1 / name) for name in (module.CANON_RAW, module.CANON_QFQ))
+    assert not any(os.path.samefile(new_current / name, current_1 / name) for name in (module.CANON_RAW, module.CANON_QFQ))
+    assert all((current_1 / name).exists() and (new_current / name).exists() for name in (module.CANON_RAW, module.CANON_QFQ))

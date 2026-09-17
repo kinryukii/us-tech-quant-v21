@@ -1,0 +1,59 @@
+{
+  "fixture_id": "A2_FORWARD_SHADOW_UNIFIED_R1_TINY_STATIC",
+  "target_date": "2026-08-21",
+  "canonical_readiness": {
+    "target_date": "2026-08-21",
+    "as_of_date": "2026-08-21",
+    "canonical_manifest": "SYNTHETIC_CANONICAL_MANIFEST",
+    "canonical_manifest_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "universe_id": "SYNTHETIC_TOP20_UNIVERSE",
+    "available_dates": ["2026-08-21"],
+    "eligible_trading_dates": ["2026-08-21"],
+    "feature_ready_dates": ["2026-08-21"],
+    "universe_ready_dates": ["2026-08-21"],
+    "partial_dates": []
+  },
+  "synthetic_component_overrides": {
+    "ALPHA": {
+      "freeze_id": "A_A2_QUARTERLY_13F_CLEAN_BASELINE_R1",
+      "artifact_path": "SYNTHETIC_ALPHA_ARTIFACT",
+      "artifact_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "prospective_start_date": "2026-08-21"
+    },
+    "RISK": {
+      "freeze_id": "R6_BAD_ASYMMETRY_FROZEN_REFERENCE",
+      "artifact_path": "SYNTHETIC_RISK_ARTIFACT",
+      "artifact_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "prospective_start_date": "2026-08-21"
+    },
+    "EXECUTION": {
+      "freeze_id": "E5_COMBINED_CONSERVATIVE_FROZEN_REFERENCE",
+      "artifact_path": "SYNTHETIC_EXECUTION_CONFIG",
+      "artifact_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "prospective_start_date": "2026-08-21"
+    }
+  },
+  "components": {
+    "ALPHA": {
+      "status": "PASS",
+      "records": [
+        {"target_date": "2026-08-21", "security_id": "S1", "ticker": "ONE", "rank": 1, "score": 0.9, "raw_target_weight": 0.5, "model_id": "A2_HGB", "universe_id": "SYNTHETIC_TOP20_UNIVERSE", "vintage_id": "V_SYNTHETIC"},
+        {"target_date": "2026-08-21", "security_id": "S2", "ticker": "TWO", "rank": 2, "score": 0.8, "raw_target_weight": 0.5, "model_id": "A2_HGB", "universe_id": "SYNTHETIC_TOP20_UNIVERSE", "vintage_id": "V_SYNTHETIC"}
+      ]
+    },
+    "RISK": {
+      "status": "PASS",
+      "records": [
+        {"target_date": "2026-08-21", "security_id": "S1", "risk_score": 0.2, "risk_bucket": "LOW", "risk_action_or_multiplier": 1.0, "risk_model_id": "R6_BAD_ASYMMETRY"},
+        {"target_date": "2026-08-21", "security_id": "S2", "risk_score": 0.4, "risk_bucket": "MEDIUM", "risk_action_or_multiplier": 0.8, "risk_model_id": "R6_BAD_ASYMMETRY"}
+      ]
+    },
+    "EXECUTION": {
+      "status": "PASS",
+      "records": [
+        {"target_date": "2026-08-21", "security_id": "S1", "pre_execution_weight": 0.5, "post_execution_weight": 0.5, "execution_action": "KEEP", "execution_overlay_id": "E5_COMBINED_CONSERVATIVE"},
+        {"target_date": "2026-08-21", "security_id": "S2", "pre_execution_weight": 0.5, "post_execution_weight": 0.4, "execution_action": "REDUCE", "execution_overlay_id": "E5_COMBINED_CONSERVATIVE"}
+      ]
+    }
+  }
+}

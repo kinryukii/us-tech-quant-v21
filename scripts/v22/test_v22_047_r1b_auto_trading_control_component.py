@@ -294,3 +294,104 @@ def test_flatten_only_execute_with_live_confirmation_authorizes_exit():
     )
     assert auth.broker_action_allowed
     assert auth.exit_allowed
+
+
+def a2_shadow_plan(symbols=None):
+    names = list(symbols or ["US.NVDA", *[f"US.A2T{index:02d}" for index in range(2, 21)]])
+    targets = {symbol: 1.0 / len(names) for symbol in names}
+    return {
+        "safety_profile_id": m.A2_SHADOW_PROFILE_ID,
+        "broker_submission_allowed": False,
+        "target_date": "2026-08-24",
+        "authorized_top20": names,
+        "target_weights": targets,
+        "target_cash_weight": 0.0,
+        "current_portfolio": {
+            "as_of": "2026-08-24", "cash": 1000.0, "total_equity": 1000.0,
+            "positions": [], "gross_exposure": 0.0, "cash_weight": 1.0,
+        },
+        "actions": [
+            {
+                "security": symbol, "current_weight": 0.0, "target_weight": weight,
+                "delta_weight": weight, "planned_delta_weight": weight * 0.999,
+                "action": "BUY", "reason": "RAW_A2_TOP20_NEW_POSITION",
+                "current_shares": 0.0, "current_mark_price": None,
+            }
+            for symbol, weight in targets.items()
+        ],
+    }
+
+
+def test_a2_shadow_profile_accepts_authorized_equity_and_reuses_order_intent_schema():
+    plan = a2_shadow_plan()
+    prices = {symbol: 100.0 for symbol in plan["authorized_top20"]}
+    first = m.build_a2_shadow_order_intents(plan, prices)
+    second = m.build_a2_shadow_order_intents(plan, prices)
+    assert first == second
+    assert first["status"] == "PASS"
+    assert first["profile_id"] == m.A2_SHADOW_PROFILE_ID
+    assert first["shadow_only"] and not first["broker_submission_allowed"]
+    assert len(first["order_intents"]) == 20
+    nvda = next(row for row in first["order_intents"] if row["symbol"] == "US.NVDA")
+    assert set(nvda) == set(m.OrderIntent.__dataclass_fields__)
+    assert nvda["action"] == "BUY" and nvda["side"] == "BUY"
+
+
+def test_a2_shadow_profile_rejects_out_of_scope_new_equity():
+    plan = a2_shadow_plan()
+    plan["actions"].append({
+        "security": "US.OUTSIDE", "current_weight": 0.0, "target_weight": 0.01,
+        "delta_weight": 0.01, "planned_delta_weight": 0.01, "action": "BUY",
+        "reason": "INVALID", "current_shares": 0.0, "current_mark_price": None,
+    })
+    with pytest.raises(m.ComponentError, match="OUTSIDE_AUTHORIZED_TOP20"):
+        m.build_a2_shadow_order_intents(plan, {symbol: 100.0 for symbol in plan["authorized_top20"]})
+
+
+def test_a2_shadow_profile_allows_out_of_scope_current_position_exit_only():
+    plan = a2_shadow_plan()
+    plan["current_portfolio"] = {
+        "as_of": "2026-08-24", "cash": 900.0, "total_equity": 1000.0,
+        "positions": [{"symbol": "US.OLD", "shares": 1.0, "mark_price": 100.0}],
+        "gross_exposure": 0.1, "cash_weight": 0.9,
+    }
+    plan["actions"].append({
+        "security": "US.OLD", "current_weight": 0.1, "target_weight": 0.0,
+        "delta_weight": -0.1, "planned_delta_weight": -0.1, "action": "EXIT",
+        "reason": "NO_LONGER_IN_RAW_A2_TOP20", "current_shares": 1.0,
+        "current_mark_price": 100.0,
+    })
+    prices = {symbol: 100.0 for symbol in plan["authorized_top20"]}
+    result = m.build_a2_shadow_order_intents(plan, prices)
+    exit_intent = next(row for row in result["order_intents"] if row["symbol"] == "US.OLD")
+    assert exit_intent["action"] == "EXIT" and exit_intent["side"] == "SELL"
+
+
+def test_a2_shadow_profile_rejects_more_than_twenty_targets():
+    plan = a2_shadow_plan([f"US.A2T{index:02d}" for index in range(1, 22)])
+    with pytest.raises(m.ComponentError, match="MAX_TARGET_POSITIONS"):
+        m.build_a2_shadow_order_intents(plan, {symbol: 100.0 for symbol in plan["authorized_top20"]})
+
+
+def test_a2_shadow_profile_rejects_short_leverage_and_negative_cash():
+    prices = {symbol: 100.0 for symbol in a2_shadow_plan()["authorized_top20"]}
+    short = a2_shadow_plan()
+    short["target_weights"][short["authorized_top20"][0]] = -0.01
+    with pytest.raises(m.ComponentError, match="SHORT_TARGET"):
+        m.build_a2_shadow_order_intents(short, prices)
+    leveraged = a2_shadow_plan()
+    leveraged["target_weights"] = {symbol: 0.051 for symbol in leveraged["authorized_top20"]}
+    with pytest.raises(m.ComponentError, match="MAX_TARGET_WEIGHT|TARGET_LEVERAGE"):
+        m.build_a2_shadow_order_intents(leveraged, prices)
+    negative_cash = a2_shadow_plan()
+    negative_cash["target_cash_weight"] = -0.01
+    with pytest.raises(m.ComponentError, match="NEGATIVE_TARGET_CASH"):
+        m.build_a2_shadow_order_intents(negative_cash, prices)
+
+
+def test_legacy_profile_still_rejects_nvda_after_a2_profile_extension():
+    with pytest.raises(m.ComponentError, match="INVALID_EXECUTION_SYMBOL"):
+        m.parse_strategy_decision({
+            "action": "ENTER_LONG", "symbol": "US.NVDA",
+            "target_notional_usd": 100, "confidence": 0.5,
+        })

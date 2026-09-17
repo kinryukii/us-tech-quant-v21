@@ -594,6 +594,58 @@ def build_target_map(
     return result
 
 
+def calculate_weight_rebalance(
+    current_weights: dict[str, float],
+    target_weights: dict[str, float],
+    cost_bps: int = 10,
+    tolerance: float = 1e-10,
+) -> dict[str, Any]:
+    """Pure weight-space accounting shared by replay and SHADOW planning."""
+    current = {str(key).upper(): float(value) for key, value in current_weights.items()}
+    target = {str(key).upper(): float(value) for key, value in target_weights.items()}
+    values = list(current.values()) + list(target.values())
+    if values and not np.isfinite(np.asarray(values, dtype=float)).all():
+        raise RuntimeError("R4_WEIGHT_REBALANCE_INPUT_INVALID")
+    if values and min(values) < -tolerance:
+        raise RuntimeError("R4_WEIGHT_REBALANCE_SHORT_FORBIDDEN")
+    current_gross = float(sum(current.values()))
+    target_gross = float(sum(target.values()))
+    if current_gross > 1.0 + tolerance or target_gross > 1.0 + tolerance:
+        raise RuntimeError("R4_WEIGHT_REBALANCE_LEVERAGE_FORBIDDEN")
+    if cost_bps < 0:
+        raise RuntimeError("R4_WEIGHT_REBALANCE_COST_INVALID")
+    symbols = set(current) | set(target)
+    sells = float(sum(max(current.get(symbol, 0.0) - target.get(symbol, 0.0), 0.0) for symbol in symbols))
+    buys = float(sum(max(target.get(symbol, 0.0) - current.get(symbol, 0.0), 0.0) for symbol in symbols))
+    cost_rate = float(cost_bps) / 10000.0
+    sell_cost = 0.5 * sells * cost_rate
+    available_for_buys = max(0.0, 1.0 - current_gross + sells - sell_cost)
+    buy_requirement = buys * (1.0 + 0.5 * cost_rate)
+    buy_scale = min(1.0, available_for_buys / buy_requirement) if buy_requirement > 0 else 1.0
+    executed_buys = buys * buy_scale
+    traded = sells + executed_buys
+    turnover = 0.5 * traded
+    transaction_cost_fraction = 0.5 * traded * cost_rate
+    cash_after_fraction = 1.0 - current_gross + sells - executed_buys - transaction_cost_fraction
+    if cash_after_fraction < -tolerance:
+        raise RuntimeError("R4_WEIGHT_REBALANCE_NEGATIVE_CASH")
+    return {
+        "current_gross_exposure": current_gross,
+        "current_cash_weight": 1.0 - current_gross,
+        "target_gross_exposure": target_gross,
+        "target_cash_weight": 1.0 - target_gross,
+        "sell_notional_fraction": sells,
+        "buy_notional_fraction": buys,
+        "target_turnover": 0.5 * (sells + buys),
+        "buy_scale": buy_scale,
+        "executed_buy_notional_fraction": executed_buys,
+        "executed_traded_notional_fraction": traded,
+        "turnover": turnover,
+        "transaction_cost_fraction": transaction_cost_fraction,
+        "cash_after_fraction": max(0.0, cash_after_fraction),
+    }
+
+
 def _safe_open(open_wide: pd.DataFrame, date: pd.Timestamp, ticker: str) -> float:
     try:
         value = float(open_wide.at[date, ticker])
@@ -861,10 +913,9 @@ def simulate_portfolio(
                 raise RuntimeError(f"R4E_INVALID_FROZEN_RISK_BUDGET:{prior_signal_date.date()}:{risk_budget}")
             target = {ticker: weight * risk_budget for ticker, weight in target.items()}
         pretrade_weights = {ticker: value / pretrade_nav for ticker, value in position_values.items()}
-        target_turnover = 0.5 * sum(
-            abs(target.get(ticker, 0.0) - pretrade_weights.get(ticker, 0.0))
-            for ticker in set(target) | set(pretrade_weights)
-        )
+        target_turnover = calculate_weight_rebalance(
+            pretrade_weights, target, cost_bps=cost_bps,
+        )["target_turnover"]
         desired_values = {ticker: weight * pretrade_nav for ticker, weight in target.items()}
         transaction_cost_amount = 0.0
         executed_traded_notional = 0.0

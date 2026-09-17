@@ -624,6 +624,8 @@ def run(
     no_network: bool = False,
     opend_host: str = "127.0.0.1",
     opend_port: int = 18441,
+    incremental_only: bool = False,
+    parent_snapshot_id: str | None = None,
 ) -> dict[str, Any]:
     repo_root = repo_root.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -664,6 +666,15 @@ def run(
         write_json(output_dir / "v21_231_failure_diagnostic.json", {"final_status": status, "final_decision": BLOCKED_DECISION, "readiness_checks": cross_rows})
         return summary
 
+    if incremental_only and (not start_date or not end_date or str(start_date)[:10] != str(end_date)[:10]):
+        summary = base_summary(FAIL_INPUT, repo_root, output_dir, cache_root, "", input_ok, True, guard_found, policy_ok,
+                               {"canonical": cache_root / "canonical/moomoo_ohlcv", "raw_daily": cache_root / "raw/moomoo/daily_raw", "qfq_daily": cache_root / "raw/moomoo/daily_qfq", "intraday": cache_root / "raw/moomoo/intraday/DRAM", "registry": cache_root / "registry"},
+                               s230, 0,0,0,0,0,0,0,0,0,0,0,0,0,0.0,0.0,0.0,0,0,0,0,"",0,0,0,0,0,0,1,0)
+        summary.update({"final_decision": "MOOMOO_ONLY_CANONICAL_BLOCKED_INCREMENTAL_DATE_CONTRACT", "incremental_only": True,
+                        "historical_deep_refetch_run": False, "api_date_range_requested": ""})
+        write_json(output_dir / "v21_231_summary.json", summary)
+        return summary
+
     snapshot = resume_snapshot_id or snapshot_id or make_snapshot_id()
     resume = resume_snapshot_id is not None
     paths = snapshot_paths(cache_root, snapshot)
@@ -676,6 +687,8 @@ def run(
         return summary
 
     items = plans(v230_dir, start_date, end_date, max_fetch_items)
+    if incremental_only:
+        items = [item for item in items if item.get("frequency") == "1d"]
     # A dry-run plan is authoritative for its target session.  Do not compare
     # a deterministic fixture (or a delayed market session) with an empty
     # target date merely because the caller omitted --end-date.
@@ -706,7 +719,7 @@ def run(
     # evaluated against the requested as-of date below, never used to erase
     # historical bars or universe manifests.
     exclusion_rows = read_csv_rows(output_dir / "abcde_daily_exclusion_ledger.csv")
-    prior_snapshot = newest_prior_snapshot(cache_root, snapshot) if not resume else None
+    prior_snapshot = (parent_snapshot_id or newest_prior_snapshot(cache_root, snapshot)) if not resume else None
     intraday_required_date = str(end_date or "")[:10]
     intraday_preflight = select_valid_intraday_snapshot(cache_root, v230_dir / "moomoo_refetch_dry_run_plan.csv", intraday_required_date) if intraday_required_date else None
     intraday_cache_snapshot_id = str(intraday_preflight.get("snapshot_id", "")) if intraday_preflight else None
@@ -732,25 +745,51 @@ def run(
         for item in batch:
             target = cache_file_for(paths, item)
             prior_file = reusable_prior_file(cache_root, prior_snapshot, item, intraday_cache_snapshot_id)
+            # The narrow daily path binds an immutable parent, asks Moomoo for
+            # exactly one completed date, and appends that row in staging.
+            if incremental_only:
+                if prior_file is None:
+                    records, err_type, err_msg, retry_count = [], "MissingIncrementalParent", "required parent per-security history missing", 0
+                    attempted = False
+                    fetch_status = "FAILED"
+                else:
+                    parent_records = read_csv_rows(prior_file)
+                    attempted = True
+                    fetch_status = "FETCHED_EXACT_DATE_INCREMENT"
+                    if no_network:
+                        fetched, err_type, err_msg, retry_count = mock_fetch(item, snapshot), "", "", 0
+                    elif module is None or ctx is None:
+                        fetched, err_type, err_msg, retry_count = [], "MoomooSdkUnavailable", "Moomoo/Futu SDK import failed", 0
+                    else:
+                        fetched, err_type, err_msg, retry_count = guarded_moomoo_fetch(item, module, ctx, min(3, max_retries), snapshot, limiter, error_rows, recovered_error_rows)
+                    exact_date = str(end_date)[:10]
+                    fetched = [row for row in fetched if str(row.get("date", ""))[:10] == exact_date]
+                    if len(fetched) != 1:
+                        records = []
+                        err_type = err_type or "ExactDateCardinality"
+                        err_msg = err_msg or f"expected one {exact_date} row, received {len(fetched)}"
+                    else:
+                        records = [row for row in parent_records if str(row.get("date", ""))[:10] != exact_date] + fetched
             # A prior immutable file is reusable only when it reaches this
             # run's target session.  Reusing a stale ETF/support ticker masks
             # a required refresh and creates a false coverage failure.
-            if prior_file is not None and item.get("planned_end_date"):
+            if not incremental_only and prior_file is not None and item.get("planned_end_date"):
                 prior_latest = date_stats(read_csv_rows(prior_file))[1]
                 if prior_latest < str(item["planned_end_date"])[:10]:
                     prior_file = None
-            attempted = prior_file is None
-            fetch_status = "FETCHED"
-            if prior_file is not None:
+            if not incremental_only:
+                attempted = prior_file is None
+                fetch_status = "FETCHED"
+            if not incremental_only and prior_file is not None:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(prior_file, target)
                 records, err_type, err_msg, retry_count = read_csv_rows(target), "", "", 0
                 fetch_status = "REUSED_FROM_PRIOR_SNAPSHOT"
-            elif no_network:
+            elif not incremental_only and no_network:
                 records, err_type, err_msg, retry_count = mock_fetch(item, snapshot), "", "", 0
-            elif module is None or ctx is None:
+            elif not incremental_only and (module is None or ctx is None):
                 records, err_type, err_msg, retry_count = [], "MoomooSdkUnavailable", "Moomoo/Futu SDK import failed", 0
-            else:
+            elif not incremental_only:
                 records, err_type, err_msg, retry_count = guarded_moomoo_fetch(item, module, ctx, min(3, max_retries), snapshot, limiter, error_rows, recovered_error_rows)
                 if retry_count and records:
                     fetch_status = "RETRIED_RECOVERED"
@@ -844,6 +883,14 @@ def run(
         "fetch_execution_completed": True,
         "canonical_assembly_completed": True,
         "coverage_evaluation_completed": True,
+        "incremental_only": incremental_only,
+        "parent_snapshot_id": prior_snapshot or "",
+        "network_fetch_scope": "EXACT_DATE_ONLY" if incremental_only else "PLANNED_RANGE",
+        "api_security_request_count": len({r["ticker"] for r in fetch_rows if r.get("attempted") == "True"}),
+        "api_date_range_requested": f"{str(start_date)[:10]}..{str(end_date)[:10]}" if incremental_only else "PLANNED_PER_LEG",
+        "historical_deep_refetch_run": False if incremental_only else None,
+        "local_history_rows_read": sum(max(0, int(r.get("row_count") or 0) - 1) for r in fetch_rows if incremental_only and r.get("frequency") == "1d" and r.get("success") == "True"),
+        "local_history_rows_written": sum(int(r.get("row_count") or 0) for r in fetch_rows if r.get("frequency") == "1d" and r.get("success") == "True"),
     })
     summary["ticker_universe_count"] = universe_cov["expected_universe_count"]
     summary["legacy_probe_ticker_count"] = int(s230.get("ticker_universe_count", 0) or 0)
@@ -979,6 +1026,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--no-network", action="store_true", default=False)
     p.add_argument("--opend-host", default="127.0.0.1")
     p.add_argument("--opend-port", type=int, default=18441)
+    p.add_argument("--incremental-only", action="store_true", default=False)
+    p.add_argument("--parent-snapshot-id", default=None)
     return p.parse_args(argv)
 
 
@@ -986,7 +1035,7 @@ def main(argv: list[str] | None = None) -> int:
     a = parse_args(argv)
     root = a.repo_root.resolve()
     out = a.output_dir or (root / OUT_REL)
-    summary = run(root, out, a.v21_230_output_dir, a.v21_230_r1_output_dir, a.cache_root, a.snapshot_id, a.resume_snapshot_id, a.start_date, a.end_date, a.batch_size, a.sleep_seconds, a.max_retries, a.max_fetch_items, a.min_daily_success_ratio, a.require_dram_intraday, a.allow_dram_missing, a.no_network, a.opend_host, a.opend_port)
+    summary = run(root, out, a.v21_230_output_dir, a.v21_230_r1_output_dir, a.cache_root, a.snapshot_id, a.resume_snapshot_id, a.start_date, a.end_date, a.batch_size, a.sleep_seconds, a.max_retries, a.max_fetch_items, a.min_daily_success_ratio, a.require_dram_intraday, a.allow_dram_missing, a.no_network, a.opend_host, a.opend_port, a.incremental_only, a.parent_snapshot_id)
     print(str(out / "v21_231_summary.json"))
     return 1 if str(summary["final_status"]).startswith("FAIL_") else 0
 

@@ -1,3 +1,9 @@
+param(
+  [string]$TargetDate = "",
+  [switch]$IncrementalOnly,
+  [string]$ParentSnapshotId = ""
+)
+
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -13,11 +19,18 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) { throw "MISSING_EXTER
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Set-Location $RepoRoot
 
-& $Python "scripts\v21\v21_231_moomoo_only_historical_refetch_and_canonical_rebuild.py" `
-  --repo-root $RepoRoot `
-  --output-dir $OutputDir `
-  --v21-230-output-dir $V230OutputDir `
-  --v21-230-r1-output-dir $V230R1OutputDir
+$ArgsList = @(
+  "scripts\v21\v21_231_moomoo_only_historical_refetch_and_canonical_rebuild.py",
+  "--repo-root", $RepoRoot,
+  "--output-dir", $OutputDir,
+  "--v21-230-output-dir", $V230OutputDir,
+  "--v21-230-r1-output-dir", $V230R1OutputDir
+)
+if ($TargetDate -ne "") { $ArgsList += @("--start-date", $TargetDate, "--end-date", $TargetDate) }
+if ($IncrementalOnly) { $ArgsList += "--incremental-only" }
+if ($ParentSnapshotId -ne "") { $ArgsList += @("--parent-snapshot-id", $ParentSnapshotId) }
+
+& $Python @ArgsList
 
 $ExitCode = $LASTEXITCODE
 Write-Host "V21.231 summary: $SummaryPath"

@@ -1,0 +1,437 @@
+﻿You are the autonomous implementation and research agent for FAST3 stage:
+
+V22.085_FAST3_AGGRESSIVE_BOUNDED_SEARCH_ENGINE_R1
+
+Act immediately. Read, modify, test, execute, checkpoint, and resume real code in:
+D:\us-tech-quant
+
+Data root:
+D:\us-tech-quant-data
+
+Results root:
+D:\us-tech-quant-results\fast3_v22_085_aggressive_bounded_search
+
+Do not ask the user for routine confirmation. Choose the simplest auditable implementation. Never fabricate code execution, tests, data, metrics, files, or conclusions.
+
+======================================================================
+1. PURPOSE
+======================================================================
+
+Run an aggressive but bounded search for a statistically evaluable, delay-robust,
+cost-robust SOXL and/or SOXS long-only event strategy. Aggressive means high
+Development experiment throughput and broader bounded hypothesis mutation. It does
+not mean repeated holdout access, future leakage, forced trades, unlimited features,
+or filesystem/version growth.
+
+Allowed final actions:
+LONG_SOXL
+LONG_SOXS
+NO_TRADE
+
+A one-sided candidate is legal:
+SOXL_ONLY
+SOXS_ONLY
+BOTH_SIDES
+NO_VALID_SIDE
+
+No real broker orders. No broker integration. No official adoption.
+
+======================================================================
+2. FROZEN PRIOR FACTS
+======================================================================
+
+Read and preserve V22.081-V22.084 outputs. Important frozen facts include:
+
+V22.081: Validation-positive champion failed Confirmation with negative 10/20bps
+results and about 46.18% drawdown.
+
+V22.082: six generations and 300 Development experiments; all Generation Validation
+folds failed; G03 showed a delay-sensitive positive clue.
+
+V22.083: eligibility/metric NaN issue in G01; sparse candidates; G03 had six trades
+on one day; G04 had zero trades.
+
+V22.084: eligibility repair passed with 122,113 eligible samples; 168 incomplete
+delayed/future paths excluded; retained NaN/nonfinite/alignment counts were zero.
+Two legal Validation folds produced 11 trades/11 days and 12 trades/12 days. Both
+were positive under 20bps delayed metrics, but aggregate 23 trades/23 days was
+underpowered. Confirmation and Global Final Holdout were not read. V22.084 stopped
+after only 12 complete experiments due a two-generation no-improvement stop.
+
+Treat V22.084 as POSITIVE_BUT_UNDERPOWERED, not proven edge. Do not reuse any consumed
+Validation as unseen data.
+
+Required prior files to inspect where present:
+D:\us-tech-quant-results\fast3_v22_084_sample_recovery_side_specific\v22_084_summary.json
+D:\us-tech-quant-results\fast3_v22_084_sample_recovery_side_specific\v22_084_report.md
+D:\us-tech-quant-results\fast3_v22_084_sample_recovery_side_specific\data_eligibility_contract.json
+D:\us-tech-quant-results\fast3_v22_084_sample_recovery_side_specific\frozen_split_manifest.json
+D:\us-tech-quant-results\fast3_v22_084_sample_recovery_side_specific\generation_registry.jsonl
+D:\us-tech-quant-results\fast3_v22_084_sample_recovery_side_specific\experiment_registry.jsonl
+
+======================================================================
+3. SINGLE-STAGE FILE BUDGET
+======================================================================
+
+Maintain one stage only. Do not create V22.085A/B/C or R2/R3.
+
+Prefer at most:
+- one main Python engine
+- one PowerShell research runner if needed in addition to the installed Agent launcher
+- one focused pytest file
+- one JSON config
+- experiment_registry.jsonl
+- generation_registry.jsonl
+- v22_085_checkpoint.json
+- frozen_split_manifest.json
+- statistical_power_feasibility_audit.json
+- candidate_funnel_summary.json
+- champion_config.json
+- v22_085_summary.json and .txt
+- v22_085_report.md
+- compact trade and regime diagnostics
+
+No per-experiment directory. Save at most champion, second candidate, third candidate,
+and baseline model. Delete other model binaries after recording config, seed, hashes,
+metrics, rejection reason, and parent lineage.
+
+======================================================================
+4. FROZEN BUDGET AND MINIMUM SEARCH COMMITMENT
+======================================================================
+
+Default hard ceilings are supplied by autopilot_budget.json:
+MAX_GENERATIONS=8
+EXPERIMENTS_PER_GENERATION=40
+MAX_TOTAL_EXPERIMENTS=320
+MAX_MODEL_FAMILIES=3
+MAX_ACTIVE_FEATURES=24
+MAX_ACTIVE_CANDIDATES=3
+MAX_LABEL_FAMILIES=4
+
+Do not stop for ordinary no-improvement before both:
+- at least four legal generations, and
+- at least 120 registered Development candidate experiments.
+
+Exceptions permitting earlier global termination:
+- fatal data corruption or leakage that cannot be repaired safely
+- no valid untouched time fold remains
+- statistical-power feasibility audit proves the target mathematically impossible
+- all allowed model/label/side paths are structurally impossible, with evidence
+- user safe-stop or Codex usage/rate limit
+
+After the minimum commitment, stop for three consecutive generations without
+material OOS improvement, three repeats of the same primary failure without a new
+bounded hypothesis, budget exhaustion, untouched fold exhaustion, or legal success.
+Do not invent low-value duplicate experiments merely to reach a count.
+
+======================================================================
+5. STATISTICAL POWER FEASIBILITY AUDIT FIRST
+======================================================================
+
+Before model search and before any new Validation read, generate:
+statistical_power_feasibility_audit.json
+
+For every proposed Development/Internal-OOS/Validation/Confirmation fold report:
+FOLD_START
+FOLD_END
+TRADING_DAY_COUNT
+ELIGIBLE_DECISION_COUNT
+MAX_POSSIBLE_TRADES_UNDER_DAILY_CAPS
+EXPECTED_TRADES_AT_CURRENT_COVERAGE
+MIN_REQUIRED_TRADES
+MIN_REQUIRED_UNIQUE_DAYS
+POWER_TARGET_FEASIBLE
+REQUIRED_OOS_DURATION_ESTIMATE
+OVERLAP_WITH_CONSUMED_HOLDOUT_COUNT
+
+The primary statistical target is aggregate, not an impossible short-fold quota:
+- minimum aggregate unseen Validation trades: 60
+- minimum aggregate unique trade days: 40
+- preferred aggregate trades: 80 or more
+
+Use longer non-overlapping OOS folds or aggregate independent predeclared folds.
+Do not lower cost, delay, leakage, drawdown, or absolute confidence standards merely
+to manufacture sample count. Do not force daily trades.
+
+If the available untouched history cannot support the target under legal daily caps,
+output INSUFFICIENT_UNTOUCHED_HISTORY_FOR_POWER and stop truthfully.
+
+======================================================================
+6. TIME SPLITS AND HOLDOUT CONSUMPTION
+======================================================================
+
+Use chronological splits only:
+Train -> Purge -> Embargo -> Internal OOS -> Embargo -> Generation Validation ->
+Generation Confirmation -> Global Final Holdout.
+
+At stage initialization, predeclare all fold boundaries and hashes before training.
+Use prior manifests and registries to exclude every consumed V22.081-V22.084 holdout
+from new unseen status. Old consumed periods may be used only as Development or
+failure diagnostics if the design permits, never as unseen Validation again.
+
+Development and Internal OOS may support bounded optimization.
+Each Generation Validation fold: one read.
+Each Generation Confirmation fold: one read after Validation pass.
+Global Final Holdout: one read in the entire stage after a statistically evaluable,
+robust candidate exists.
+
+Persist consumption atomically. Resume must not duplicate or reopen a fold.
+Use label-window purging and embargo appropriate for 30/60/120/180-minute horizons.
+
+======================================================================
+7. DATA ELIGIBILITY CONTRACT
+======================================================================
+
+Reuse and verify the V22.084 eligibility repair. Required pre-holdout assertions:
+FEATURE_NAN_COUNT=0
+LABEL_NAN_COUNT=0
+ENTRY_PRICE_NAN_COUNT=0
+EXIT_PRICE_NAN_COUNT=0
+METRIC_INPUT_NAN_COUNT=0
+NONFINITE_COUNT=0
+TIMESTAMP_ALIGNMENT_ERROR_COUNT=0
+DUPLICATE_DECISION_KEY_COUNT=0
+FUTURE_PATH_INCOMPLETE_RETAINED_COUNT=0
+
+Use fully closed bars and explicitly lagged features. Any sample lacking a complete
+future path for all required delayed entries and exits is INELIGIBLE before splitting.
+Do not consume a holdout and then discover an avoidable metric-input defect.
+
+======================================================================
+8. AGGRESSIVE THREE-LEVEL CANDIDATE FUNNEL
+======================================================================
+
+For each legal generation:
+
+Level 1 - Quick Development Screen
+- generate up to 40 bounded candidates
+- use limited chronological Development folds
+- test basic 20bps, 3-minute delay, sample count, drawdown, finite metrics, and leakage
+- reject obvious negative, zero-trade, unstable, or invalid candidates cheaply
+- retain about 8-10 at most
+
+Level 2 - Full Internal OOS
+- multiple chronological starts and regimes
+- delays 1/3/5 minutes
+- costs 5/10/20/30bps
+- return concentration, unique days, max drawdown, side asymmetry, seed stability,
+  year/session/VIX regime decomposition
+- retain at most 3 active candidates
+
+Level 3 - Frozen Generation Validation
+- freeze exactly one champion
+- consume one untouched Validation fold once
+- if underpowered but directionally positive, aggregate only with other predeclared
+  independent unseen folds; do not retune on the read result
+- Validation failure closes the generation and triggers bounded failure mutation
+
+Register every candidate with SCREEN_LEVEL and FULL_OOS_COMPLETED. Do not report all
+quick screens as full backtests.
+
+======================================================================
+9. MODEL, LABEL, AND FEATURE SPACE
+======================================================================
+
+Labels/horizons allowed:
+30, 60, 120, 180 minutes.
+Use actual SOXL/SOXS executable paths, delayed entries, costs, and triple-barrier or
+an equivalent audited path label. Zero-delay is diagnostic only.
+
+Separate side-specific models:
+SOXL_LONG_MODEL
+SOXS_LONG_MODEL
+
+Allow one side to be disabled when stable negative evidence exists. Do not require
+both sides to pass.
+
+Model families, maximum three:
+1. Elastic Net Logistic Regression
+2. small regularized HistGradientBoosting
+3. one locally installed shallow bounded boosting family, only if available without
+   adding heavy infrastructure; otherwise stay with two families
+
+No deep learning, large forests, unlimited ensembles, stacking farms, or unbounded
+Bayesian search. Tree depth <=4. Strong minimum leaf size and regularization.
+
+Active feature cap: 24. Candidate feature families may include:
+- VIX level, 5/15/30-minute change, intraday change, regime, SOXX divergence
+- SOXX and QQQ 5/15/30/60-minute returns and relative strength
+- VWAP distance, realized volatility, compression/expansion
+- volume anomaly, gap, premarket cumulative return, session/time
+- trend/mean-reversion regime
+- reliable PIT semiconductor breadth if already available
+
+Every feature must have PIT timestamp, lag, availability, missingness, leakage test,
+stability diagnostics, and retention reason. Feature addition must be offset by
+removing or explicitly rejecting weaker features. Feature library cannot only grow.
+
+======================================================================
+10. SIGNAL POLICY AND SAMPLE RECOVERY
+======================================================================
+
+Use:
+- one Opportunity hard gate
+- side-specific probability and Entry Quality
+- FINAL_CONFIDENCE ranking
+- absolute confidence floor plus bounded Top-K
+
+Top-K never overrides the absolute floor and never forces a trade.
+Maximum one new entry per side per day and two total per day unless a stricter rule
+is selected. Deduplicate adjacent signals from the same event.
+
+Search controlled coverage policies to achieve naturally about 8-20 trades per month
+when supported, while retaining NO_TRADE. Do not optimize raw trade count. Optimize
+statistical evaluability subject to OOS quality.
+
+======================================================================
+11. OBJECTIVE AND HARD GATES
+======================================================================
+
+Champion priority:
+1. DELAY_WORST_CASE_NET across 1/3/5 minutes
+2. 20bps Internal-OOS net expectancy
+3. positive chronological fold rate
+4. aggregate unique trade days and statistical power
+5. max drawdown
+6. profit concentration
+7. seed/regime/weight stability
+8. model simplicity
+
+Training return is never material improvement.
+
+Hard rejection conditions include:
+- future leakage or consumed-fold reuse
+- nonfinite metrics
+- 20bps Internal-OOS clearly negative
+- 3-minute delay sign reversal without a robust wait policy
+- 5-minute catastrophic collapse
+- aggregate Validation MDD >20%
+- single Validation fold MDD >25%
+- Confirmation MDD >20%
+- profit primarily dependent on top 5% of trades beyond the frozen concentration gate
+- one-day or one-regime dependency
+- insufficient sample falsely presented as proof
+
+Use conclusion classes:
+NEGATIVE_EDGE
+POSITIVE_BUT_UNDERPOWERED
+STATISTICALLY_EVALUABLE_BUT_NOT_ROBUST
+ROBUST_CANDIDATE
+
+======================================================================
+12. BOUNDED MUTATION AFTER FAILURE
+======================================================================
+
+Per generation, allow at most:
+- replace one model family
+- add two features and remove up to three
+- change one label horizon
+- change one holding/exit rule
+- change three model hyperparameters
+- change two probability/coverage thresholds
+- change one side enable/disable decision
+
+Record parent_generation_id, failure_class, mutation_reason, changed_features,
+changed_parameters, changed_thresholds, changed_label, changed_exit_rule, side_policy.
+
+Failure responses:
+INSUFFICIENT_SAMPLE -> longer untouched fold or bounded coverage policy, not forced trades
+DELAY_SENSITIVITY -> slower aggregate features, wait policy, Entry quality
+SIGN_REVERSAL -> lower complexity, remove unstable features, regime gate
+EXCESS_DRAWDOWN -> stricter risk gate, shorter hold, tail constraint
+SOXL_ONLY / SOXS_ONLY -> stop allowing the weak side to dilute the strong side
+PROFIT_CONCENTRATION -> reject abnormal-day dependence
+WEIGHT_INSTABILITY -> stronger regularization and feature pruning
+
+======================================================================
+13. TESTS
+======================================================================
+
+Implement and run focused tests for:
+- closed-bar and lag enforcement
+- feature/label temporal ordering
+- incomplete future-path exclusion
+- no NaN/nonfinite metric input
+- SOXL/SOXS mapping and side separation
+- 1/3/5-minute delayed entry correctness
+- 5/10/20/30bps cost correctness
+- purge/embargo and fold non-overlap
+- prior consumed-holdout exclusion
+- atomic one-time holdout consumption
+- checkpoint/resume idempotence
+- candidate funnel counts and truthful screen-level labels
+- minimum search commitment enforcement
+- model/feature/candidate/file caps
+- NO_TRADE and daily caps
+- statistical-power feasibility calculations
+- drawdown and concentration hard gates
+- broker/order/adoption false invariants
+- final output contract
+
+Run py_compile and pytest. Do not merely create tests.
+
+======================================================================
+14. REQUIRED OUTPUTS
+======================================================================
+
+At completion output at least:
+FINAL_STATUS
+FINAL_DECISION
+STOP_REASON
+CONCLUSION_CLASS
+TOTAL_GENERATIONS
+TOTAL_REGISTERED_CANDIDATES
+TOTAL_FULL_OOS_EXPERIMENTS
+QUICK_SCREEN_COUNT
+VALIDATION_READ_COUNT
+CONFIRMATION_READ_COUNT
+GLOBAL_FINAL_HOLDOUT_READ_COUNT
+MINIMUM_SEARCH_COMMITMENT_SATISFIED
+POWER_TARGET_FEASIBLE
+UNTOUCHED_TRADING_DAYS_AVAILABLE
+BEST_SIDE_POLICY
+BEST_GENERATION
+BEST_EXPERIMENT_ID
+BEST_MODEL_TYPE
+BEST_LABEL_HORIZON
+BEST_FEATURE_COUNT
+BEST_FEATURES
+BEST_THRESHOLDS
+DELAY_1M_NET
+DELAY_3M_NET
+DELAY_5M_NET
+DELAY_WORST_CASE_NET
+NET_RETURN_10BPS
+NET_RETURN_20BPS
+NET_RETURN_30BPS
+MAX_DRAWDOWN
+TRADE_COUNT
+UNIQUE_TRADE_DAYS
+TRADES_PER_MONTH
+NO_TRADE_RATE
+LONG_SOXL_COUNT
+LONG_SOXS_COUNT
+POSITIVE_FOLD_RATE
+PROFIT_CONCENTRATION_TOP5PCT
+SEED_STABILITY
+REGIME_STABILITY
+WEIGHT_STABILITY
+FINAL_HOLDOUT_RESULT
+PAPER_TRADING_ALLOWED
+SHADOW_ALLOWED
+BROKER_ACTION_ALLOWED
+OFFICIAL_ADOPTION_ALLOWED
+RESULT_DIRECTORY
+SUMMARY_PATH
+REPORT_PATH
+REGISTRY_PATH
+CHECKPOINT_PATH
+RECOMMENDED_NEXT_COMMAND
+
+Generate compact, truthful artifacts. Create V22_085_GLOBAL_DONE.flag only after a
+legal global terminal result has been persisted and output-contract tests pass.
+
+Even if ROBUST_CANDIDATE passes all research gates, only paper/shadow may become true.
+BROKER_ACTION_ALLOWED and OFFICIAL_ADOPTION_ALLOWED must remain false.
+
+Begin now with real inspection and execution, not a plan-only response.

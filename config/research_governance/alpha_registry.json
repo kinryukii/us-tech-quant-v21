@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0.0",
+  "registry_id": "A2_ALPHA_CHAMPION_CHALLENGER_REGISTRY_R1",
+  "model_family": "ALPHA",
+  "governance": {
+    "auto_promotion_forbidden": true,
+    "requires_explicit_user_authorization": true,
+    "allowed_state_path": [
+      "RESEARCH_CANDIDATE",
+      "VALID_PRE2026",
+      "STABLE_CHALLENGER",
+      "PROSPECTIVE_SHADOW",
+      "PROMOTION_ELIGIBLE",
+      "PROMOTED_CHAMPION"
+    ]
+  },
+  "models": [
+    {
+      "model_id": "A2_HGB",
+      "model_family": "ALPHA",
+      "role": "ALPHA_CHAMPION",
+      "status": "FROZEN_CHAMPION",
+      "created_at": "UNKNOWN",
+      "training_cutoff": "PRE2026",
+      "universe_id": "UNKNOWN",
+      "feature_set_id": "UNKNOWN",
+      "model_artifact": "D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/final_full_pre2026_hgb.joblib",
+      "model_sha256": "4f7eff07021bef084b0329dac8dabc31e9391c7c4945eb2955dc6c1339dcea0b",
+      "config_artifact": "D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/pre_final_freeze.json",
+      "config_sha256": "4078b6419ddf47ec09b073e2184780f7086f80abc627bad9a34e1b9aa7379115",
+      "benchmark_id": "A_A2_QUARTERLY_13F_CLEAN_BASELINE_R1",
+      "research_run_id": "A_VS_A2_QUARTERLY_13F_R1",
+      "promotion_state": "PROMOTED_CHAMPION",
+      "prospective_state": "FROZEN_INCUMBENT",
+      "uses_2026_training": false,
+      "uses_2026_parameter_search": false,
+      "uses_2026_model_selection": false,
+      "reported_benchmark_summary": {
+        "precision": "ROUNDED_REPORTED_VALUES_ONLY_DO_NOT_RECONSTRUCT",
+        "cagr": "0.5070",
+        "sharpe": "1.235",
+        "sortino": "1.261",
+        "calmar": "1.368",
+        "max_drawdown": "-0.3707",
+        "authoritative_values_must_be_loaded_from_artifact": true
+      },
+      "notes": "Frozen alpha incumbent. Unknown fields are intentionally not inferred; evaluator must load authoritative benchmark evidence before comparison."
+    },
+    {
+      "model_id": "XGB_REG",
+      "model_family": "ALPHA",
+      "role": "ALPHA_CHALLENGER",
+      "status": "UNSTABLE_SINGLE_PERIOD_DOMINATED",
+      "created_at": "UNKNOWN",
+      "training_cutoff": "PRE2026",
+      "universe_id": "UNKNOWN",
+      "feature_set_id": "UNKNOWN",
+      "model_artifact": "UNKNOWN",
+      "model_sha256": "UNKNOWN",
+      "config_artifact": "UNKNOWN",
+      "config_sha256": "UNKNOWN",
+      "benchmark_id": "A_A2_QUARTERLY_13F_CLEAN_BASELINE_R1",
+      "research_run_id": "UNKNOWN",
+      "promotion_state": "RESEARCH_CANDIDATE",
+      "prospective_state": "NOT_ESTABLISHED",
+      "uses_2026_training": false,
+      "uses_2026_parameter_search": false,
+      "uses_2026_model_selection": false,
+      "notes": "Apparent aggregate advantage materially depended on a single historical period; the remove-2023 robustness test eliminated the apparent Sharpe advantage. It is not champion."
+    }
+  ]
+}

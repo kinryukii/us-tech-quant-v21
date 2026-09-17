@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import importlib.util
 import json
 import os
@@ -45,6 +46,7 @@ CANON_QFQ = "canonical_moomoo_ohlcv_daily_qfq.csv"
 POINTER_FIELDS = ["key", "value"]
 
 StageRunner = Callable[[str, Path, Path], dict[str, Any]]
+DedupRunner = Callable[..., dict[str, Any]]
 
 
 def default_repo_root() -> Path:
@@ -117,6 +119,342 @@ def read_json(path: Path) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _file_identity(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return int(stat.st_dev), int(stat.st_ino)
+
+
+def _allocated_size(path: Path) -> int:
+    if os.name != "nt":
+        stat = path.stat()
+        return int(getattr(stat, "st_blocks", 0) * 512 or stat.st_size)
+    import ctypes
+
+    ctypes.set_last_error(0)
+    high = ctypes.c_ulong(0)
+    get_size = ctypes.windll.kernel32.GetCompressedFileSizeW
+    get_size.restype = ctypes.c_ulong
+    low = get_size(str(path), ctypes.byref(high))
+    if low == 0xFFFFFFFF and ctypes.get_last_error():
+        return 0
+    return int((high.value << 32) | low)
+
+
+def _security_fingerprint(path: Path) -> str | None:
+    """Return owner/group/DACL identity; unknown metadata fails closed."""
+    if os.name != "nt":
+        stat = path.stat()
+        return f"{stat.st_uid}:{stat.st_gid}:{stat.st_mode}"
+    import ctypes
+
+    needed = ctypes.c_ulong(0)
+    security_info = 0x00000001 | 0x00000002 | 0x00000004
+    get_security = ctypes.windll.advapi32.GetFileSecurityW
+    get_security(str(path), security_info, None, 0, ctypes.byref(needed))
+    if not needed.value:
+        return None
+    buffer = ctypes.create_string_buffer(needed.value)
+    if not get_security(str(path), security_info, buffer, needed.value, ctypes.byref(needed)):
+        return None
+    return hashlib.sha256(buffer.raw[: needed.value]).hexdigest()
+
+
+def _exclusive_read_available(path: Path) -> bool:
+    if os.name != "nt":
+        return True
+    import ctypes
+
+    create_file = ctypes.windll.kernel32.CreateFileW
+    create_file.restype = ctypes.c_void_p
+    handle = create_file(str(path), 0x80000000, 0, None, 3, 0x80, None)
+    invalid = ctypes.c_void_p(-1).value
+    if handle in (None, invalid):
+        return False
+    ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+    return True
+
+
+def _payload_metadata_compatible(source: Path, target: Path) -> bool:
+    source_stat, target_stat = source.stat(), target.stat()
+    source_attrs = int(getattr(source_stat, "st_file_attributes", 0))
+    target_attrs = int(getattr(target_stat, "st_file_attributes", 0))
+    unsafe = 0x400 | 0x200 | 0x800 | 0x4000  # reparse, sparse, compressed, encrypted
+    if source_attrs & unsafe or target_attrs & unsafe:
+        return False
+    if source_stat.st_dev != target_stat.st_dev or source_attrs != target_attrs:
+        return False
+    source_security = _security_fingerprint(source)
+    target_security = _security_fingerprint(target)
+    return source_security is not None and source_security == target_security
+
+
+def _historical_promoted_snapshot(path: Path, snapshot_root: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=True)
+        return (
+            resolved.parent == snapshot_root.resolve(strict=True)
+            and resolved.name.startswith("snapshot_id=v22_040_promoted_")
+            and (resolved / "canonical_manifest.json").is_file()
+        )
+    except (OSError, RuntimeError):
+        return False
+
+
+def _transactional_hardlink_replace(
+    source: Path,
+    target: Path,
+    expected_hash: str,
+    *,
+    replace: Callable[[Path, Path], Any] = os.replace,
+    after_replace: Callable[[Path, Path], None] | None = None,
+) -> dict[str, Any]:
+    """Replace one independent duplicate without ever leaving no target path."""
+    temp_link = target.with_name(f".{target.name}.post_dedup_link.tmp")
+    rollback_link = target.with_name(f".{target.name}.post_dedup_rollback.tmp")
+    try:
+        if rollback_link.exists():
+            if not target.exists():
+                if sha256_file(rollback_link) != expected_hash:
+                    return {"status": "FAIL_INTEGRITY", "reason": "INVALID_INTERRUPTED_ROLLBACK", "bytes_reclaimed": 0}
+                replace(rollback_link, target)
+            elif sha256_file(target) != expected_hash or sha256_file(rollback_link) != expected_hash:
+                return {"status": "FAIL_INTEGRITY", "reason": "INCONSISTENT_INTERRUPTED_TRANSACTION", "bytes_reclaimed": 0}
+            elif _file_identity(target) == _file_identity(source):
+                if temp_link.exists():
+                    temp_link.unlink()
+                rollback_link.unlink()
+                return {"status": "ALREADY_CONVERTED_RECOVERED", "bytes_reclaimed": 0}
+            elif _file_identity(target) == _file_identity(rollback_link):
+                if temp_link.exists():
+                    temp_link.unlink()
+                rollback_link.unlink()
+            else:
+                return {"status": "FAIL_INTEGRITY", "reason": "UNKNOWN_INTERRUPTED_IDENTITY", "bytes_reclaimed": 0}
+        elif temp_link.exists():
+            if sha256_file(temp_link) != expected_hash or _file_identity(temp_link) != _file_identity(source):
+                return {"status": "FAIL_INTEGRITY", "reason": "INVALID_INTERRUPTED_TEMP_LINK", "bytes_reclaimed": 0}
+            temp_link.unlink()
+    except PermissionError as exc:
+        return {"status": "SKIPPED_PERMISSION", "reason": f"RECOVERY_PERMISSION:{exc}", "bytes_reclaimed": 0}
+    except OSError as exc:
+        return {"status": "SKIPPED_OPERATIONAL", "reason": f"RECOVERY_IO:{exc}", "bytes_reclaimed": 0}
+    allocated = _allocated_size(target)
+    preserve_rollback = False
+    try:
+        os.link(source, temp_link)
+        if sha256_file(temp_link) != expected_hash or _file_identity(temp_link) != _file_identity(source):
+            raise RuntimeError("TEMP_HARDLINK_VALIDATION_FAILED")
+        os.link(target, rollback_link)
+        replace(temp_link, target)
+        if after_replace is not None:
+            after_replace(source, target)
+        if not target.exists() or sha256_file(target) != expected_hash or _file_identity(target) != _file_identity(source):
+            raise RuntimeError("FINAL_HARDLINK_VALIDATION_FAILED")
+        rollback_link.unlink()
+        return {"status": "CONVERTED", "bytes_reclaimed": allocated}
+    except PermissionError as exc:
+        if rollback_link.exists():
+            try:
+                replace(rollback_link, target)
+            except OSError as rollback_exc:
+                preserve_rollback = True
+                return {"status": "FAIL_INTEGRITY", "reason": f"ROLLBACK_FAILED:{rollback_exc}", "bytes_reclaimed": 0}
+        return {"status": "SKIPPED_PERMISSION", "reason": str(exc), "bytes_reclaimed": 0}
+    except OSError as exc:
+        if rollback_link.exists():
+            try:
+                replace(rollback_link, target)
+            except OSError as rollback_exc:
+                preserve_rollback = True
+                return {"status": "FAIL_INTEGRITY", "reason": f"ROLLBACK_FAILED:{rollback_exc}", "bytes_reclaimed": 0}
+        return {"status": "SKIPPED_OPERATIONAL", "reason": str(exc), "bytes_reclaimed": 0}
+    except Exception as exc:
+        if rollback_link.exists():
+            try:
+                replace(rollback_link, target)
+            except OSError as rollback_exc:
+                preserve_rollback = True
+                return {"status": "FAIL_INTEGRITY", "reason": f"ROLLBACK_FAILED:{rollback_exc}", "bytes_reclaimed": 0}
+        return {"status": "SKIPPED_ROLLED_BACK", "reason": str(exc), "bytes_reclaimed": 0}
+    finally:
+        if temp_link.exists():
+            try:
+                temp_link.unlink()
+            except OSError:
+                pass
+        if rollback_link.exists() and target.exists() and not preserve_rollback:
+            try:
+                rollback_link.unlink()
+            except OSError:
+                pass
+
+
+def dedup_superseded_snapshot(
+    superseded_snapshot: Path,
+    historical_root: Path,
+    current_snapshot: Path,
+    dry_run: bool = False,
+    *,
+    candidate_dirs: list[Path] | None = None,
+    metadata_check: Callable[[Path, Path], bool] = _payload_metadata_compatible,
+    transaction: Callable[..., dict[str, Any]] = _transactional_hardlink_replace,
+) -> dict[str, Any]:
+    """Bounded exact-snapshot reuse after promotion; current is always excluded."""
+    started = time.perf_counter()
+    result: dict[str, Any] = {
+        "status": "NO_EXACT_DUPLICATE",
+        "candidate_group_count": 0,
+        "converted_file_count": 0,
+        "would_convert_file_count": 0,
+        "physical_bytes_reclaimed": 0,
+        "would_reclaim_bytes": 0,
+        "skipped_file_count": 0,
+        "reason": "",
+        "files_hashed": 0,
+        "current_canonical_hardlink_participation_count": 0,
+        "integrity_anomaly": False,
+    }
+
+    def finish(status: str, reason: str = "") -> dict[str, Any]:
+        result["status"] = status
+        result["reason"] = reason
+        result["duration_ms"] = round((time.perf_counter() - started) * 1000, 3)
+        return result
+
+    superseded_snapshot = Path(superseded_snapshot)
+    historical_root = Path(historical_root)
+    current_snapshot = Path(current_snapshot)
+    if not _historical_promoted_snapshot(superseded_snapshot, historical_root):
+        return finish("SKIPPED_TARGET_NOT_HISTORICAL_PROMOTED")
+    try:
+        if superseded_snapshot.resolve() == current_snapshot.resolve():
+            result["integrity_anomaly"] = True
+            return finish("FAIL_INTEGRITY", "SUPERSEDED_EQUALS_CURRENT")
+    except OSError:
+        return finish("SKIPPED_PATH_UNAVAILABLE")
+
+    payload_names = (CANON_RAW, CANON_QFQ)
+    target_paths = [superseded_snapshot / name for name in payload_names]
+    current_paths = [current_snapshot / name for name in payload_names]
+    if not all(path.is_file() for path in target_paths + current_paths):
+        return finish("SKIPPED_REQUIRED_PAYLOAD_MISSING")
+    target_sizes = tuple(path.stat().st_size for path in target_paths)
+    target_manifest = superseded_snapshot / "canonical_manifest.json"
+
+    if candidate_dirs is None:
+        try:
+            candidate_dirs = sorted((path for path in historical_root.iterdir() if path.is_dir()), key=lambda p: p.name)
+        except OSError as exc:
+            return finish("SKIPPED_OPERATIONAL", str(exc))
+    candidates: list[Path] = []
+    for candidate in sorted(candidate_dirs, key=lambda p: Path(p).name):
+        try:
+            candidate = Path(candidate)
+            if candidate.resolve() in {superseded_snapshot.resolve(), current_snapshot.resolve()}:
+                continue
+            if not _historical_promoted_snapshot(candidate, historical_root):
+                continue
+            paths = [candidate / name for name in payload_names]
+            if all(path.is_file() for path in paths) and tuple(path.stat().st_size for path in paths) == target_sizes:
+                candidates.append(candidate)
+        except OSError:
+            continue
+    if not candidates:
+        return finish("NO_EXACT_DUPLICATE", "CHEAP_SIZE_OR_PATH_REJECTION")
+
+    target_manifest_hash = sha256_file(target_manifest)
+    target_hashes = [sha256_file(path) for path in target_paths]
+    result["files_hashed"] += 1 + len(target_paths)
+    exact_source: Path | None = None
+    metadata_rejections = 0
+    for candidate in candidates:
+        source_paths = [candidate / name for name in payload_names]
+        source_hashes = [sha256_file(path) for path in source_paths]
+        result["files_hashed"] += len(source_paths)
+        if source_hashes != target_hashes:
+            continue
+        if not all(metadata_check(source, target) for source, target in zip(source_paths, target_paths)):
+            metadata_rejections += 1
+            continue
+        exact_source = candidate
+        break
+    if exact_source is None:
+        status = "SKIPPED_METADATA_INCOMPATIBLE" if metadata_rejections else "NO_EXACT_DUPLICATE"
+        return finish(status, "NO_METADATA_COMPATIBLE_EXACT_HISTORICAL_SOURCE")
+
+    result["candidate_group_count"] = 1
+    result["source_snapshot"] = str(exact_source)
+    source_paths = [exact_source / name for name in payload_names]
+    current_pre = [(sha256_file(path), _file_identity(path)) for path in current_paths]
+    result["files_hashed"] += len(current_paths)
+    if any(_file_identity(current) in {_file_identity(source), _file_identity(target)}
+           for current, source, target in zip(current_paths, source_paths, target_paths)):
+        result["current_canonical_hardlink_participation_count"] = 1
+        result["integrity_anomaly"] = True
+        return finish("FAIL_INTEGRITY", "CURRENT_CANONICAL_ALREADY_ALIASED")
+
+    operational_statuses: list[str] = []
+    for source, target, expected_hash in zip(source_paths, target_paths, target_hashes):
+        if _file_identity(source) == _file_identity(target):
+            continue
+        if not _exclusive_read_available(source) or not _exclusive_read_available(target):
+            result["skipped_file_count"] += 1
+            continue
+        result["would_convert_file_count"] += 1
+        result["would_reclaim_bytes"] += _allocated_size(target)
+        if dry_run:
+            continue
+        if sha256_file(source) != expected_hash or sha256_file(target) != expected_hash:
+            result["skipped_file_count"] += 1
+            continue
+        result["files_hashed"] += 2
+        action = transaction(source, target, expected_hash)
+        if action.get("status") == "CONVERTED":
+            result["converted_file_count"] += 1
+            result["physical_bytes_reclaimed"] += int(action.get("bytes_reclaimed", 0))
+        elif action.get("status") == "ALREADY_CONVERTED_RECOVERED":
+            continue
+        elif action.get("status") == "FAIL_INTEGRITY":
+            result["integrity_anomaly"] = True
+            return finish("FAIL_INTEGRITY", str(action.get("reason", "TRANSACTION_INTEGRITY_FAILURE")))
+        else:
+            result["skipped_file_count"] += 1
+            operational_statuses.append(str(action.get("status", "SKIPPED_OPERATIONAL")))
+
+    if sha256_file(target_manifest) != target_manifest_hash:
+        result["integrity_anomaly"] = True
+        return finish("FAIL_INTEGRITY", "TARGET_MANIFEST_CHANGED")
+    result["files_hashed"] += 1
+    if any(not path.exists() or sha256_file(path) != expected for path, expected in zip(target_paths, target_hashes)):
+        result["integrity_anomaly"] = True
+        return finish("FAIL_INTEGRITY", "TARGET_PAYLOAD_CHANGED_OR_MISSING")
+    result["files_hashed"] += len(target_paths)
+    current_post = [(sha256_file(path), _file_identity(path)) for path in current_paths]
+    result["files_hashed"] += len(current_paths)
+    if current_post != current_pre:
+        result["current_canonical_hardlink_participation_count"] = 1
+        result["integrity_anomaly"] = True
+        return finish("FAIL_INTEGRITY", "CURRENT_CANONICAL_CHANGED")
+    if dry_run:
+        return finish("DRY_RUN_EXACT_DUPLICATE")
+    if result["converted_file_count"]:
+        status = "PASS" if not result["skipped_file_count"] else "PASS_WITH_OPERATIONAL_SKIPS"
+        return finish(status, ",".join(sorted(set(operational_statuses))))
+    if not result["skipped_file_count"]:
+        return finish("ALREADY_SHARED")
+    if "SKIPPED_PERMISSION" in operational_statuses:
+        return finish("SKIPPED_PERMISSION", ",".join(sorted(set(operational_statuses))))
+    return finish("SKIPPED_OPERATIONAL", ",".join(sorted(set(operational_statuses))))
 
 
 def python_exe(repo_root: Path) -> str:
@@ -221,6 +559,17 @@ def running_summary(repo_root: Path, out: Path, target_date: str, run_start_utc:
         "official_adoption_allowed": False,
         "market_data_fetch_attempted": False,
         "canonical_pointer_updated": False,
+        "post_supersession_dedup_enabled": True,
+        "post_supersession_dedup_status": "NOT_RUN",
+        "post_supersession_dedup_source_snapshot": "",
+        "post_supersession_dedup_target_snapshot": "",
+        "post_supersession_dedup_converted_file_count": 0,
+        "post_supersession_dedup_physical_bytes_reclaimed": 0,
+        "post_supersession_dedup_skipped_file_count": 0,
+        "post_supersession_dedup_reason": "",
+        "post_supersession_dedup_files_hashed": 0,
+        "post_supersession_dedup_duration_ms": 0.0,
+        "post_supersession_dedup_integrity_anomaly": False,
         "abcde_rerun_succeeded": False,
         "dram_rerun_succeeded": False,
         "research_only": True,
@@ -531,6 +880,8 @@ def run(
     run_id: str = "",
     fetch_runner: Callable[..., dict[str, Any]] | None = None,
     stage_runner: StageRunner | None = None,
+    dedup_runner: DedupRunner | None = None,
+    post_supersession_dedup_enabled: bool = True,
 ) -> dict[str, Any]:
     global _RUNTIME_REPO
     repo_root = repo_root.resolve()
@@ -543,6 +894,7 @@ def run(
     run_start = time.perf_counter()
     run_start_utc = utc_now()
     summary = running_summary(repo_root, out, target_date, run_start_utc)
+    summary["post_supersession_dedup_enabled"] = post_supersession_dedup_enabled
     summary["run_id"] = run_id
     persist_summary(out, summary)
     stage_ledger: list[dict[str, Any]] = []
@@ -633,6 +985,9 @@ def run(
                 raise RuntimeError(preflight["live_preflight_status"] + ":" + preflight.get("error_message", ""))
         if cache_root is None:
             cache_root = get_cache_root()
+        # V21.231 writes its own fresh pointer, so the just-superseded identity
+        # must be captured before that child runs.
+        pre_refresh_pointer = read_json(v231_dir / "canonical_snapshot_pointer.json")
         fetch_summary = execute_stage("V21.231")
         if str(fetch_summary.get("final_status", "")).startswith("FAIL"):
             nonlocal_failed[0] = "V21.231"
@@ -649,6 +1004,44 @@ def run(
         validation = validate_pointer(pointer, v231_dir)
         if not validation["ok"]:
             raise RuntimeError("PROMOTED_CANONICAL_POINTER_VALIDATION_FAILED")
+        if post_supersession_dedup_enabled:
+            previous_value = str(pre_refresh_pointer.get("canonical_snapshot_dir", ""))
+            previous_dir = Path(previous_value) if previous_value else Path()
+            if not previous_value:
+                dedup_result: dict[str, Any] = {
+                    "status": "SKIPPED_NO_PREVIOUS_CURRENT",
+                    "reason": "PRE_REFRESH_POINTER_MISSING",
+                }
+            else:
+                try:
+                    dedup_result = (dedup_runner or dedup_superseded_snapshot)(
+                        superseded_snapshot=previous_dir,
+                        historical_root=effective_cache_root / "canonical/moomoo_ohlcv",
+                        current_snapshot=promoted_dir,
+                        dry_run=False,
+                    )
+                except BaseException as dedup_exc:
+                    # Storage closeout is operationally isolated from the
+                    # already committed canonical promotion.
+                    dedup_result = {
+                        "status": "SKIPPED_OPERATIONAL_EXCEPTION",
+                        "reason": f"{type(dedup_exc).__name__}:{dedup_exc}",
+                        "integrity_anomaly": False,
+                    }
+            summary.update({
+                "post_supersession_dedup_status": dedup_result.get("status", "UNKNOWN"),
+                "post_supersession_dedup_source_snapshot": dedup_result.get("source_snapshot", ""),
+                "post_supersession_dedup_target_snapshot": previous_value,
+                "post_supersession_dedup_converted_file_count": int(dedup_result.get("converted_file_count", 0)),
+                "post_supersession_dedup_physical_bytes_reclaimed": int(dedup_result.get("physical_bytes_reclaimed", 0)),
+                "post_supersession_dedup_skipped_file_count": int(dedup_result.get("skipped_file_count", 0)),
+                "post_supersession_dedup_reason": str(dedup_result.get("reason", "")),
+                "post_supersession_dedup_files_hashed": int(dedup_result.get("files_hashed", 0)),
+                "post_supersession_dedup_duration_ms": float(dedup_result.get("duration_ms", 0.0)),
+                "post_supersession_dedup_integrity_anomaly": bool(dedup_result.get("integrity_anomaly", False)),
+            })
+        else:
+            summary["post_supersession_dedup_status"] = "DISABLED"
         summary.update({
             "latest_available_date": selected["raw_max_date"],
             "canonical_snapshot_id": promoted_id,
@@ -795,6 +1188,9 @@ def run(
         "abcde_latest_date", "dram_latest_price_date", "same_date_comparable_all_strategies", "canonical_complete_universe_date", "target_date_ticker_count", "expected_universe_count", "legally_excluded_count", "eligible_universe_count", "stale_ticker_count", "gross_target_date_coverage_ratio", "eligible_target_date_coverage_ratio", "excluded_ticker_count", "missing_target_date_tickers",
         "data_gap_days", "final_status", "final_decision", "broker_action_allowed",
         "official_adoption_allowed", "market_data_fetch_attempted", "canonical_pointer_updated",
+        "post_supersession_dedup_status", "post_supersession_dedup_converted_file_count",
+        "post_supersession_dedup_physical_bytes_reclaimed", "post_supersession_dedup_skipped_file_count",
+        "post_supersession_dedup_reason", "post_supersession_dedup_integrity_anomaly",
         "abcde_rerun_succeeded", "dram_rerun_succeeded",
     ]
     (out / "V22.040_daily_moomoo_oneclick_refresh_orchestrator_r1_report.txt").write_text(
@@ -813,6 +1209,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-network", action="store_true", default=False)
     parser.add_argument("--path-replay", action="store_true", default=False)
     parser.add_argument("--run-id", default="")
+    parser.add_argument("--no-post-supersession-dedup", action="store_true", default=False)
     args = parser.parse_args(argv)
     if args.path_replay:
         v231 = daily_stage(V231_REL) / "v21_231_summary.json"; v233 = daily_stage(V233_REL) / "v21_233_summary.json"
@@ -823,13 +1220,23 @@ def main(argv: list[str] | None = None) -> int:
         assert_safe_output_path(out); out.mkdir(parents=True, exist_ok=False)
         payload={"final_status":"PASS_V22_040_DAILY_PATH_REPLAY","network_accessed":False,"broker_action_allowed":False,"official_adoption_allowed":False,"promotion_attempted":False,"canonical_write_attempted":False,"v231_summary":str(v231),"v233_summary":str(v233),"output_dir":str(out)}
         write_json_atomic(out / "path_replay_summary.json", payload); print(json.dumps(payload)); return 0
-    summary = run(args.repo_root, args.output_dir, args.target_date, args.cache_root, args.no_network, args.run_id)
+    summary = run(
+        args.repo_root,
+        args.output_dir,
+        args.target_date,
+        args.cache_root,
+        args.no_network,
+        args.run_id,
+        post_supersession_dedup_enabled=not args.no_post_supersession_dedup,
+    )
     for key in [
         "target_date", "latest_available_date", "canonical_snapshot_id", "canonical_latest_date",
         "abcde_latest_date", "dram_latest_price_date", "same_date_comparable_all_strategies",
         "canonical_complete_universe_date", "target_date_ticker_count", "expected_universe_count", "legally_excluded_count", "eligible_universe_count", "stale_ticker_count", "gross_target_date_coverage_ratio", "eligible_target_date_coverage_ratio", "excluded_ticker_count", "missing_target_date_tickers",
         "data_gap_days", "final_status", "final_decision", "broker_action_allowed",
         "official_adoption_allowed", "market_data_fetch_attempted", "canonical_pointer_updated",
+        "post_supersession_dedup_status", "post_supersession_dedup_converted_file_count",
+        "post_supersession_dedup_physical_bytes_reclaimed", "post_supersession_dedup_integrity_anomaly",
         "abcde_rerun_succeeded", "dram_rerun_succeeded",
     ]:
         print(f"{key}={summary.get(key)}")

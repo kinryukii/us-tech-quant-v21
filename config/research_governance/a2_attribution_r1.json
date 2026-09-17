@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "framework_id": "A2_ATTRIBUTION_FRAMEWORK_R1",
+  "required_freeze_id": "A_A2_QUARTERLY_13F_CLEAN_BASELINE_R1",
+  "purpose": "REALIZED_PORTFOLIO_ECONOMIC_CONTRIBUTION_DIAGNOSTICS",
+  "model_training_allowed": false,
+  "historical_backtest_allowed": false,
+  "live_research_input_allowed": false,
+  "concentration_thresholds_preregistered": false,
+  "engine": {
+    "identity_tolerance": 1e-12,
+    "incremental_weight_tolerance": 1e-12,
+    "allow_weight_return_derived_contribution": false,
+    "transaction_cost_is_positive_charge": true,
+    "winner_loser_threshold": 0.0,
+    "concentration_status": "INFORMATIONAL_ONLY",
+    "require_same_incremental_dates": true,
+    "require_same_incremental_universe": true,
+    "rank_buckets": [
+      {"label": "RANK_1_5", "min_rank": 1, "max_rank": 5},
+      {"label": "RANK_6_10", "min_rank": 6, "max_rank": 10},
+      {"label": "RANK_11_20", "min_rank": 11, "max_rank": 20}
+    ]
+  }
+}

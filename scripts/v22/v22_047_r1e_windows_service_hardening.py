@@ -66,7 +66,19 @@ def atomic_json(path: Path, payload: Mapping[str, Any]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True, default=str)
             handle.write("\n")
-        os.replace(temp, path)
+        # Windows readers may briefly deny replacement. Retry only this same
+        # atomic operation; persistent denial still propagates without touching
+        # permissions or falling back to a partial/non-atomic target write.
+        delays = (0.0, 0.025, 0.05, 0.1, 0.2, 0.4)
+        for attempt, delay in enumerate(delays):
+            if delay:
+                time.sleep(delay)
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError as exc:
+                if os.name != "nt" or getattr(exc, "winerror", None) not in {5, 32, 33} or attempt == len(delays) - 1:
+                    raise
     finally:
         if os.path.exists(temp):
             os.unlink(temp)
@@ -325,11 +337,11 @@ def terminate_pid(r1d: Any, pid: int, timeout: float = 10.0) -> bool:
     return False
 
 
-def quote_probe(paths: Paths, r1d: Any) -> tuple[bool, str]:
+def quote_probe(paths: Paths, r1d: Any, *, output_dir: Path | None = None) -> tuple[bool, str]:
     try:
         profile = r1d.load_connection_profile(paths.profile)
-        bridge = r1d.MoomooReadOnlyBridge(profile, paths.output, 15.0)
-        market = bridge.market_snapshot()
+        bridge = r1d.MoomooReadOnlyBridge(profile, output_dir or paths.output, 15.0)
+        market = bridge.market_snapshot(include_history=False)
         return bool(market.get("snapshot_ready")), "QUOTE_API_OK" if market.get("snapshot_ready") else "QUOTE_DATA_NOT_READY"
     except Exception as exc:
         return False, f"{type(exc).__name__}:{exc}"
@@ -435,7 +447,9 @@ def write_summary(paths: Paths, service_status: str, watchdog: Mapping[str, Any]
     atomic_json(paths.output / "power_state.json", power)
     payload = {
         "schema_version": 1, "revision": REVISION, "stage": STAGE, "timestamp_utc": utc_iso(),
-        "final_status": "R1E_PASS_SHADOW_AUTOSTART_AND_DASHBOARD_READY",
+        "final_status": ("R1E_PASS_SHADOW_AUTOSTART_AND_DASHBOARD_READY"
+                         if service_status == "RUNNING" and (watchdog or {}).get("watchdog_status") == "HEALTHY"
+                         else f"R1E_{service_status}_" + str((watchdog or {}).get("watchdog_status", "NOT_READY"))),
         "service_status": service_status, "watchdog_status": (watchdog or {}).get("watchdog_status", "STARTING"),
         "switch_mode": switch.get("mode", "SHADOW"), "effective_execution_mode": "SHADOW_ONLY",
         "strategy_configured": bool(strategy.get("strategy_configured", False)),
@@ -451,15 +465,38 @@ def write_summary(paths: Paths, service_status: str, watchdog: Mapping[str, Any]
 
 
 class Service:
-    def __init__(self, repo_root: Path, wait_seconds: float = 1800.0):
+    def __init__(self, repo_root: Path, wait_seconds: float = 1800.0, *,
+                 startup_check_only: bool = False, startup_check_output: Path | None = None):
         self.paths = Paths.for_repo(repo_root)
-        initialize(self.paths)
+        if not math.isfinite(wait_seconds) or wait_seconds < 0:
+            raise R1EError("WAIT_SECONDS_MUST_BE_FINITE_AND_NONNEGATIVE")
+        self.startup_check_only = startup_check_only
+        self.startup_check_output = startup_check_output or self.paths.output / "startup_check.json"
+        if startup_check_only and startup_check_output is not None:
+            storage = load_module(self.paths.repo / "scripts/common/storage_paths.py", "r1e_startup_storage")
+            results = storage.resolve(repo_root=self.paths.repo).results_root
+            maintenance = (results / "_maintenance").resolve()
+            target = Path(startup_check_output).expanduser().resolve()
+            if results not in maintenance.parents or maintenance not in target.parents:
+                raise R1EError("STARTUP_CHECK_OUTPUT_MUST_BE_UNDER_RESULTS_MAINTENANCE")
+            self.startup_check_output = target
+        if not startup_check_only:
+            initialize(self.paths)
         self.r1d = load_module(self.paths.r1d_script, "v22_047_r1d_for_r1e_service")
         self.lock = self.r1d.SingleInstance(self.paths.runtime / "service.lock")
         self.wait_seconds = wait_seconds
         self.running = True
 
     def state(self, status: str, detail: str = "") -> None:
+        if self.startup_check_only:
+            atomic_json(self.startup_check_output, {
+                "schema_version": 1, "revision": REVISION, "timestamp_utc": utc_iso(),
+                "startup_check_status": status, "detail": detail, "pid": os.getpid(),
+                "service_started": False, "workers_started": False,
+                "history_requested": False, "account_queried": False,
+                "broker_action_allowed": False, "trade_api_called": False,
+            })
+            return
         payload = {
             "schema_version": 1, "revision": REVISION, "timestamp_utc": utc_iso(),
             "service_status": status, "detail": detail, "pid": os.getpid(),
@@ -469,29 +506,48 @@ class Service:
         atomic_json(self.paths.output / "service_state.json", payload)
         write_summary(self.paths, status, read_json(self.paths.output / "watchdog_state.json", {}) or {})
 
-    def wait_prerequisites(self) -> None:
+    def stop_requested(self) -> bool:
+        return not self.running or (not self.startup_check_only and (self.paths.output / "service.stop").exists())
+
+    def wait_prerequisites(self) -> bool:
         host, port = connection(self.paths)
         deadline = time.monotonic() + self.wait_seconds
-        while self.running and time.monotonic() < deadline:
+        reason = "WAIT_BUDGET_EXHAUSTED"
+        while not self.stop_requested() and time.monotonic() < deadline:
             if not network_available():
+                reason = "NETWORK_UNAVAILABLE"
                 self.state("WAITING_FOR_NETWORK")
-                time.sleep(5); continue
+                time.sleep(min(5, max(0, deadline - time.monotonic()))); continue
             if not tcp_ready(host, port):
+                reason = f"OPEND_UNAVAILABLE:{host}:{port}"
                 self.state("WAITING_FOR_OPEND", f"{host}:{port}")
-                time.sleep(5); continue
-            ok, reason = quote_probe(self.paths, self.r1d)
+                time.sleep(min(5, max(0, deadline - time.monotonic()))); continue
+            ok, reason = quote_probe(self.paths, self.r1d, output_dir=(
+                self.startup_check_output.parent if self.startup_check_only else None))
+            if self.stop_requested():
+                return False
             if ok:
-                audit(self.paths, "STARTUP_QUOTE_PROBE_PASS", reason, opend_tcp=True, quote_api=True)
-                return
+                if not self.startup_check_only:
+                    audit(self.paths, "STARTUP_QUOTE_PROBE_PASS", reason, opend_tcp=True, quote_api=True)
+                return True
             self.state("WAITING_FOR_QUOTE_API", reason)
-            time.sleep(10)
-        raise R1EError("STARTUP_PREREQUISITE_TIMEOUT")
+            time.sleep(min(10, max(0, deadline - time.monotonic())))
+        if self.stop_requested():
+            return False
+        raise R1EError(f"STARTUP_PREREQUISITE_TIMEOUT:{reason}")
 
     def run(self) -> int:
         self.lock.acquire()
         stop = self.paths.output / "service.stop"
         watchdog_stop = self.paths.output / "watchdog.stop"
         try:
+            if self.startup_check_only:
+                self.state("STARTUP_CHECK_STARTING")
+                if not self.wait_prerequisites():
+                    self.state("STARTUP_CHECK_CANCELLED")
+                    return 1
+                self.state("STARTUP_PREREQUISITES_READY")
+                return 0
             for flag in (stop, watchdog_stop):
                 if flag.exists(): flag.unlink()
             self.paths.runtime.joinpath("service.pid").write_text(str(os.getpid()), encoding="ascii")
@@ -504,7 +560,9 @@ class Service:
             })
             atomic_json(self.paths.output / "autostart_state.json", autostart)
             self.state("STARTING")
-            self.wait_prerequisites()
+            if not self.wait_prerequisites():
+                self.state("STOPPED", "Startup cancelled before worker launch")
+                return 0
             start_engine(self.paths, self.r1d)
             r1f_script = self.paths.repo / "scripts" / "v22" / "v22_047_r1f_fractional_protected_sleeve.py"
             r1f_pid = pid_from(self.paths.runtime / "r1f.pid")
@@ -552,9 +610,12 @@ class Service:
                     r1i_pid = launch_python(self.paths, [str(r1i_script), "--service", "--repo-root", str(self.paths.repo)], self.paths.runtime / "r1i.pid")
                 self.state("RUNNING", f"watchdog_pid={watchdog_pid};r1f_pid={r1f_pid};r1g_pid={r1g_pid};r1h_pid={r1h_pid};r1i_pid={r1i_pid}")
                 time.sleep(5)
-            self.state("STOPPING")
+            self.state("STOPPED")
             return 0
         except Exception as exc:
+            if self.startup_check_only:
+                self.state("STARTUP_CHECK_FAILED", f"{type(exc).__name__}:{exc}")
+                return 2
             set_switch(self.paths, "OFF", "R1E service exception fail-closed", emergency=True)
             record_error(self.paths, "SERVICE", f"{type(exc).__name__}:{exc}")
             self.state("FAILED", f"{type(exc).__name__}:{exc}")
@@ -799,7 +860,12 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("service", "watchdog", "ui", "status", "power", "watchdog-once"):
         p = sub.add_parser(name); p.add_argument("--repo-root", default=r"D:\us-tech-quant")
-        if name == "service": p.add_argument("--wait-seconds", type=float, default=1800.0)
+        if name == "service":
+            p.add_argument("--wait-seconds", type=float, default=1800.0)
+            p.add_argument("--startup-check-only", action="store_true",
+                           help="Check startup prerequisites without starting workers or changing authorization")
+            p.add_argument("--startup-check-output", type=Path,
+                           help="Independent JSON under results_root/_maintenance; SDK logs stay beside this file")
         if name in {"watchdog", "watchdog-once"}: p.add_argument("--interval", type=float, default=5.0)
     return parser
 
@@ -808,7 +874,8 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv); repo = Path(args.repo_root)
     try:
         if args.command == "service":
-            service = Service(repo, args.wait_seconds)
+            service = Service(repo, args.wait_seconds, startup_check_only=args.startup_check_only,
+                              startup_check_output=args.startup_check_output)
             def stop(*_: Any) -> None: service.running = False
             signal.signal(signal.SIGINT, stop)
             if hasattr(signal, "SIGTERM"): signal.signal(signal.SIGTERM, stop)

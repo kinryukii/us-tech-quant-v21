@@ -16,6 +16,7 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 
 import generation3r2_research as r2
+from artifact_lifecycle import closeout_artifacts
 
 
 NAME = "FAST3_GENERATION3R3_FAST_FUNNEL_ITERATION"
@@ -336,6 +337,41 @@ def overlap_phase(output: Path, canonical: Path) -> None:
     write_json(output / "generation3r3_checkpoint.json", {"current_status": "DEVELOPMENT_FINALISTS_FROZEN_AWAITING_ONE_TIME_VALIDATION" if len(finalists) else "OVERLAP_REPAIR_COMPLETE_AWAITING_FINAL_DEVELOPMENT_DECISION", "current_champion": None, "last_completed_iteration": 5, "confirmation_read_count": 0, "validation_economics_read": False, "completed_backtests": "Development-only C4 overlap-policy comparison and 500 continuous windows", "known_failures": [] if len(finalists) else ["No C4 overlap-policy variant cleared every frozen Development promotion gate."], "next_exact_action": "Open Validation exactly once for frozen finalists." if len(finalists) else "Finalize the Development-only no-edge conclusion if no remaining distinct authorized repair exists.", "exact_resume_command": f"python scripts/v22/fast3_agent/generation3r3_research.py --phase overlap --output-dir {output}", "contract_sha256": contract["contract_sha256"], **SAFETY})
 
 
+def artifact_lifecycle_closeout(output: Path, final_status: str, dry_run: bool = False) -> dict:
+    """Close explicit runtime artifacts after the runner's existing evidence commit."""
+    return closeout_artifacts(
+        run_root=output,
+        candidates=(
+            output / "generation3r3_probability_distributions.csv",
+            output / "generation3r3_threshold_coverage_surface.csv",
+        ),
+        metadata={
+            "metadata_complete": True,
+            "status": final_status,
+            "run_role": "EXPLORATORY",
+            "promotion_status": "REJECTED_NOT_SELECTED",
+            "selected": False,
+            "frozen": False,
+            "authoritative": False,
+            "prospective": False,
+            "forward": False,
+            "shadow": False,
+            "append_only_evidence": False,
+        },
+        evidence={
+            "final_metrics_persisted": (output / "generation3r3_development_walkforward_metrics.csv").is_file(),
+            "config_identity_persisted": (output / "generation3r3_split_contract.json").is_file(),
+            "final_status_persisted": (output / "generation3r3_final_summary.json").is_file(),
+            "required_ledger_persisted": (output / "generation3r3_candidate_registry.csv").is_file(),
+            "manifest_finalized": (output / "generation3r3_final_checkpoint.json").is_file(),
+        },
+        approved_roots=(output,),
+        dry_run=dry_run,
+        active_writer=False,
+        downstream_reference=False,
+    )
+
+
 def finalize_phase(output: Path) -> None:
     contract = json.loads((output / "generation3r3_split_contract.json").read_text(encoding="utf-8"))
     if contract["confirmation_read_count"] != 0: raise RuntimeError("FAIL_LEAKAGE_DETECTED:CONFIRMATION_ALREADY_READ")
@@ -349,10 +385,26 @@ def finalize_phase(output: Path) -> None:
     (output / "generation3r3_final_report.md").write_text(report, encoding="utf-8")
     checkpoint = {"current_status": summary["final_status"], "current_champion": None, "last_completed_iteration": 5, "confirmation_read_count": 0, "validation_economics_read": False, "completed_backtests": "Development-only funnel diagnosis, coverage surface, separated-gate, calibration, and overlap-policy repairs", "known_failures": [reason], "next_exact_action": "No continuation within Generation 3R3.", "exact_resume_command": "NONE_FAST3_GENERATION3R3_RESEARCH_STOPPED", "contract_sha256": contract["contract_sha256"], **SAFETY}
     write_json(output / "generation3r3_checkpoint.json", checkpoint); write_json(output / "generation3r3_final_checkpoint.json", checkpoint)
+    # Evidence commit is complete above. Only these explicit, rebuildable
+    # development diagnostics are eligible; no discovery-by-extension occurs.
+    lifecycle = artifact_lifecycle_closeout(output, summary["final_status"])
+    summary["artifact_lifecycle"] = lifecycle
+    checkpoint["artifact_lifecycle"] = lifecycle
+    write_json(output / "generation3r3_final_summary.json", summary)
+    write_json(output / "generation3r3_checkpoint.json", checkpoint)
+    write_json(output / "generation3r3_final_checkpoint.json", checkpoint)
+    with (output / "generation3r3_final_report.md").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "\nArtifact lifecycle: "
+            f"{lifecycle['lifecycle_class']} / {lifecycle['cleanup_status']}; "
+            f"deleted={lifecycle['deleted_target_count']}; "
+            f"bytes_reclaimed={lifecycle['bytes_reclaimed']}; "
+            f"skipped={lifecycle['skipped_target_count']}.\n"
+        )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(); parser.add_argument("--phase", choices=("audit", "diagnose", "coverage", "repair", "calibration", "overlap", "finalize"), required=True); parser.add_argument("--output-dir", default=str(DEFAULT_OUT)); parser.add_argument("--canonical-root", default=str(r2.CANONICAL)); args = parser.parse_args()
+    parser = argparse.ArgumentParser(); parser.add_argument("--phase", choices=("audit", "diagnose", "coverage", "repair", "calibration", "overlap", "finalize"), required=True); parser.add_argument("--output-dir", default=str(DEFAULT_OUT)); parser.add_argument("--canonical-root", default=str(r2.CANONICAL)); parser.add_argument("--artifact-cleanup-dry-run", action="store_true"); args = parser.parse_args()
     if args.phase == "audit":
         result = audit_phase(Path(args.output_dir), Path(args.canonical_root)); print("FINAL_STATUS=SPLIT_FROZEN_AWAITING_FUNNEL_DIAGNOSIS"); print("CONTRACT_SHA256=" + result["contract_sha256"])
     elif args.phase == "diagnose":
@@ -366,7 +418,14 @@ def main() -> None:
     elif args.phase == "overlap":
         overlap_phase(Path(args.output_dir), Path(args.canonical_root)); print("FINAL_STATUS=OVERLAP_REPAIR_COMPLETE")
     else:
-        finalize_phase(Path(args.output_dir)); print("FINAL_STATUS=PASS_GENERATION3R3_FUNNEL_DIAGNOSIS_COMPLETE")
+        output = Path(args.output_dir)
+        if args.artifact_cleanup_dry_run:
+            summary_path = output / "generation3r3_final_summary.json"
+            status = json.loads(summary_path.read_text(encoding="utf-8")).get("final_status", "UNKNOWN") if summary_path.is_file() else "UNKNOWN"
+            print(json.dumps(artifact_lifecycle_closeout(output, status, dry_run=True), sort_keys=True))
+            print("FINAL_STATUS=ARTIFACT_CLEANUP_DRY_RUN")
+        else:
+            finalize_phase(output); print("FINAL_STATUS=PASS_GENERATION3R3_FUNNEL_DIAGNOSIS_COMPLETE")
     print("CONFIRMATION_READ_COUNT=0")
 
 

@@ -1,0 +1,4 @@
+streamlit==1.63.0
+# Existing canonical runtime already provides these artifact-reader dependencies.
+pyarrow>=15
+pandas>=2

@@ -1,0 +1,190 @@
+﻿You are the implementation and research agent for FAST3 V22.084. Execute real work now; do not only propose a plan.
+
+HARD CONTRACT
+Read and obey:
+D:\us-tech-quant\FAST3_V22_084_AUTHORIZATION.md
+
+PATHS
+- Repository: D:\us-tech-quant
+- Data root: D:\us-tech-quant-data
+- Results root: D:\us-tech-quant-results
+- Stage output: D:\us-tech-quant-results\fast3_v22_084_sample_recovery_side_specific
+- Launcher budget: D:\us-tech-quant-results\fast3_v22_084_sample_recovery_side_specific\autopilot_budget.json
+
+PRIOR FROZEN INPUTS — READ, DO NOT OVERWRITE
+- V22.081 result root: D:\us-tech-quant-results\fast3_v22_081_bounded_self_improvement
+- V22.082 result root: D:\us-tech-quant-results\fast3_v22_082_multigeneration_autopilot
+- V22.083 result root: D:\us-tech-quant-results\fast3_v22_083_delay_robust_sparse_event
+
+FROZEN V22.083 FACTS
+- G01 Validation was consumed, then post-read metric evaluation hit a NaN-label runtime error and failed closed.
+- G02 was insufficient-sample and negative under 20-bps/delay conditions.
+- G03 was delay-positive but only 6 trades on 1 day.
+- G04 produced zero trades.
+- Confirmation reads were 0; Global Final Holdout reads were 0.
+- These facts do not establish an edge.
+
+PRIMARY OBJECTIVE
+Create and run one compact V22.084 engine that first repairs the data/label/metric eligibility contract, then uses separate SOXL-long and SOXS-long models with an Opportunity hard gate and absolute-floor-plus-Top-K ranking to recover statistically defensible samples without forcing trades. Assess actual cost- and delay-robust OOS performance.
+
+NON-NEGOTIABLE LIMITS
+- One stage only; no V22.084A/B/C or R2/R3.
+- Max 4 generations, 30 complete experiments per generation, 120 total, or lower launcher budget.
+- Max 2 model families, 20 active features, 3 active candidates.
+- Preserve canonical data and V22.081–V22.083 artifacts.
+- Never create orders or enable broker/adoption permissions.
+
+EXECUTE IN THIS ORDER
+
+1. AUDIT THE ACTUAL FAILURE AND REUSABLE CODE
+Read V22.083 summary, report, registries, frozen split manifest, code, tests, and any trade-level artifacts. Identify the exact NaN-label path, the G03 sample path, and the G04 zero-trade gate interaction. Audit V22.081–V22.083 holdout consumption. Reuse stable canonical loaders, PIT logic, cost logic, ETF mapping, registries, and checkpoint utilities; do not copy entire prior engines.
+
+2. REPAIR THE PRE-VALIDATION ELIGIBILITY CONTRACT
+Before opening any new holdout, make all eligibility checks explicit and executable. Persist `data_eligibility_contract.json` with counts/reasons. Require zero NaN/nonfinite/alignment errors in features, labels, delayed entry prices, exit prices, and metric inputs. Samples lacking a complete future path, session coverage, SOXL/SOXS alignment, or delayed entry must become `INELIGIBLE` before splitting/evaluation.
+
+Fail closed before holdout consumption if the contract is not satisfied. Add regression tests reproducing and fixing the V22.083 G01 defect.
+
+3. FREEZE LEGAL NEW SPLITS BEFORE FITTING
+Read prior split manifests and code to determine all previously observed periods. Predeclare contiguous Development/Internal Validation/Generation Validation/Generation Confirmation folds and one Global Final Holdout that are genuinely legal under the project evidence. Apply purge and embargo for the maximum label horizon. Persist boundaries, consumed states, source/data hashes, and split SHA-256 before fitting. If insufficient untouched data exists, stop truthfully with `INSUFFICIENT_UNTOUCHED_HOLDOUT`.
+
+4. BUILD SEPARATE SOXL-LONG AND SOXS-LONG LABELS/MODELS
+Use actual tradable SOXL and SOXS paths. Maintain separate labels, training sets, calibration, thresholds, sample counts, and diagnostics. Use entry delays 1/3/5 minutes, costs 5/10/20/30 bps, horizons 30/60/180 minutes, and triple-barrier or an auditable equivalent. Record MFE, MAE, barrier order, delayed entry/exit timestamps, cost, and ineligibility reason.
+
+5. CHANGE THE GATING ARCHITECTURE
+Use:
+- Opportunity as the only predictive hard gate.
+- Side-specific SOXL-long and SOXS-long probabilities.
+- Entry-quality score.
+- Risk hard gate.
+- FINAL_CONFIDENCE combining those soft scores.
+- Absolute minimum confidence floor plus bounded Top-K ranking.
+
+Top-K may rank only candidates above the floor and may never force a trade. Default cap: max one new entry per side per trading day and max two total per day. Prevent duplicate/overlapping correlated events unless independence is demonstrated. Output LONG_SOXL, LONG_SOXS, or NO_TRADE.
+
+6. STATISTICAL POWER BEFORE RETURN INTERPRETATION
+A Generation Validation result is statistically evaluable only if it has at least 20 trades and 10 unique trading days. Target aggregate legal-fold evidence: at least 80 trades and 40 unique days. Report effective independent events, monthly counts, side counts, and NO_TRADE rate. If insufficient, output `INSUFFICIENT_STATISTICAL_POWER`; do not elevate a 6-trade result.
+
+Target NO_TRADE 80%–98%, but do not tune solely to hit the range and do not force activity.
+
+7. COMPACT FEATURES AND ONLY TWO MODEL FAMILIES
+Use at most 20 reliable, PIT, fully closed-bar features. Prefer VIX state/change, SOXX/QQQ relative strength, 5/15/30-minute momentum, VWAP deviation, realized volatility, volume anomaly, gaps, session, and trend/regime. Add semiconductor breadth only if already available with auditable PIT timestamps.
+
+Use only Elastic Net Logistic Regression and one constrained small HistGradientBoosting/equivalent. Constrain depth, leaves, regularization, iterations, and search grid. No deep learning, large forests, stacking, unbounded search, or indicator explosion.
+
+8. RUN BOUNDED DEVELOPMENT SEARCH
+For each generation, run real contiguous-time walk-forward Development/Internal OOS experiments under all delays and costs. Register every completed experiment with seed, config, lineage, code/data/split hashes, side-specific metrics, sample power, and rejection reason. Keep at most three candidates. Each generation may make only bounded mutations under the hard contract.
+
+9. CHAMPION SELECTION AND HARD GATES
+Rank by:
+1) DELAY_WORST_CASE_NET across 1/3/5 minutes,
+2) 20-bps net expectancy,
+3) positive contiguous-fold rate,
+4) drawdown,
+5) statistical power/unique days,
+6) profit concentration,
+7) simplicity.
+
+Reject for MDD, 3m/5m sign reversal, 20-bps collapse, concentration, uncontrolled tail loss, inadequate independent days, calibration instability, or weight/feature instability. Return cannot offset a hard-gate violation.
+
+10. BOUNDED MULTI-GENERATION FLOW
+- Freeze the generation champion.
+- Open Generation Validation once only after all pre-read contracts pass.
+- If Validation fails, consume it, classify failure, and proceed to the next legal untouched fold if budget and a genuine bounded hypothesis remain.
+- If Validation passes, open Generation Confirmation once.
+- If Confirmation fails, consume it and continue legally to the next generation.
+- Never reopen consumed V22.081–V22.084 holdouts.
+- Open Global Final Holdout only once after a legal Global Candidate exists.
+- A generation failure is not a global stop by itself.
+
+11. CHECKPOINT, RESUME, AND FILE CONTROL
+Implement idempotent resume. Do not duplicate experiments or holdout reads. Use one implementation area under scripts\v22\fast3_agent and the fixed stage output. Keep baseline plus top three model binaries only.
+
+Required artifacts:
+- data_eligibility_contract.json
+- frozen_split_manifest.json
+- experiment_registry.jsonl
+- generation_registry.jsonl
+- v22_084_checkpoint.json
+- champion_config.json
+- v22_084_summary.json
+- v22_084_summary.txt
+- v22_084_report.md
+- side_specific_diagnostic.csv/parquet
+- delay_decay_diagnostic.csv/parquet
+- statistical_power_diagnostic.csv/parquet
+- key_trade_details.csv/parquet
+
+12. TEST AND RUN
+Create/update one focused test file and actually run py_compile plus focused pytest. Tests must cover the hard contract, especially the prior NaN defect, finite/alignment eligibility, separate sides, absolute floor + Top-K without forced trades, daily caps, duplicate-event prevention, sample-power gates, delays/costs, PIT, purge/embargo, holdout locks, budgets, checkpoint/resume, and broker permissions.
+
+Then run up to 4 generations / 120 real complete experiments. Do not stop because one candidate or generation fails.
+
+13. FINAL OUTPUT CONTRACT
+Print and persist truthful fields including:
+FINAL_STATUS
+FINAL_DECISION
+STOP_REASON
+TOTAL_GENERATIONS
+TOTAL_EXPERIMENTS
+VALIDATION_READ_COUNT
+CONFIRMATION_READ_COUNT
+GLOBAL_FINAL_HOLDOUT_READ_COUNT
+FEATURE_NAN_COUNT
+LABEL_NAN_COUNT
+ENTRY_PRICE_NAN_COUNT
+EXIT_PRICE_NAN_COUNT
+METRIC_INPUT_NAN_COUNT
+TIMESTAMP_ALIGNMENT_ERROR_COUNT
+INELIGIBLE_SAMPLE_COUNT
+INELIGIBLE_REASON_COUNTS
+BEST_GENERATION
+BEST_EXPERIMENT_ID
+BEST_MODEL_TYPE_SOXL
+BEST_MODEL_TYPE_SOXS
+BEST_FEATURE_COUNT
+BEST_FEATURES
+SOXL_THRESHOLDS
+SOXS_THRESHOLDS
+OPPORTUNITY_THRESHOLD
+TOP_K_POLICY
+DELAY_1M_NET
+DELAY_3M_NET
+DELAY_5M_NET
+DELAY_WORST_CASE_NET
+NET_RETURN_5BPS
+NET_RETURN_10BPS
+NET_RETURN_20BPS
+NET_RETURN_30BPS
+MAX_DRAWDOWN
+TRADE_COUNT
+UNIQUE_TRADE_DAYS
+EFFECTIVE_INDEPENDENT_EVENT_COUNT
+TRADES_PER_MONTH
+NO_TRADE_RATE
+LONG_SOXL_COUNT
+LONG_SOXS_COUNT
+PROFIT_CONCENTRATION_TOP5PCT
+POSITIVE_FOLD_RATE
+SOXL_CALIBRATION_SCORE
+SOXS_CALIBRATION_SCORE
+SEED_STABILITY
+REGIME_STABILITY
+WEIGHT_STABILITY
+STATISTICAL_POWER_STATUS
+LAST_GENERATION_FAILURE_CLASS
+FINAL_HOLDOUT_RESULT
+PAPER_TRADING_ALLOWED
+SHADOW_ALLOWED
+BROKER_ACTION_ALLOWED
+OFFICIAL_ADOPTION_ALLOWED
+RESULT_DIRECTORY
+SUMMARY_PATH
+REPORT_PATH
+REGISTRY_PATH
+CHECKPOINT_PATH
+RECOMMENDED_NEXT_COMMAND
+
+TRUTHFULNESS
+Never fabricate data availability, tests, runs, metrics, hashes, trades, or conclusions. If budget ends before a legal terminal state, persist a valid checkpoint, do not create a false global done flag, and print the exact resume command. Negative and insufficient-power results are valid and must remain visible.
+
+Start now by reading the hard contract and the prior frozen artifacts, then perform the first real audit/fix/test action.

@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0.0",
+  "registry_id": "A2_EXECUTION_CHAMPION_CHALLENGER_REGISTRY_R1",
+  "model_family": "EXECUTION",
+  "governance": {
+    "auto_promotion_forbidden": true,
+    "requires_explicit_user_authorization": true,
+    "allowed_state_path": [
+      "RESEARCH_CANDIDATE",
+      "VALID_PRE2026",
+      "STABLE_CHALLENGER",
+      "PROSPECTIVE_SHADOW",
+      "PROMOTION_ELIGIBLE",
+      "PROMOTED_CHAMPION"
+    ]
+  },
+  "models": [
+    {
+      "model_id": "E5_COMBINED_CONSERVATIVE",
+      "model_family": "EXECUTION",
+      "role": "EXECUTION_CHAMPION",
+      "status": "PREFERRED_PRE2026",
+      "created_at": "UNKNOWN",
+      "training_cutoff": "PRE2026",
+      "universe_id": "UNKNOWN",
+      "feature_set_id": "UNKNOWN",
+      "model_artifact": "UNKNOWN",
+      "model_sha256": "UNKNOWN",
+      "config_artifact": "D:/us-tech-quant-results/A2_EXECUTION_EFFICIENCY_R2_PREREGISTERED_HYSTERESIS/preferred_overlay_identity.json",
+      "config_sha256": "76f29b895a336eb60da045973516542b935324b5c0e8013ac4e41db270ba8587",
+      "benchmark_id": "E5_COMBINED_CONSERVATIVE_FROZEN_REFERENCE",
+      "research_run_id": "A2_EXECUTION_EFFICIENCY_R2_PREREGISTERED_HYSTERESIS",
+      "promotion_state": "PROMOTED_CHAMPION",
+      "prospective_state": "PREFERRED_PRE2026",
+      "uses_2026_training": false,
+      "uses_2026_parameter_search": false,
+      "uses_2026_model_selection": false,
+      "notes": "Preferred execution overlay selected pre-2026. Any fixed 2026 replay is validation metadata only and must not be represented as 2026 candidate selection."
+    }
+  ]
+}

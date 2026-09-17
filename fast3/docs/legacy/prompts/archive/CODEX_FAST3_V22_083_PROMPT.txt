@@ -1,0 +1,194 @@
+﻿You are the implementation and research Agent for FAST3. Immediately continue with real repository work; do not merely write a plan.
+
+STAGE
+V22.083_FAST3_DELAY_ROBUST_SPARSE_EVENT_ENGINE_R1
+
+PATHS
+- Repo: D:\us-tech-quant
+- Data: D:\us-tech-quant-data
+- Results: D:\us-tech-quant-results
+- New stage results: D:\us-tech-quant-results\fast3_v22_083_delay_robust_sparse_event
+- Hard contract: D:\us-tech-quant\FAST3_V22_083_AUTHORIZATION.md
+- Frozen launcher budget: D:\us-tech-quant-results\fast3_v22_083_delay_robust_sparse_event\autopilot_budget.json
+
+PRIOR FROZEN INPUTS TO READ, NOT OVERWRITE
+- D:\us-tech-quant-results\fast3_v22_081_bounded_self_improvement\v22_081_summary.json
+- D:\us-tech-quant-results\fast3_v22_081_bounded_self_improvement\experiment_registry.jsonl
+- D:\us-tech-quant-results\fast3_v22_082_multigeneration_autopilot\v22_082_global_summary.json
+- D:\us-tech-quant-results\fast3_v22_082_multigeneration_autopilot\generation_registry.jsonl
+- D:\us-tech-quant-results\fast3_v22_082_multigeneration_autopilot\v22_082_report.md
+
+FROZEN FACTS
+- V22.081 champion passed Validation and failed Confirmation with large drawdown.
+- V22.082 ran 6 generations / 300 Development experiments; all Generation Validations failed and no Confirmation was opened.
+- V22.082 G03 was positive at 20bps and 1-minute delay but failed delay-robustness; other failures included sign reversal and excess drawdown.
+- These facts are not evidence of a tradable strategy.
+
+PRIMARY OBJECTIVE
+Build and run one compact engine that searches for sparse SOXL/SOXS event decisions whose net expectancy is robust across 1, 3, and 5 minute execution delay, realistic costs, contiguous-time out-of-sample folds, regimes, and hard drawdown constraints. Actions are LONG_SOXL, LONG_SOXS, or NO_TRADE.
+
+NON-NEGOTIABLE LIMITS
+- One stage and one architecture; no V22.083A/B/C or R2/R3.
+- Max 4 generations, 40 complete experiments per generation, 160 total, or stricter launcher budget.
+- Max 2 model families, 25 active features, 3 active candidates.
+- Preserve V22.081/V22.082 and canonical data.
+- Never create an order or enable broker/adoption permissions.
+
+EXECUTE IN THIS ORDER
+
+1. AUDIT AND REUSE
+Inspect V22.081/V22.082 implementation, registries, summaries, existing canonical 24h minute data contracts, feature builders, execution-cost logic, ETF mapping, walk-forward utilities, and tests. Reuse working components. Do not copy full previous engines or re-download existing data.
+
+2. G03 READ-ONLY FAILURE DIAGNOSTIC
+Recover the exact G03 configuration and available trade-level outputs. Decompose performance by year, month, VIX regime, SOXX/QQQ trend regime, session/time bucket, SOXL/SOXS side, 1/3/5 minute delay, holding horizon, exit type, MFE, MAE, loss tail, drawdown source, and top-5%-trade profit concentration. If trade-level reconstruction is impossible, report exactly which evidence is unavailable; do not invent it.
+
+Persist at least:
+G03_FAILURE_CLASS
+G03_DELAY_DECAY_PROFILE
+G03_LONG_SHORT_ASYMMETRY
+G03_REGIME_DEPENDENCE
+G03_PROFIT_CONCENTRATION
+G03_DRAWDOWN_SOURCE
+G03_REUSABLE_SIGNAL_COMPONENTS
+G03_COMPONENTS_TO_REJECT
+
+3. FROZEN SPLIT MANIFEST BEFORE FITTING
+Predeclare contiguous Development/Internal-Validation/Generation-Validation/Generation-Confirmation folds plus one Global Final Holdout. Apply purge and embargo for the maximum label horizon. Save boundaries, consumed states, source/data hash, and split SHA-256 in frozen_split_manifest.json before any candidate fitting. Never select easier dates after observing performance.
+
+Do not claim a fold is untouched if V22.081/V22.082 already opened it. Determine prior holdout usage from artifacts and code. If insufficient untouched data/folds remain, terminate truthfully with INSUFFICIENT_UNTOUCHED_HOLDOUT.
+
+4. DELAY-ROBUST PATH LABELS
+Build labels from actual SOXL/SOXS tradable paths for entry delays 1, 3, and 5 minutes, at 30, 60, and 180 minute horizons. Zero delay is diagnostic only. Use triple-barrier or an auditable equivalent and record barrier-first outcome, net return, MFE, MAE, entry/exit timestamps, execution delay, cost, and path availability.
+
+Required metrics:
+DELAY_1M_NET
+DELAY_3M_NET
+DELAY_5M_NET
+DELAY_WORST_CASE_NET
+DELAY_MEDIAN_NET
+DELAY_SIGN_CONSISTENCY
+
+Never rank by best-delay performance. Champion priority is worst-delay net, then 20bps net, positive-fold rate, drawdown, concentration, sample sufficiency, and simplicity.
+
+5. THREE LOGICAL DECISION LAYERS
+Implement auditable Opportunity, Direction, and Entry-Timing outputs. They may share code but must have separate labels/metrics and gate order.
+
+Opportunity: is there a net tradable path?
+Direction: UP/DOWN/UNCERTAIN.
+Entry timing: ENTER_NOW/WAIT_3_MIN/WAIT_5_MIN/NO_TRADE.
+
+UNCERTAIN or failed downstream conditions become NO_TRADE. Direction UP maps to SOXL and DOWN maps to SOXS only after actual ETF path/cost validation.
+
+6. COMPACT FEATURE SET
+Select at most 25 active PIT features from existing reliable data: VIX level and 5/15/30m changes/regime/divergence; SOXX and QQQ returns, relative strength, correlation, VWAP deviation, volume anomaly, gap, premarket return, realized volatility, drawdown, compression/expansion; session/time; and reliable semiconductor breadth only if already available with auditable PIT timestamps. Use fully closed bars and include at least one-bar lag. Record availability, missingness, lag, and direction stability.
+
+Each generation may add <=2 and remove <=2 features.
+
+7. ONLY TWO MODEL FAMILIES
+Use Elastic Net Logistic Regression and one constrained small HistGradientBoosting/equivalent. Constrain depth, leaf size, regularization, iterations, and parameter grid. No deep learning, large forests, stacking, unlimited ensembles, or unbounded search.
+
+8. DEVELOPMENT SEARCH AND STRESS TESTS
+Within each generation, run real contiguous-time walk-forward experiments under costs 5/10/20/30bps and delays 1/3/5 minutes. Use multiple seeds where relevant. Include long/short side, regime, session, profit concentration, unique trade days, NO_TRADE rate, calibration, and weight/feature stability.
+
+Target sparse trading and NO_TRADE 70%-95%, but reject statistically inadequate samples.
+
+9. HARD GATES
+Reject candidates for aggregate Validation MDD >20%, any single Validation fold MDD >25%, Confirmation MDD >20%, material 3m/5m sign reversal, 20bps collapse, uncontrolled tail loss, profit concentrated in fewer than 5% of trades, or insufficient independent trade days. Return cannot compensate for a hard-gate breach.
+
+10. BOUNDED MULTI-GENERATION AUTOPILOT
+For each generation:
+- Read parent result and failure diagnosis.
+- Generate only bounded mutations allowed by the contract.
+- Run Development/Internal OOS experiments.
+- Register every complete experiment and preserve exact seed/config/hash/lineage.
+- Keep max 3 active candidates.
+- Freeze champion.
+- Read Generation Validation once.
+- If Validation fails: consume it, classify failure, and continue to a new untouched generation fold if legal.
+- If Validation passes: read Generation Confirmation once.
+- If Confirmation fails: consume it, classify failure, and continue to the next untouched fold if legal.
+- Never reopen a consumed holdout.
+- Open Global Final Holdout only once after a legal Global Candidate exists.
+
+A generation failure is not a global terminal event. Create V22_083_GLOBAL_DONE.flag only under the hard contract terminal conditions.
+
+11. CHECKPOINT/RESUME AND FILE CONTROL
+Use one implementation area under scripts\v22\fast3_agent and the fixed stage result directory. Resume must be idempotent and not duplicate experiments or holdout reads. Keep only baseline and top 3 model binaries. Use shared registries rather than one directory/report per experiment.
+
+Required canonical artifacts:
+- experiment_registry.jsonl
+- generation_registry.jsonl
+- v22_083_checkpoint.json
+- frozen_split_manifest.json
+- champion_config.json
+- v22_083_summary.json
+- v22_083_summary.txt
+- v22_083_report.md
+- delay_decay_diagnostic.csv or parquet
+- regime_stability.csv or parquet
+- key_trade_details.csv or parquet
+
+12. TEST AND RUN
+Create or update one focused test file and actually run compile plus focused tests. Tests must cover PIT/closed bars, feature-label alignment, delays, costs, ETF mapping, purge/embargo, fold non-overlap, consumed holdout lock, Global Holdout one-read, NO_TRADE, hard risk gates, concentration, budgets/caps, resume idempotency, checkpoint restore, and broker/order permissions.
+
+Then run as many real experiments as allowed, up to 4 generations / 160 total. Do not stop because one candidate or one generation failed.
+
+13. FINAL OUTPUT CONTRACT
+Print and persist truthful fields including:
+FINAL_STATUS
+FINAL_DECISION
+STOP_REASON
+TOTAL_GENERATIONS
+TOTAL_EXPERIMENTS
+VALIDATION_READ_COUNT
+CONFIRMATION_READ_COUNT
+GLOBAL_FINAL_HOLDOUT_READ_COUNT
+BEST_GENERATION
+BEST_EXPERIMENT_ID
+BEST_MODEL_TYPE
+BEST_FEATURE_COUNT
+BEST_FEATURES
+BEST_FACTOR_WEIGHTS
+BEST_THRESHOLDS
+BEST_HOLDING_WINDOW
+BEST_ENTRY_ACTION_POLICY
+DELAY_1M_NET
+DELAY_3M_NET
+DELAY_5M_NET
+DELAY_WORST_CASE_NET
+NET_RETURN_5BPS
+NET_RETURN_10BPS
+NET_RETURN_20BPS
+NET_RETURN_30BPS
+MAX_DRAWDOWN
+TRADE_COUNT
+UNIQUE_TRADE_DAYS
+NO_TRADE_RATE
+LONG_SOXL_COUNT
+LONG_SOXS_COUNT
+PROFIT_CONCENTRATION_TOP5PCT
+POSITIVE_FOLD_RATE
+OPPORTUNITY_LIFT
+DIRECTION_LIFT
+CALIBRATION_SCORE
+SEED_STABILITY
+REGIME_STABILITY
+WEIGHT_STABILITY
+G03_FAILURE_CLASS
+LAST_GENERATION_FAILURE_CLASS
+FINAL_HOLDOUT_RESULT
+PAPER_TRADING_ALLOWED
+SHADOW_ALLOWED
+BROKER_ACTION_ALLOWED
+OFFICIAL_ADOPTION_ALLOWED
+RESULT_DIRECTORY
+SUMMARY_PATH
+REPORT_PATH
+REGISTRY_PATH
+CHECKPOINT_PATH
+RECOMMENDED_NEXT_COMMAND
+
+TRUTHFULNESS
+Never fabricate data availability, test success, runs, metrics, files, hashes, trades, or conclusions. If execution budget ends before legal terminal completion, persist a valid checkpoint, do not create a false global done flag, and print the exact resume command. Failures are valid research results and must remain visible.
+
+Start now by reading the hard contract and prior frozen artifacts, then inspect the repository and perform the first real implementation/diagnostic action.

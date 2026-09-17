@@ -1,0 +1,79 @@
+{
+  "fixture_id": "A2_ATTRIBUTION_R1_TINY_STATIC_FIXTURE",
+  "a_rows": [
+    {
+      "strategy_id": "A", "date": "2024-12-31", "security_id": "S1", "ticker": "ONE",
+      "sector": "TECH", "industry": "SOFTWARE", "component_type": "SECURITY", "rank": 1,
+      "portfolio_weight": 0.5, "previous_weight": 0.0, "security_return": 0.012,
+      "transaction_cost": 0.0005, "turnover_contribution": 0.1,
+      "gross_contribution": 0.006, "cost_contribution": -0.0005, "net_contribution": 0.0055,
+      "universe_id": "U_SYNTHETIC", "model_id": "A_CONTROL", "vintage_id": "V_2024Q4"
+    },
+    {
+      "strategy_id": "A", "date": "2024-12-31", "security_id": "S2", "ticker": "TWO",
+      "sector": null, "industry": null, "component_type": "SECURITY", "rank": 6,
+      "portfolio_weight": 0.5, "previous_weight": 0.0, "security_return": 0.10,
+      "transaction_cost": 0.0005, "turnover_contribution": 0.1,
+      "gross_contribution": -0.002, "cost_contribution": -0.0005, "net_contribution": -0.0025,
+      "universe_id": "U_SYNTHETIC", "model_id": "A_CONTROL", "vintage_id": "V_2024Q4"
+    },
+    {
+      "strategy_id": "A", "date": "2025-01-02", "security_id": "S1", "ticker": "ONE",
+      "sector": "TECH", "industry": "SOFTWARE", "component_type": "SECURITY", "rank": 1,
+      "portfolio_weight": 0.5, "previous_weight": 0.5, "security_return": 0.003,
+      "transaction_cost": 0.0002, "turnover_contribution": 0.02,
+      "gross_contribution": 0.0015, "cost_contribution": -0.0002, "net_contribution": 0.0013,
+      "universe_id": "U_SYNTHETIC", "model_id": "A_CONTROL", "vintage_id": "V_2025Q1"
+    },
+    {
+      "strategy_id": "A", "date": "2025-01-02", "security_id": "S3", "ticker": "THREE",
+      "sector": "HEALTH", "industry": "BIOTECH", "component_type": "SECURITY", "rank": 11,
+      "portfolio_weight": 0.5, "previous_weight": 0.0, "security_return": 0.004,
+      "transaction_cost": 0.0003, "turnover_contribution": 0.08,
+      "gross_contribution": 0.002, "cost_contribution": -0.0003, "net_contribution": 0.0017,
+      "universe_id": "U_SYNTHETIC", "model_id": "A_CONTROL", "vintage_id": "V_2025Q1"
+    }
+  ],
+  "a_daily": [
+    {"strategy_id": "A", "date": "2024-12-31", "authoritative_gross_return": 0.004, "authoritative_cost_contribution": -0.001, "authoritative_portfolio_return": 0.003, "nav_before": 100.0, "nav_after": 100.3},
+    {"strategy_id": "A", "date": "2025-01-02", "authoritative_gross_return": 0.0035, "authoritative_cost_contribution": -0.0005, "authoritative_portfolio_return": 0.003, "nav_before": 100.3, "nav_after": 100.6009}
+  ],
+  "a2_rows": [
+    {
+      "strategy_id": "A2", "date": "2024-12-31", "security_id": "S1", "ticker": "ONE",
+      "sector": "TECH", "industry": "SOFTWARE", "component_type": "SECURITY", "rank": 1,
+      "portfolio_weight": 0.7, "previous_weight": 0.0, "security_return": 0.014,
+      "transaction_cost": 0.0005, "turnover_contribution": 0.12,
+      "gross_contribution": 0.01, "cost_contribution": -0.0005, "net_contribution": 0.0095,
+      "universe_id": "U_SYNTHETIC", "model_id": "A2_HGB", "vintage_id": "V_2024Q4"
+    },
+    {
+      "strategy_id": "A2", "date": "2024-12-31", "security_id": "S2", "ticker": "TWO",
+      "sector": null, "industry": null, "component_type": "SECURITY", "rank": 6,
+      "portfolio_weight": 0.3, "previous_weight": 0.0, "security_return": 0.10,
+      "transaction_cost": 0.0005, "turnover_contribution": 0.08,
+      "gross_contribution": -0.004, "cost_contribution": -0.0005, "net_contribution": -0.0045,
+      "universe_id": "U_SYNTHETIC", "model_id": "A2_HGB", "vintage_id": "V_2024Q4"
+    },
+    {
+      "strategy_id": "A2", "date": "2025-01-02", "security_id": "S1", "ticker": "ONE",
+      "sector": "TECH", "industry": "SOFTWARE", "component_type": "SECURITY", "rank": 1,
+      "portfolio_weight": 0.6, "previous_weight": 0.7, "security_return": 0.003,
+      "transaction_cost": 0.0002, "turnover_contribution": 0.03,
+      "gross_contribution": 0.002, "cost_contribution": -0.0002, "net_contribution": 0.0018,
+      "universe_id": "U_SYNTHETIC", "model_id": "A2_HGB", "vintage_id": "V_2025Q1"
+    },
+    {
+      "strategy_id": "A2", "date": "2025-01-02", "security_id": "S4", "ticker": "FOUR",
+      "sector": "INDUSTRIAL", "industry": "MACHINERY", "component_type": "SECURITY", "rank": 11,
+      "portfolio_weight": 0.4, "previous_weight": 0.0, "security_return": 0.011,
+      "transaction_cost": 0.0003, "turnover_contribution": 0.07,
+      "gross_contribution": 0.0045, "cost_contribution": -0.0003, "net_contribution": 0.0042,
+      "universe_id": "U_SYNTHETIC", "model_id": "A2_HGB", "vintage_id": "V_2025Q1"
+    }
+  ],
+  "a2_daily": [
+    {"strategy_id": "A2", "date": "2024-12-31", "authoritative_gross_return": 0.006, "authoritative_cost_contribution": -0.001, "authoritative_portfolio_return": 0.005, "nav_before": 100.0, "nav_after": 100.5},
+    {"strategy_id": "A2", "date": "2025-01-02", "authoritative_gross_return": 0.0065, "authoritative_cost_contribution": -0.0005, "authoritative_portfolio_return": 0.006, "nav_before": 100.5, "nav_after": 101.103}
+  ]
+}

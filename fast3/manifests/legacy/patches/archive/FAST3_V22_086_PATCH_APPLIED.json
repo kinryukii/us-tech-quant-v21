@@ -1,0 +1,23 @@
+﻿{
+    "patch":  "FAST3_V22_086_OVERNIGHT_STRATEGY_FREEZE_PATCH",
+    "applied_at":  "2026-08-02T02:56:50.3258215+09:00",
+    "repo_root":  "D:\\us-tech-quant",
+    "data_root":  "D:\\us-tech-quant-data",
+    "results_root":  "D:\\us-tech-quant-results",
+    "max_rounds":  256,
+    "max_generations":  16,
+    "experiments_per_generation":  64,
+    "max_total_experiments":  1024,
+    "morning_hour":  10,
+    "minimum_registered_experiments":  240,
+    "minimum_generations":  6,
+    "v22_081_preserved":  true,
+    "v22_082_preserved":  true,
+    "v22_083_preserved":  true,
+    "v22_084_preserved":  true,
+    "v22_085_preserved":  true,
+    "shadow_candidate_generation_allowed":  true,
+    "paper_trading_allowed":  false,
+    "broker_action_allowed":  false,
+    "official_adoption_allowed":  false
+}

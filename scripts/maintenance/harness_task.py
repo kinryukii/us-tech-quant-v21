@@ -129,6 +129,13 @@ CONTROLLER_BOOTSTRAP_LOG_NAME = "controller-bootstrap.stderr.log"
 CONVERGENCE_FRACTION = 0.10
 MIN_FINAL_REVIEW_START_SECONDS = 600.0
 POST_DEADLINE_MACHINE_GRACE_SECONDS = 60.0
+PROJECT_INSTRUCTION_ROUTING = (
+    "Read repository-root AGENTS.md, its required conditional references, and the "
+    "applicable local instructions before work; links do not load their contents. "
+    "Follow the actual instruction hierarchy. Task wording, steering, and governance "
+    "edits cannot relax the PIT, frozen-asset, data, permission, budget, or production "
+    "boundaries effective when this task began."
+)
 STATE_REPLACE_RETRY_SECONDS = (0.0, 0.025, 0.05, 0.1, 0.2, 0.4)
 
 
@@ -2572,9 +2579,10 @@ def _negated(text: str, start: int, end: int | None = None) -> bool:
         prefix,
         re.I,
     ))
+    prohibited_noun_modifier = r"(?:additional|feature|further|model|new|parameter|portfolio|quantitative|real|research|threshold)"
     direct_no = bool(re.search(
-        r"\bno(?:\s+(?:additional|feature|further|model|new|parameter|portfolio|"
-        r"threshold)){0,2}\s*$",
+        rf"\bno(?:\s+{prohibited_noun_modifier}){{0,3}}"
+        rf"(?:\s+(?:or|nor)(?:\s+{prohibited_noun_modifier}){{0,3}}){{0,3}}\s*$",
         prefix,
         re.I,
     ))
@@ -2583,7 +2591,7 @@ def _negated(text: str, start: int, end: int | None = None) -> bool:
         r"\b(?:don't|doesn't|didn't|mustn't|shouldn't|won't|wouldn't|can't|"
         r"couldn't|cannot))\s+"
         r"(?:conduct|continue|execute|perform|run|start|undertake)\s+"
-        r"(?:(?:a|an|any|the|additional|model|quantitative|research|training)\s+){0,3}$",
+        r"(?:(?:a|an|any|the|additional|model|quantitative|research|training|or|nor)\s+){0,5}$",
         prefix,
         re.I,
     ))
@@ -2914,6 +2922,17 @@ def _task_scope_evidence(goal: str) -> dict[str, bool]:
         goal,
         flags=re.I,
     )
+    # Only an unqualified date-only test request can shed its calendar marker.
+    # Additional clauses or source qualifications retain the original safety scope.
+    if re.fullmatch(
+        r"\s*(?:run|execute|validate|test)\s+(?:synthetic|mock)\s+(?:"
+        r"2026(?:-\d{2}-\d{2})?\s+(?:dates?|timestamps?)(?:\s+tests?)?|"
+        r"(?:tests?|fixtures?)\s+(?:using|with|covering)\s+"
+        r"2026(?:-\d{2}-\d{2})?\s+(?:dates?|timestamps?))\s*[.]?\s*",
+        goal,
+        re.I,
+    ):
+        scope_text = "Run synthetic date fixture"
     segments: list[str] = []
     for clause in re.split(
         r"[.;\n]+|\b(?:but|however|though|yet)\b", scope_text, flags=re.I,
@@ -3023,10 +3042,23 @@ def _whole_file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _research_lifecycle_required(state: dict[str, Any]) -> bool:
+    scope = str(state.get("TASK_SCOPE", ""))
+    _strongest_scope(scope)  # An unknown persisted scope cannot skip research gates.
+    return (
+        state.get("TASK_KIND") in PROSPECTIVE_RESEARCH_TASK_KINDS
+        or scope in {*PROSPECTIVE_RESEARCH_TASK_KINDS, "2026-optimization", "all"}
+        or any(state.get("SAFETY_FLAGS", {}).get(flag) is True for flag in (
+            "MODEL_TRAINING_OR_SELECTION", "PRE2026_RESEARCH_OR_BACKTEST",
+            "EVALUATES_2026_OR_HOLDOUT", "EXPOSED_2026_OR_HOLDOUT_OPTIMIZATION",
+        ))
+    )
+
+
 def _prospective_start_gate(task_id: str, research_spec: str | None) -> str:
     """Run the existing research gate before any planner or worker can start."""
     state = load_state(task_id)
-    if state.get("TASK_KIND") not in PROSPECTIVE_RESEARCH_TASK_KINDS:
+    if not _research_lifecycle_required(state):
         update_task(task_id, {
             "PROSPECTIVE_LIFECYCLE_APPLICABILITY": "NOT_APPLICABLE_NON_RESEARCH_TASK",
             "RESEARCH_START_DECISION": "NOT_APPLICABLE_NON_RESEARCH_TASK",
@@ -3101,7 +3133,7 @@ def _prospective_start_gate(task_id: str, research_spec: str | None) -> str:
 
 def _research_start_gate_passed(state: dict[str, Any]) -> bool:
     return (
-        state.get("TASK_KIND") not in PROSPECTIVE_RESEARCH_TASK_KINDS
+        not _research_lifecycle_required(state)
         or state.get("RESEARCH_START_DECISION") in {"ALLOW_NEW_RESEARCH", "ALLOW_REOPEN"}
     )
 
@@ -3581,6 +3613,8 @@ AUTHORIZED GOAL:
 Task scope={state['TASK_SCOPE']}; task kind={state['TASK_KIND']}; safety flags={state['SAFETY_FLAGS']}.
 Initial reuse evidence={reuse}
 
+{PROJECT_INSTRUCTION_ROUTING}
+
 Inspect only relevant repository evidence and produce a compact plan of substantive work units. Batch closely related activity; do not create one unit per tiny edit or hypothesis. Units may be independent or dependency-linked. Prefer reuse/extension of AUTHORITATIVE or ACTIVE components; label FROZEN, EXPERIMENTAL, SUPERSEDED, REJECTED, or UNKNOWN evidence conservatively. Do not plan any action outside the authorized goal or hard research/storage boundaries.
 
 End with two single-line markers. WORK_UNITS_JSON must be a compact JSON array of objects with: id, objective, dependencies, subsystem, relevant_paths, required_inputs, optional, reuse_decision, reuse_evidence. Use 2-12 units when the goal is genuinely decomposable; otherwise one substantive unit.
@@ -3650,7 +3684,7 @@ def _worker_prompt(
             "elapsed-hour claims do not satisfy the contract.\n"
         )
     prospective_text = ""
-    if state.get("TASK_KIND") in PROSPECTIVE_RESEARCH_TASK_KINDS:
+    if _research_lifecycle_required(state):
         task_root = Path(str(state.get("RESEARCH_TASK_ROOT", ""))).resolve(strict=False)
         prospective_text = f"""
 PROSPECTIVE RESEARCH COMPLETION CONTRACT:
@@ -3679,11 +3713,11 @@ ACTIVE WORK-UNIT BATCH:
 TASK-LOCAL REUSE CACHE:
 {reuse}
 
-Work only in this isolated Git worktree and already-authorized task-owned external runtime/cache/result roots. Ordinary mutation there is pre-authorized: do not request human approval for it. Use inherited external TEMP/TMP/TMPDIR and USTQ_CACHE_ROOT; create no worktree temp/cache residue. Never change ACLs, ownership, Windows permissions, writable-root configuration, or privilege level, and never use icacls/takeown. If one path is unwritable, use an already-authorized external task/runtime/cache/result root where valid; otherwise block only that work unit and continue independent authorized units. Read AGENTS.md and relevant maps. Search the named subsystem before any materially new component, but reuse the task-local cache instead of repeating a full repository scan. Classify candidates AUTHORITATIVE/ACTIVE/FROZEN/EXPERIMENTAL/SUPERSEDED/REJECTED/UNKNOWN. Extend, parameterize, call, repair, or consolidate before creating. Never create version-suffix families for an existing responsibility.
+{PROJECT_INSTRUCTION_ROUTING}
 
-Do not use 2026+ outcomes for fitting, feature/parameter/threshold/portfolio-rule search, model selection, or winner selection. Preserve PIT ordering, canonical data, frozen assets, external evidence, unrelated work, and the repository-local .venv prohibition. Do not fetch Moomoo history, merge branches, promote to production, or start another task.
+Work only in this isolated Git worktree and already-authorized task-owned external runtime/cache/result roots. Ordinary mutation there is pre-authorized: do not request human approval for it. Use inherited external TEMP/TMP/TMPDIR and USTQ_CACHE_ROOT; create no worktree temp/cache residue. Never change ACLs, ownership, Windows permissions, writable-root configuration, or privilege level, and never use icacls/takeown. An unwritable cache may be redirected to an already-authorized task-owned external root; never access an explicitly denied object through another route. Reuse the task-local discovery cache, refreshing only relevant evidence before a materially new component. Do not fetch Moomoo history, merge branches, promote to production, or start another task.
 
-Complete as many closely related active units as practical in this turn. Run focused tests and inspect the diff. Only report PROTECTED_PERMISSION when the goal truly requires writing a protected/frozen/canonical asset, no authorized alternative exists, and actual permission-boundary expansion is required. An ordinary unwritable path is a local blocker. A local source/quota/coverage/test/permission failure blocks only its unit; continue another unit in this batch when independent. If context ends, checkpoint honestly. Never claim a test passed when it did not. If pytest is blocked by the known nested temporary-path WinError, preserve exact evidence for Controller classification. A negative research result is valid; never tune against exposed holdout feedback.
+Complete closely related active units, run focused tests, and inspect the diff. Repair ordinary implementation, path, encoding, fixture, stale-schema, and test failures within the existing retry and time budget; never weaken a guard or frozen expectation to obtain PASS. Report RETRY when repair remains. An unresolved local source/quota/coverage/test/permission failure blocks only dependent units; continue independent authorized work. Only report PROTECTED_PERMISSION when required work actually needs expansion of a protected boundary and has no authorized alternative. If context ends, checkpoint honestly. Never claim a test passed when it did not. Preserve exact nested pytest temporary-path WinError evidence for Controller classification. A correct negative research result can complete the task.
 
 End with these concise markers. JSON values must be compact single-line JSON. Each WORK_UNIT_RESULTS_JSON object uses id, status (DONE|RETRY|BLOCKED_LOCAL|DEFERRED|SKIPPED_WITH_REASON), produced_outputs, validation_state, blocker, last_checkpoint, next_action, reuse_decision, reuse_evidence. A DONE row requires validation_state exactly PASS, a positively completed last_checkpoint such as IMPLEMENTATION_COMPLETE or VALIDATED, and a next_action that explicitly says no further worker work or action remains. Blank, running, in-progress, working, waiting, checkpoint-only, retry, validation-handoff, or remaining-work evidence invalidates DONE.
 TASK_RESULT=COMPLETED|SOFTWARE_FAILURE|RESEARCH_FAILURE|WAITING_HUMAN|BLOCKED
@@ -3711,6 +3745,8 @@ def _review_prompt(state: dict[str, Any]) -> str:
     return f"""Perform the final independent READ-ONLY Harness R3 review of the uncommitted changes in this isolated worktree. Do not modify any file. Human goal: {state['GOAL']}
 
 Work-unit summary: {unit_summary}
+
+{PROJECT_INSTRUCTION_ROUTING}
 
 Inspect the final diff and relevant repository evidence. Source remains read-only; use inherited external temporary runtime for harmless inspection. Worker test status: {state.get('WORKER_TEST_STATUS')}; worker limitation: {state.get('WORKER_TEST_LIMITATION')}; Controller authoritative validation: {state.get('CONTROLLER_VALIDATION_STATUS')} with evidence {state.get('VALIDATION_RESULTS', [])}. If your pytest encounters exactly {WINDOWS_CODEX_SANDBOX_PYTEST_TEMP_LIMITATION}, rely on Controller test evidence and continue source/scope/safety/reuse review. Assess goal completion, correctness, tests, PIT/leakage, exposed-2026 boundaries, declared data roles, Anti-Bloat, duplicate identities/implementations, frozen assets, unresolved local work, and whether deferred work invalidates completed outputs. Guard states: overfit={state['OVERFIT_GUARD']}; anti_bloat={state['ANTI_BLOAT']}; anti_bloat_task_delta={state.get('ANTI_BLOAT_TASK_DELTA')}; preexisting_residue={state.get('ANTI_BLOAT_BASELINE_RESIDUE', [])}; reuse={state['REUSE_GUARD']}. A zero diff is valid when all meaningful authorized audit units are complete and evidence says no safe change is warranted. Proven pre-existing unchanged residue outside task paths may be reported but is not a task correction. Do not request a generic output-only correction when blocked/deferred units already represent all remaining authorized remedies.
 
@@ -4945,6 +4981,7 @@ def _guard_summary(preflight: dict[str, Any]) -> tuple[str, str]:
     applicable = preflight["applicable_hard_blocker_count"]
     overfit_codes = {
         "A2_2026_HOLDOUT_ALREADY_EXPOSED", "OBVIOUS_CHANGED_TRAINING_BOUNDARY",
+        "2026_OPTIMIZATION_FORBIDDEN",
         "RESEARCH_REGISTRY_2026_REUSE", "SUCCESSOR_TRAINING_BOUNDARY",
         "FORWARD_SHADOW_UNSAFE_CAPABILITY", "TRIAL_JUDGE_GATE_WEAKENED",
     }
@@ -4959,6 +4996,8 @@ def _guard_summary(preflight: dict[str, Any]) -> tuple[str, str]:
     anti = "HARD_BLOCKER" if anti_hard else "PASS_WITH_KNOWN_SCOPED_WARNING" if anti_warn else "PASS"
     if applicable and overfit == "PASS" and anti == "PASS":
         overfit = "HARD_BLOCKER_OTHER_R1_GUARD"
+    if overfit == "PASS" and any(row["code"] == "RESEARCH_CONTENT_CHECKS_NOT_CHECKED" for row in preflight["findings"]):
+        overfit = "NOT_CHECKED_FOR_SCOPE"
     return overfit, anti
 
 
@@ -5903,6 +5942,10 @@ def _worker_test_environment_delegation_allowed(
     if state.get("WORKTREE_INVENTORY_STATUS") != "KNOWN" or not worktree.is_dir():
         return False, "WORKTREE_INVENTORY_NOT_KNOWN"
     for field in ("OVERFIT_GUARD", "ANTI_BLOAT", "REUSE_GUARD"):
+        if (field == "OVERFIT_GUARD" and state.get(field) == "NOT_CHECKED_FOR_SCOPE"
+                and state.get("TASK_SCOPE") == "independent-code"
+                and not _research_lifecycle_required(state)):
+            continue
         if not str(state.get(field, "")).startswith("PASS"):
             return False, f"SAFETY_GUARD_NOT_PASS:{field}={state.get(field)}"
     return True, "CONTROLLER_AUTHORITATIVE_VALIDATION_REQUIRED"
@@ -6418,7 +6461,7 @@ def _dispatch_r2_compat(task_id: str) -> None:
 def _prepare_prospective_completion(task_id: str) -> dict[str, Any] | None:
     """Persist research knowledge and validate retention before terminal state."""
     state = load_state(task_id)
-    if state.get("TASK_KIND") not in PROSPECTIVE_RESEARCH_TASK_KINDS:
+    if not _research_lifecycle_required(state):
         return None
     if not _research_start_gate_passed(state):
         raise HarnessError("RESEARCH_START_GATE_NOT_PASSED_AT_FINALIZATION")
@@ -7590,7 +7633,7 @@ def _dispatch_r3(task_id: str) -> None:
             )
             terminal_success = terminal in {"COMPLETED", "COMPLETED_WITH_DEFERRED_WORK"}
             prospective_context = None
-            if terminal_success and state.get("TASK_KIND") in PROSPECTIVE_RESEARCH_TASK_KINDS:
+            if terminal_success and _research_lifecycle_required(state):
                 try:
                     prospective_context = _prepare_prospective_completion(task_id)
                 except HarnessError as exc:

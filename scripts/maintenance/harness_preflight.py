@@ -127,6 +127,7 @@ def _contract_findings(repo: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     governance = repo / "config/research_governance"
     checked_models = 0
+    verified_assets = 0
     missing: list[str] = []
     for role in ("alpha", "risk", "execution"):
         path = governance / f"{role}_registry.json"
@@ -141,12 +142,17 @@ def _contract_findings(repo: Path) -> list[dict[str, Any]]:
                 artifact, expected = str(model.get(artifact_key, "UNKNOWN")), str(model.get(hash_key, "UNKNOWN")).lower()
                 if artifact.upper() == "UNKNOWN" or expected.upper() == "UNKNOWN":
                     continue
-                asset = Path(artifact)
                 blocks = ("frozen-dependent", "2026-evaluation")
+                if not re.fullmatch(r"[a-f0-9]{64}", expected):
+                    rows.append(finding("HARD_BLOCKER", "FROZEN_ASSET_HASH_MISMATCH", f"{artifact}:invalid_sha256", blocks))
+                    continue
+                asset = Path(artifact)
                 if not asset.is_file():
                     rows.append(finding("HARD_BLOCKER", "FROZEN_ASSET_MISSING", artifact, blocks))
                 elif _sha256(asset) != expected:
                     rows.append(finding("HARD_BLOCKER", "FROZEN_ASSET_HASH_MISMATCH", artifact, blocks))
+                else:
+                    verified_assets += 1
 
     judge = governance / "trial_judge_r1.json"
     if judge.is_file():
@@ -185,8 +191,15 @@ def _contract_findings(repo: Path) -> list[dict[str, Any]]:
     else:
         missing.append(open_config.relative_to(repo).as_posix())
 
-    if checked_models:
-        rows.append(finding("PASS", "RESEARCH_CONTRACTS", f"validated_models={checked_models}"))
+    if verified_assets:
+        rows.append(finding("PASS", "RESEARCH_CONTRACTS", f"registered_models={checked_models};verified_assets={verified_assets}"))
+    else:
+        rows.append(finding(
+            "HARD_BLOCKER", "FROZEN_CONTRACT_EVIDENCE_MISSING",
+            "No model/configuration artifact identity was verified for a frozen dependency or evaluation. "
+            "Missing optional registries cannot establish frozen research validity.",
+            ("frozen-dependent", "2026-evaluation"),
+        ))
     if missing:
         rows.append(finding("INFORMATIONAL", "OPTIONAL_ACTIVE_CONTRACTS_ABSENT", ",".join(missing)))
     return rows
@@ -201,17 +214,6 @@ def _holdout_status_finding(value: str) -> dict[str, Any]:
             ("2026-optimization",),
         )
     return finding("PASS", "A2_HOLDOUT_EXPOSURE", value)
-
-
-def _holdout_findings(repo: Path) -> list[dict[str, Any]]:
-    storage = _json(repo / "config/storage_paths.json")
-    results = Path(storage["results_root"])
-    status_path = results / "A2_ALGORITHM_R2_2026_FROZEN_HOLDOUT/status.json"
-    if not status_path.is_file():
-        return [finding("SOFT_WARNING", "A2_HOLDOUT_EXPOSURE_STATUS_MISSING", str(status_path), ("2026-optimization",))]
-    status = _json(status_path)
-    value = str(status.get("A2_ALGORITHM_R2_2026_FROZEN_HOLDOUT_STATUS", "UNKNOWN"))
-    return [_holdout_status_finding(value)]
 
 
 def _load_anti_bloat_guard(repo: Path):
@@ -262,16 +264,16 @@ def _anti_bloat_findings(repo: Path) -> list[dict[str, Any]]:
 
 def _git_paths(repo: Path) -> tuple[list[str], list[Path]]:
     status = subprocess.run(
-        ["git", "status", "--porcelain", "-z"], cwd=repo, capture_output=True, check=False
+        ["git", "status", "--porcelain", "-z"], cwd=repo, capture_output=True, check=True
     ).stdout.decode("utf-8", errors="replace")
     entries = [entry for entry in status.split("\0") if entry]
     changed_names = subprocess.run(
         ["git", "diff", "--name-only", "--diff-filter=ACMR", "HEAD"], cwd=repo,
-        text=True, capture_output=True, check=False,
+        text=True, capture_output=True, check=True,
     ).stdout.splitlines()
     changed_names += subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard"], cwd=repo,
-        text=True, capture_output=True, check=False,
+        text=True, capture_output=True, check=True,
     ).stdout.splitlines()
     paths = [repo / name for name in sorted(set(changed_names)) if (repo / name).is_file()]
     return entries, paths
@@ -315,16 +317,38 @@ def _changed_training_findings(repo: Path, paths: Sequence[Path]) -> list[dict[s
 
 
 def run_preflight(repo: Path = REPO, task_scope: str = "independent-code") -> dict[str, Any]:
+    """Scope controls reads, not just blocker applicability; it grants no data access."""
+    if task_scope not in TASK_SCOPES:
+        raise ValueError(f"UNKNOWN_TASK_SCOPE:{task_scope}")
     entries, paths = _git_paths(repo)
     findings = [
         finding("SOFT_WARNING", "DIRTY_WORKTREE", f"entries={len(entries)};preserve unrelated changes")
         if entries else finding("PASS", "WORKTREE", "clean"),
         finding("INFORMATIONAL", "MOOMOO_HISTORICAL_QUOTA", "not probed; historical-fetch requires its dedicated quota preflight"),
     ]
-    findings += _contract_findings(repo)
-    findings += _holdout_findings(repo)
+    findings.append(finding(
+        "HARD_BLOCKER", "2026_OPTIMIZATION_FORBIDDEN",
+        "2026+ training/search/selection is prohibited regardless of exposure status; "
+        "no holdout result or status file is read by preflight.",
+        ("2026-optimization",),
+    ))
+    # Research contracts may contain outcome fields and reference model artifacts.
+    # Only separately authorized research/frozen scopes may inspect those contents.
+    # Denied optimization needs no evidence read; independent development also must
+    # not scan arbitrary dirty JSON/configs, which can be mixed-year result files.
+    if task_scope in {*RESEARCH_SCOPES, "all"} - {"2026-optimization"}:
+        contracts = _contract_findings(repo)
+        findings += contracts
+        if not any(row["level"] == "HARD_BLOCKER" and (task_scope == "all" or task_scope in row["blocks"]) for row in contracts):
+            findings += _changed_training_findings(repo, paths)
+    else:
+        findings.append(finding(
+            "INFORMATIONAL", "RESEARCH_CONTENT_CHECKS_NOT_CHECKED",
+            "Not checked for this scope: research registries/contracts, model hashes, "
+            "and changed-file temporal scan. No research-validity claim; scoped "
+            "research validation requires its own content-read authorization.",
+        ))
     findings += _anti_bloat_findings(repo)
-    findings += _changed_training_findings(repo, paths)
     hard = [row for row in findings if row["level"] == "HARD_BLOCKER"]
     applicable = [row for row in hard if task_scope == "all" or "all" in row["blocks"] or task_scope in row["blocks"]]
     soft = [row for row in findings if row["level"] == "SOFT_WARNING"]

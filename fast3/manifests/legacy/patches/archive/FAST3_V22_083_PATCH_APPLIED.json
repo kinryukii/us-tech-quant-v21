@@ -1,0 +1,15 @@
+﻿{
+    "patch":  "FAST3_V22_083_DELAY_ROBUST_PATCH",
+    "applied_at":  "2026-08-02T00:51:47.0892451+09:00",
+    "repo_root":  "D:\\us-tech-quant",
+    "data_root":  "D:\\us-tech-quant-data",
+    "results_root":  "D:\\us-tech-quant-results",
+    "max_rounds":  96,
+    "max_generations":  4,
+    "experiments_per_generation":  40,
+    "max_total_experiments":  160,
+    "v22_081_preserved":  true,
+    "v22_082_preserved":  true,
+    "broker_action_allowed":  false,
+    "official_adoption_allowed":  false
+}

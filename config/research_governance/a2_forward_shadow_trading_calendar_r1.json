@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "calendar_id": "A2_FORWARD_SHADOW_US_SESSIONS_R1",
+  "exchange_scope": "NYSE_NASDAQ_NORMAL_FULL_DAY_SESSION_ELIGIBILITY",
+  "start_date": "2026-01-01",
+  "end_date": "2027-12-31",
+  "timezone": "America/New_York",
+  "regular_close_time": "16:00:00",
+  "early_close_policy": "SESSION_ELIGIBLE_REGULAR_CLOSE_USED_CONSERVATIVELY_FOR_COMPLETION",
+  "rules_source": "D:/us-tech-quant/fast3/src/fast3/economics/executable_payoff_ledger_calendar_hard_r26a2.py",
+  "rules_source_sha256": "b5ce1e7e45143d616289a8d9e67e2c59ff7865bdcd2666aa22bf5a5bf533f21d",
+  "rules_class": "_FrozenNyseHolidayCalendar",
+  "session_count": 501,
+  "sessions_sha256": "07be0ad0b9e1330ca027872cbe6259bb8a5f1035ea6ef0b71cf41a62963d5516",
+  "network_access_required": false,
+  "canonical_write_allowed": false,
+  "target_date_fallback_allowed": false
+}
