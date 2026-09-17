@@ -1,4 +1,4 @@
-# US Tech Quant
+# US Tech Quant v21
 
 US Tech Quant is a research-first system for point-in-time U.S. equity data,
 ranking, portfolio simulation, risk analysis, forward observation, and audited
@@ -8,6 +8,10 @@ under the external roots declared in `config/storage_paths.json`.
 
 The default posture is research-only. A backtest, ranking, dashboard, or forward
 observation does not authorize live trading, model promotion, or broker action.
+
+The public project name remains **US Tech Quant v21**. Internal identifiers such
+as `V22.xxx`, `A2`, and `FAST3` name pipeline or research revisions; they do not
+change the public project version.
 
 ## What is in the repository
 
