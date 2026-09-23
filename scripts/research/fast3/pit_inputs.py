@@ -25,7 +25,7 @@ UNIVERSE = ROOT / "A2_PIT13F_MATERIALIZATION_R1"
 STATES = Path("D:/us-tech-quant-data/sec/recovery_20260913/historical/fundamental_feature_states.parquet")
 STATES_MANIFEST = Path("D:/us-tech-quant-cache/sec_fundamental_pit_r1/derived_bulk_resume/fundamental_feature_states_manifest.json")
 CALENDAR = Path("D:/us-tech-quant-data/reference/trading_calendar/XNYS/versions/xnys_sessions_f61c8f8d47cd94ae4b75.parquet")
-NORMALIZER = Path("D:/us-tech-quant/a2_free_pit_foundation_r1.py")
+NORMALIZER = Path(__file__).resolve().parents[1] / "a2/data/a2_free_pit_foundation_r1.py"
 CUTOFF = pd.Timestamp("2026-01-01", tz="UTC")
 ET = "America/New_York"
 FUNDAMENTAL_FIELDS = (

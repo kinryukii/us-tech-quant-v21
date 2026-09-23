@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
+from urllib.parse import quote, urlsplit
 
 
 DERIVED_FIELDS = (
@@ -26,16 +27,14 @@ DERIVED_FIELDS = (
     "registry_final_status", "registry_source_refs", "registry_reopen_condition_ref",
     "inventory_status_comparison", "inventory_relocated_source_refs", "inventory_role",
 )
-SOURCE_ROOTS = (
-    "scripts", "archive/research", "fast3", "fast4", "fast5", "fast6",
-)
+SOURCE_ROOTS = ("scripts", "fast3", "fast6")
 
 
 def load_registry(repo_root: Path):
     """Load the repository's existing implementation and compact configuration."""
     repo_root = repo_root.resolve()
     spec = importlib.util.spec_from_file_location(
-        "ustq_inventory_registry", repo_root / "research_registry.py",
+        "ustq_inventory_registry", repo_root / "scripts/maintenance/research_registry.py",
     )
     if spec is None or spec.loader is None:
         raise ValueError("REGISTRY_MODULE_UNAVAILABLE")
@@ -47,6 +46,45 @@ def load_registry(repo_root: Path):
         raise ValueError("CONFIG_SCHEMA_VERSION_INVALID")
     root = Path(config["registry_root"])
     return module, root if root.is_absolute() else (config_path.parent / root).resolve()
+
+
+def _retired_catalog(repo_root: Path) -> dict[str, Any]:
+    """Load source navigation only; this catalog has no identity authority."""
+    path = repo_root / "docs/research/retired_sources.json"
+    if not path.is_file():
+        return {}
+    catalog = json.loads(path.read_text(encoding="utf-8-sig"))
+    if (not isinstance(catalog, dict) or catalog.get("schema_version") != 1
+            or not isinstance(catalog.get("entries"), list)
+            or not isinstance(catalog.get("recovery_commit"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", catalog["recovery_commit"])):
+        raise ValueError("RETIRED_SOURCE_CATALOG_SCHEMA_INVALID")
+    repository_url = catalog.get("repository_url")
+    if not isinstance(repository_url, str) or urlsplit(repository_url).scheme != "https" or not urlsplit(repository_url).netloc:
+        raise ValueError("RETIRED_SOURCE_REPOSITORY_URL_INVALID")
+    relocated = catalog.get("relocated_sources", {})
+    if not isinstance(relocated, dict) or any(not isinstance(k, str) or not isinstance(v, str) or not k or not v for k, v in relocated.items()):
+        raise ValueError("RELOCATED_SOURCE_MAP_INVALID")
+    for entry in catalog["entries"]:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("path"), str)
+                or not isinstance(entry.get("recovery_path"), str)
+                or not isinstance(entry.get("original_path", ""), str)):
+            raise ValueError("RETIRED_SOURCE_CATALOG_ENTRY_INVALID")
+    return catalog
+
+
+def _source_path_map(repo_root: Path) -> dict[str, str]:
+    catalog = _retired_catalog(repo_root)
+    mapping = dict(catalog.get("relocated_sources", {}))
+    for entry in catalog.get("entries", []):
+        recovery_url = (f"{catalog['repository_url'].rstrip('/')}/blob/"
+                        f"{catalog['recovery_commit']}/{quote(entry['recovery_path'], safe='/')}")
+        for old_path in (entry["path"], entry.get("original_path", "")):
+            if old_path:
+                if old_path in mapping and mapping[old_path] != recovery_url:
+                    raise ValueError(f"SOURCE_NAVIGATION_CONFLICT:{old_path}")
+                mapping[old_path] = recovery_url
+    return mapping
 
 
 def _text(value: Any) -> str:
@@ -105,7 +143,7 @@ def _relocated(refs: Sequence[str], path_map: Mapping[str, str], repo_root: Path
     prefix = repo_root.as_posix().rstrip("/") + "/"
     normalized_map = {key.replace("\\", "/"): value for key, value in path_map.items()}
     matches = []
-    for reference in refs:
+    for reference in dict.fromkeys(refs):
         normalized = reference.replace("\\", "/")
         relative = normalized[len(prefix):] if normalized.casefold().startswith(prefix.casefold()) else normalized
         replacement = normalized_map.get(normalized, normalized_map.get(relative))
@@ -171,6 +209,7 @@ def build_inventory(
         rows.append(row)
     for row in rows:
         identity = row["registry_entity_id"]
+        legacy_source_refs = [value.strip() for value in row.get("primary_source_path", "").split(";") if value.strip()]
         row["inventory_role"] = "DERIVED_VIEW_NOT_IDENTITY_AUTHORITY"
         row["registry_head_sha256"] = context["registry_head_sha256"]
         if not identity:
@@ -179,6 +218,7 @@ def build_inventory(
                     row[field] = ""
             row["registry_status"] = "UNREGISTERED_REVIEW_REQUIRED"
             row["inventory_status_comparison"] = "LEGACY_ID_NOT_IN_ACCEPTED_REGISTRY"
+            row["inventory_relocated_source_refs"] = _relocated(legacy_source_refs, path_map or {}, repo_root)
             continue
         entity = entities[identity]
         metadata = entity.get("metadata", {})
@@ -190,7 +230,7 @@ def build_inventory(
             "registry_source_refs": "; ".join(_references(entity)),
             "registry_reopen_condition_ref": _text(metadata.get("reopen_condition_ref")),
             "inventory_status_comparison": _comparison(row.get("branch_status", ""), entity["status"]),
-            "inventory_relocated_source_refs": _relocated(_references(entity), path_map or {}, repo_root),
+            "inventory_relocated_source_refs": _relocated([*legacy_source_refs, *_references(entity)], path_map or {}, repo_root),
         })
     return list(fields) + [field for field in DERIVED_FIELDS if field not in fields], rows
 
@@ -205,13 +245,14 @@ def markdown_inventory(rows: Sequence[Mapping[str, str]], head: str) -> str:
         "# 研究复用索引", "",
         "这是既有注册表的派生导航视图，不是新的身份、研究结论或授权依据。旧表字段原样保留；空白表示元数据未登记。",
         f"本次读取的 accepted registry head：`{head}`。", "",
-        "开始新工作前：先按机制关键词及旧别名 query，并核对未登记的本地源码；再运行既有 research_registry.py preflight-proposal。",
+        "开始新工作前：先按机制关键词及旧别名 query，并核对未登记的本地源码；再运行既有注册表的 preflight-proposal。",
         "查询覆盖全部注册状态，包括关闭和 tombstone。NOT_FOUND_REQUIRES_REVIEW 不代表允许新建；直接脚本可能未登记，后续研究仍须原有契约。",
-        "归档位置只作导航，不改写原冻结引用。状态口径或历史结论不一致会显式提示，不能据此重开研究。", "",
+        "归档位置只作导航，不改写原冻结引用。状态口径或历史结论不一致会显式提示，不能据此重开研究。",
+        "已移除的历史源码仍可通过 [Git 恢复与查重索引](retired_sources.json) 查找；文件退出当前程序不代表其研究结论失效或允许重复开发。", "",
         "```powershell",
         "python -B scripts/maintenance/research_inventory.py query --repo-root . --text \"机制关键词\"",
         "python -B scripts/maintenance/research_inventory.py query --repo-root . --alias \"旧别名\"",
-        "python -B research_registry.py preflight-proposal --proposal <proposal.json>",
+        "python -B -m scripts.maintenance.research_registry preflight-proposal --proposal <proposal.json>",
         "```", "",
         "| Canonical ID | 当前登记状态 | 旧状态 | 核对 |",
         "| --- | --- | --- | --- |",
@@ -279,9 +320,14 @@ def refresh(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("LEGACY_MANIFEST_MUST_BE_OBJECT")
     reader = csv.DictReader(io.StringIO(legacy_bytes.decode("utf-8-sig"), newline=""))
     fields, legacy_rows = reader.fieldnames or [], list(reader)
-    path_map = json.loads(args.path_map.read_text(encoding="utf-8-sig")) if args.path_map else {}
-    if not isinstance(path_map, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in path_map.items()):
+    extra_map = json.loads(args.path_map.read_text(encoding="utf-8-sig")) if args.path_map else {}
+    if not isinstance(extra_map, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in extra_map.items()):
         raise ValueError("PATH_MAP_MUST_MAP_EXACT_OLD_PATHS_TO_NEW_PATHS")
+    path_map = _source_path_map(repo)
+    for old_path, new_path in extra_map.items():
+        if old_path in path_map and path_map[old_path] != new_path:
+            raise ValueError(f"PATH_MAP_CONFLICT:{old_path}")
+        path_map[old_path] = new_path
     output.parent.mkdir(parents=True, exist_ok=True)
     context = accepted_context(registry, root, head)
     columns, rows = build_inventory(fields, legacy_rows, context, registry.normalize_alias, repo_root=repo, path_map=path_map)
@@ -338,7 +384,7 @@ def _matches(text: str, needle: str) -> bool:
 
 
 def source_matches(repo: Path, needle: str) -> list[str]:
-    """Inspect names only; no source, data, manifest or result contents are read."""
+    """Inspect current source names only; never read source or outcomes."""
     matches = [path.name for path in repo.iterdir() if path.is_file() and path.suffix.casefold() in {".py", ".ps1"} and _matches(path.name, needle)]
     def fail(error: OSError) -> None:
         raise error
@@ -353,6 +399,20 @@ def source_matches(repo: Path, needle: str) -> list[str]:
                 if path.suffix.casefold() in {".py", ".ps1"} and _matches(name, needle):
                     matches.append(path.relative_to(repo).as_posix())
     return sorted(matches)
+
+
+def retired_source_matches(repo: Path, needle: str) -> list[dict[str, str]]:
+    """Search the compact Git recovery catalog without reading retired source."""
+    catalog = _retired_catalog(repo)
+    matches = []
+    for entry in catalog.get("entries", []):
+        names = " ".join(str(entry.get(field, "")) for field in ("path", "original_path", "recovery_path"))
+        if _matches(names, needle):
+            matches.append({
+                "path": entry["path"], "original_path": entry.get("original_path", ""),
+                "git_commit": catalog["recovery_commit"], "git_path": entry["recovery_path"],
+            })
+    return sorted(matches, key=lambda entry: entry["path"])
 
 
 def query(args: argparse.Namespace) -> dict[str, Any]:
@@ -371,13 +431,15 @@ def query(args: argparse.Namespace) -> dict[str, Any]:
     if args.text:
         entities = [entity for entity in entities if _matches(json.dumps(entity, ensure_ascii=False), args.text)]
     sources = source_matches(repo, needle)
+    retired = retired_source_matches(repo, needle)
     return {
-        "status": "FOUND_REVIEW_REQUIRED" if entities or sources else "NOT_FOUND_REQUIRES_REVIEW",
+        "status": "FOUND_REVIEW_REQUIRED" if entities or sources or retired else "NOT_FOUND_REQUIRES_REVIEW",
         "registry_head_sha256": result["head_sha256"], "entities": entities,
         "source_name_matches": sources, "source_search_roots": list(SOURCE_ROOTS),
+        "retired_source_matches": retired,
         "repo_root_file_names_searched": True,
         "new_research_authorized": False,
-        "next_step": "Review prior aliases, closed branches and unregistered source; run research_registry.py preflight-proposal with the applicable contract.",
+        "next_step": "Review prior aliases, closed branches and unregistered source; run python -B -m scripts.maintenance.research_registry preflight-proposal with the applicable contract.",
     }
 
 

@@ -319,8 +319,8 @@ Claims above are intended to be inspectable rather than promotional.
 | --- | --- | --- |
 | External storage isolation | [`storage_paths.py`](../scripts/common/storage_paths.py) | [`test_storage_paths.py`](../tests/storage/test_storage_paths.py) |
 | Read-only catalog and lineage | [`storage_r2a.py`](../scripts/storage/storage_r2a.py) | [`DataStore tests`](../tests/storage/test_data_store.py), [`catalog integration`](../tests/storage/test_catalog_integration.py) |
-| Research identity | [`research_registry.py`](../research_registry.py) | [`registry tests`](../test_research_registry.py) |
-| Research lifecycle | [`prospective_research_lifecycle.py`](../prospective_research_lifecycle.py) | [`lifecycle tests`](../tests/governance/test_prospective_research_lifecycle.py) |
+| Research identity | [`research_registry.py`](../scripts/maintenance/research_registry.py) | [`registry tests`](../tests/governance/test_research_registry.py) |
+| Research lifecycle | [`prospective_research_lifecycle.py`](../scripts/maintenance/prospective_research_lifecycle.py) | [`lifecycle tests`](../tests/governance/test_prospective_research_lifecycle.py) |
 | Domain-specific governance | [`Alpha`](../config/research_governance/alpha_registry.json), [`Risk`](../config/research_governance/risk_registry.json), [`Execution`](../config/research_governance/execution_registry.json) | Hash-bound identities and explicit transition states |
 | Default test boundary | [`pytest.ini`](../pytest.ini) | [`collection isolation`](../scripts/maintenance/test_default_test_collection.py) |
 | Windows service hardening | [`R1E tests`](../scripts/v22/test_v22_047_r1e_windows_service_hardening.py) | Real control entrypoints with synthetic workers |
@@ -334,13 +334,22 @@ Claims above are intended to be inspectable rather than promotional.
 | --- | --- |
 | `scripts/storage/` | Catalog, readers, manifests, source-specific acquisition adapters |
 | `scripts/research/` | Current bounded research implementations |
+| `scripts/maintenance/` | Research registry, lifecycle, checks and Harness |
 | `scripts/v21/`, `scripts/v22/` | Current components, compatibility entrypoints, and retained historical modules |
 | `apps/demo_console/` | Read-only trilingual evidence console |
-| `fast3/`–`fast6/` | Contract- and state-governed research families |
+| `fast3/` | Contract- and state-governed FAST3 research |
+| `fast6/` | Retained data collection modules used by current providers |
 | `tests/` | Synthetic and scoped verification |
 | `docs/` | Architecture, storage, data, research, and governance documentation |
 
-Some long root-level files are retained because frozen contracts bind their exact paths or content hashes. They are compatibility surfaces, not the recommended layout for new code. See [`ROOT_AUTHORITY.md`](../ROOT_AUTHORITY.md).
+Registry and lifecycle code now lives under `scripts/maintenance/`, with its
+tests under `tests/governance/`. Source still required by current programs is
+retained in its relevant directory. Unused legacy source, including FAST4/FAST5
+and the former archive copy, has been removed from the working tree. The
+[`retired source catalog`](research/retired_sources.json) preserves exact paths,
+hashes and Git recovery locations for reuse checks; accepted research identity
+and historical conclusions remain governed by their existing records. See the
+[`repository layout`](governance/REPOSITORY_LAYOUT.md).
 
 Further reading: [`Project map`](../docs/PROJECT_MAP.md) · [`Data layer`](../docs/DATA_LAYER.md) · [`Storage layout`](../docs/STORAGE_LAYOUT.md) · [`Demo guide`](../apps/demo_console/README.md)
 

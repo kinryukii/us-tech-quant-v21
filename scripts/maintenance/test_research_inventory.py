@@ -110,22 +110,22 @@ def test_refresh_updates_existing_manifest_counts_and_hash_without_registry_muta
 
 
 def test_missing_registry_alias_still_finds_unregistered_source_names(workspace, monkeypatch):
-    source = workspace / "archive/research/legacy_mechanism.py"
+    source = workspace / "scripts/research/legacy_mechanism.py"
     source.parent.mkdir(parents=True)
     source.write_text("raise RuntimeError('must never import or read source')", encoding="utf-8")
     monkeypatch.setattr(inventory, "load_registry", lambda path: (FakeRegistry(), workspace / "registry"))
     args = argparse.Namespace(repo_root=workspace, text=None, entity_id=None, alias="legacy mechanism")
     result = inventory.query(args)
     assert result["status"] == "FOUND_REVIEW_REQUIRED"
-    assert result["source_name_matches"] == ["archive/research/legacy_mechanism.py"]
+    assert result["source_name_matches"] == ["scripts/research/legacy_mechanism.py"]
     assert result["new_research_authorized"] is False
     args.alias = "completely absent concept"
     assert inventory.query(args)["status"] == "NOT_FOUND_REQUIRES_REVIEW"
 
 
-def test_keyword_search_covers_archive_root_and_legacy_scripts_only(workspace):
-    paths = ["archive/research/legacy_mechanism.py", "legacy_mechanism.ps1", "scripts/v20/legacy_mechanism.py"]
-    for relative in paths + ["unrelated_cache/legacy_mechanism.py"]:
+def test_keyword_search_covers_current_source_roots_only(workspace):
+    paths = ["fast3/legacy_mechanism.py", "fast6/legacy_mechanism.py", "legacy_mechanism.ps1", "scripts/v20/legacy_mechanism.py"]
+    for relative in paths + ["unrelated_cache/legacy_mechanism.py", "archive/research/legacy_mechanism.py", "fast4/legacy_mechanism.py", "fast5/legacy_mechanism.py"]:
         path = workspace / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("contents must not be read", encoding="utf-8")
@@ -162,3 +162,113 @@ def test_alias_metadata_read_requires_exact_accepted_manifest_hash(workspace):
     alias_path.write_bytes(b"different bytes must not be decoded")
     with pytest.raises(ValueError, match="ACCEPTED_ALIAS_FILE_HASH_MISMATCH"):
         inventory.accepted_context(registry, workspace, head)
+
+
+def test_primary_source_navigation_is_derived_for_registered_and_unregistered_rows(workspace):
+    fields = ["canonical_branch_id", "branch_status", "primary_source_path"]
+    legacy_rows = [
+        {"canonical_branch_id": "EXISTING", "branch_status": "CLOSED_NEGATIVE", "primary_source_path": "old_root.py; scripts/v22/old.py"},
+        {"canonical_branch_id": "UNREGISTERED", "branch_status": "FAILED", "primary_source_path": "old_root.py"},
+    ]
+    path_map = {"old_root.py": "scripts/research/old_root.py", "scripts/v22/old.py": "archive/research/old.py"}
+    _, rows = inventory.build_inventory(fields, legacy_rows, context(), normalize, repo_root=workspace, path_map=path_map)
+    for original, row in zip(legacy_rows, rows):
+        assert {field: row[field] for field in fields} == original
+        assert "old_root.py => scripts/research/old_root.py" in row["inventory_relocated_source_refs"]
+    assert rows[0]["inventory_relocated_source_refs"].count("scripts/v22/old.py => archive/research/old.py") == 1
+    assert rows[0]["registry_source_refs"] == "scripts/v22/old.py"
+    assert rows[1]["registry_status"] == "UNREGISTERED_REVIEW_REQUIRED"
+
+
+def test_repeated_refresh_uses_catalog_navigation_without_replacing_original_references(workspace, monkeypatch):
+    repo, old, output = workspace / "repo", workspace / "old", workspace / "output"
+    (repo / "docs/research").mkdir(parents=True)
+    old.mkdir()
+    table = old / "research_branch_registry_current.csv"
+    table.write_text("canonical_branch_id,primary_source_path,reason\nEXISTING,old_root.py; scripts/v20/legacy_mechanism.py,old conclusion\n", encoding="utf-8")
+    (repo / "docs/research/retired_sources.json").write_text(json.dumps({
+        "schema_version": 1, "recovery_commit": "3" * 40,
+        "repository_url": "https://github.com/example/research",
+        "relocated_sources": {"old_root.py": "scripts/research/old_root.py"},
+        "entries": [{"path": "archive/research/legacy_mechanism.py",
+            "original_path": "scripts/v20/legacy_mechanism.py",
+            "recovery_path": "archive/research/legacy_mechanism.py",
+    }]}), encoding="utf-8")
+    monkeypatch.setattr(inventory, "load_registry", lambda path: (FakeRegistry(), workspace / "registry"))
+    monkeypatch.setattr(inventory, "accepted_context", lambda registry, root, head: context())
+    args = argparse.Namespace(repo_root=repo, legacy_table=table, output=output / table.name,
+        markdown_output=repo / "docs/research/README.md", manifest_output=None, path_map=None, backup_output=None)
+    inventory.refresh(args)
+    row = list(csv.DictReader(io.StringIO(args.output.read_text(encoding="utf-8"))))[0]
+    assert row["primary_source_path"] == "old_root.py; scripts/v20/legacy_mechanism.py"
+    assert row["registry_source_refs"] == "scripts/v22/old.py"
+    expected_navigation = (
+        "old_root.py => scripts/research/old_root.py; "
+        "scripts/v20/legacy_mechanism.py => https://github.com/example/research/blob/"
+        + "3" * 40 + "/archive/research/legacy_mechanism.py"
+    )
+    assert row["inventory_relocated_source_refs"] == expected_navigation
+    assert row["registry_status"] == "OPEN"
+    assert row["reason"] == "old conclusion"
+    args.legacy_table = args.output
+    args.output = workspace / "second-output" / table.name
+    inventory.refresh(args)
+    repeated = list(csv.DictReader(io.StringIO(args.output.read_text(encoding="utf-8"))))[0]
+    assert repeated == row
+    navigation = inventory._source_path_map(repo)
+    assert navigation["archive/research/legacy_mechanism.py"] == navigation["scripts/v20/legacy_mechanism.py"]
+
+
+def test_explicit_navigation_map_remains_supported(workspace, monkeypatch):
+    repo = workspace / "repo"
+    repo.mkdir()
+    table = workspace / "old.csv"
+    table.write_text("canonical_branch_id,primary_source_path\nEXISTING,old_root.py\n", encoding="utf-8")
+    mapping = workspace / "path-map.json"
+    mapping.write_text(json.dumps({"old_root.py": "scripts/research/old_root.py"}), encoding="utf-8")
+    monkeypatch.setattr(inventory, "load_registry", lambda path: (FakeRegistry(), workspace / "registry"))
+    monkeypatch.setattr(inventory, "accepted_context", lambda registry, root, head: context())
+    args = argparse.Namespace(repo_root=repo, legacy_table=table, output=workspace / "output/new.csv",
+        markdown_output=repo / "docs/research/README.md", manifest_output=None, path_map=mapping, backup_output=None)
+    inventory.refresh(args)
+    row = list(csv.DictReader(io.StringIO(args.output.read_text(encoding="utf-8"))))[0]
+    assert row["inventory_relocated_source_refs"] == "old_root.py => scripts/research/old_root.py"
+    assert row["primary_source_path"] == "old_root.py"
+
+
+def test_retired_unregistered_source_remains_a_reuse_match_without_restoring_code(workspace, monkeypatch):
+    catalog = workspace / "docs/research/retired_sources.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(json.dumps({
+        "schema_version": 1, "recovery_commit": "3" * 40,
+        "repository_url": "https://github.com/example/research",
+        "entries": [{"path": "archive/research/legacy_mechanism.py",
+            "original_path": "scripts/v20/legacy_mechanism.py",
+            "sha256": "a" * 64, "bytes": 123, "reason": "not_used_by_retained_runtime",
+            "recovery_path": "archive/research/legacy_mechanism.py"}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(inventory, "load_registry", lambda path: (FakeRegistry(), workspace / "registry"))
+    args = argparse.Namespace(repo_root=workspace, text=None, entity_id=None, alias="legacy mechanism")
+    result = inventory.query(args)
+    assert result["status"] == "FOUND_REVIEW_REQUIRED"
+    assert result["source_name_matches"] == []
+    assert result["new_research_authorized"] is False
+    assert result["retired_source_matches"] == [{
+        "path": "archive/research/legacy_mechanism.py", "original_path": "scripts/v20/legacy_mechanism.py",
+        "git_commit": "3" * 40, "git_path": "archive/research/legacy_mechanism.py",
+    }]
+    assert not (workspace / "archive/research/legacy_mechanism.py").exists()
+    assert "(retired_sources.json)" in inventory.markdown_inventory([], "a" * 64)
+
+
+def test_registry_loader_works_in_new_layout_without_a_root_compatibility_file(workspace):
+    source = workspace / "scripts/maintenance/research_registry.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("SCHEMA_VERSION = 1\n", encoding="utf-8")
+    config = workspace / "config/research_registry.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"schema_version": 1, "registry_root": "synthetic-registry"}), encoding="utf-8")
+    registry, root = inventory.load_registry(workspace)
+    assert registry.SCHEMA_VERSION == 1
+    assert root == (config.parent / "synthetic-registry").resolve()
+    assert not (workspace / "research_registry.py").exists()

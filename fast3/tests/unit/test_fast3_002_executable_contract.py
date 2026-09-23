@@ -98,7 +98,19 @@ def test_33_bloat_guard_rejects_binary_fixture(tmp_path):
     config=tmp_path/"configs"/"runtime"; config.mkdir(parents=True); shutil.copy(ROOT/"fast3"/"configs"/"runtime"/"FAST3_ANTI_BLOAT_LIMITS.json",config/"FAST3_ANTI_BLOAT_LIMITS.json"); (tmp_path/"forbidden.parquet").write_bytes(b"x"); assert guard.bloat(tmp_path)["violations"]
 def test_34_formal_config_is_unique():
     x=json.loads((ROOT/"fast3"/"manifests"/"registries"/"FAST3_CONFIG_REGISTRY.json").read_text()); assert sum(c["canonical"] for c in x["configs"] if c["stage_id"] == "FAST3-002") == 1
-def test_35_root_compatibility_targets_exist(): assert guard.compatibility()["compatibility_wrapper_count"] == 3
+def test_35_canonical_compatibility_targets_exist():
+    result = guard.compatibility()
+    assert result["compatibility_wrapper_count"] == 3
+    assert not result["violations"]
+
+def test_canonical_compatibility_rejects_missing_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(guard, "REPO", tmp_path)
+    target = tmp_path / "fast3/compatibility"
+    target.mkdir(parents=True)
+    for name in ("run_fast3_overnight_autopilot.ps1", "start_codex_fast3_full_chain.ps1"):
+        (target / name).write_text("# synthetic canonical launcher")
+    result = guard.compatibility()
+    assert result["violations"] == ["compatibility_missing:start_codex_v22_080a.ps1"]
 def test_36_no_repo_result_directory(): assert not (ROOT/"fast3"/"outputs").exists() and not (ROOT/"fast3"/"stages").exists()
 def test_37_guard_nonzero_for_constructed_violation(monkeypatch):
     monkeypatch.setattr(guard,"architecture",lambda:{"name":"fixture","violations":["fixture_violation"]}); assert guard.main([]) == 1

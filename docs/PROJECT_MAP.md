@@ -20,22 +20,25 @@ is not permission to read its contents; use task-authorized non-result metadata.
 
 - [Runtime and development entrypoints](../README.md)
 - [Research reuse table](research/README.md): derived from the existing accepted identity registry and the retained branch table.
-- [Historical source archive](../archive/research/README.md): original bytes plus exact old-to-new path mapping.
+- [Repository layout](governance/REPOSITORY_LAYOUT.md): current code and test locations.
+- [Retired source catalog](research/retired_sources.json): old paths, hashes and exact Git recovery locations; included in reuse queries.
 
 ## Domain locations
 
 | Domain | Evidence-backed status | Start here |
 | --- | --- | --- |
-| Research identity and anti-duplication | `ACTIVE` implementation; accepted registry head controls identity | `research_registry.py`, `config/research_registry.json`, `test_research_registry.py`; external metadata-only registry, aliases and accepted manifests |
-| Research lifecycle and trials | `ACTIVE` Harness integration; per-task contracts remain scoped | `prospective_research_lifecycle.py`, `tests/governance/test_prospective_research_lifecycle.py`; existing receipts/trial records, no second registry |
+| Research identity and anti-duplication | `ACTIVE` implementation; accepted registry head controls identity | `scripts/maintenance/research_registry.py`, `config/research_registry.json`, `tests/governance/test_research_registry.py`; external metadata-only registry, aliases and accepted manifests |
+| Research lifecycle and trials | `ACTIVE` Harness integration; per-task contracts remain scoped | `scripts/maintenance/prospective_research_lifecycle.py`, `tests/governance/test_prospective_research_lifecycle.py`; existing receipts/trial records, no second registry |
 | Storage routing and canonical data | `ACTIVE`; canonical data read-only | `config/storage_paths.json`, `scripts/common/storage_paths.py`, `scripts/common/storage_paths.ps1`, `docs/STORAGE_LAYOUT.md` |
 | 13F PIT engineering | `ACTIVE` PIT utilities; individual experiments otherwise `UNKNOWN` | `scripts/v22/pit_13f_reconstruction_r1.py`, its callers/tests, and external lineage manifests |
+| Shared PIT foundation | Retained source dependency of FAST3 inputs | `scripts/research/a2/data/a2_free_pit_foundation_r1.py`; source bytes retained and loaded by the existing FAST3 PIT input adapter |
 | A / A2 alpha research | `ACTIVE` and `EXPERIMENTAL`; frozen identities only where a hash/contract says so | `scripts/v22/abcde_a2_*`, paired `test_*.py`, and, when present, `config/research_governance/alpha_registry.json` |
 | A2 risk research | `ACTIVE`; R6 is a frozen prospective reference in current evidence | `scripts/v22/a2_stock_risk_r6.py`, `scripts/v22/a2_stock_risk_r10_r11_fast_track.py`, paired tests, and the risk registry when present |
 | Execution / portfolio policy | `ACTIVE` research; adopted identities may be `FROZEN` | `scripts/v22/abcde_a2_r1c_execution_contract_freeze_r1.py`, `scripts/v22/abcde_a2_r4_portfolio_translation_using_hgb_incumbent.py`, and the execution registry when present |
 | 2026 holdout | `EVALUATION_ONLY` and already exposed for A2 | `D:\us-tech-quant-results\A2_ALGORITHM_R2_2026_FROZEN_HOLDOUT\status.json`; protected content, not an ordinary-development read target; prior exposure blocks pristine-holdout reuse/optimization |
 | Forward / prospective evaluation | `EVALUATION_ONLY`; no training/search/selection | `scripts/v22/forward_shadow/`, `config/research_governance/a2_forward_shadow_unified_r1.json`, and `docs/research_governance/` when present |
 | FAST3 | `ACTIVE` implementation, currently synthetic-only; frozen confirmation remains unread | `fast3/state/FAST3_STATE.json`, `fast3/manifests/registries/FAST3_STAGE_REGISTRY.json`, `fast3/FAST3_STATUS.md` |
+| FAST6 data collection | Retained current provider dependency | `fast6/`; follow its existing callers and data contracts |
 | FAST legacy/supersession | Mixed; use registries, not version names | `fast3/manifests/registries/`, `fast3/scripts/audit/build_fast3_inventory.py`, and compatibility/legacy mappings |
 | Tests | `ACTIVE` existing pytest system | Paired `scripts/v*/test_*.py`, `fast3/tests/`, `tests/`, and `pytest.ini` |
 | Anti-Bloat | `ACTIVE`; policy and thresholds are authoritative | `docs/governance/ANTI_BLOAT_POLICY.md`, `configs/anti_bloat_policy.toml`, `fast3/scripts/audit/run_fast3_guard.py` |
@@ -49,7 +52,9 @@ callers, then confirm status from a registry, manifest, freeze hash, or current
 task contract. If those disagree or are missing, classify it `UNKNOWN`.
 
 New A2 category work uses `scripts/research/a2/<category>/` and
-`tests/research/a2/<category>/`; preserve protected older compatibility entrypoints.
+`tests/research/a2/<category>/`; preserve older implementations still required by
+current callers or their applicable contracts. Retired files are found through
+the Git recovery catalog rather than recreated as root wrappers.
 
 ## Research contracts: read before research or data-dependent work
 
@@ -181,12 +186,13 @@ authorization; do not infer repository-wide enforcement from synthetic PASS.
 - Twenty-three unreferenced V18 `.bak` repair copies and ten unused V20 launcher
   wrappers were retired. Their exact lists and recovery commit are in
   `D:/us-tech-quant-results/_maintenance/SYSTEM_CONSOLIDATION_20260914/`.
-  All V20 Python implementations and tests remain. For a retired launcher,
-  its retained Python counterpart is listed in `legacy-launcher-deletions.json`;
-  running it remains subject to the applicable research/data authorization.
-- Legacy V20/V21 source is not globally obsolete: current references and historical
-  dependencies remain. Do not execute the broad retirement candidate plan as a
-  cleanup command. Historical inventories retain their original meaning and bytes.
+  This dated consolidation report describes the earlier layout. The later
+  repository cleanup removed unused source; consult the current Git recovery
+  catalog instead of assuming its old local paths still exist. Running restored
+  source remains subject to the applicable research/data authorization.
+- Legacy source still required by current callers is retained. Retirement follows
+  dependency review, not version names or an old candidate plan. Historical
+  inventories retain their original meaning and bytes.
 - Migrated CSV cache at `cache_root/migrated_from_repo/cache` uses transparent
   NTFS compression. All 7,701 file hashes and paths were verified unchanged;
   no cache path or dataset identity was migrated or removed.
@@ -204,7 +210,7 @@ Its recorded acceptance is not a fresh health check or permission to fetch data.
 | Inspect data catalog / prepare acquisition request | `python -m scripts.storage.manage_data status` / `plan` | Status reads catalog metadata; plan writes an explicit destination. `prices` reads actual values and needs the applicable data scope. |
 | Explicit data acquisition | `scripts/storage/refresh_market_data.py`; provider-specific `refresh_*.py` | Use their existing plan/execute parameters. Data management is separate from strategy membership; do not launch acquisition as a test. |
 | Current daily research | `scripts/v22/run_v22_044_daily_single_entrypoint_freeze_and_guard_r1.ps1` -> V22.040 -> current V21 components | `-Execute` runs the real daily chain. V21.256 remains an internal governance component, not another primary entrypoint. |
-| A2 research development | `scripts/research/a2/<category>/`, existing `research_registry.py` and `prospective_research_lifecycle.py` | Locate the accepted identity and contract first. There is no single universally safe command for all research. Frozen experiments keep their source and bindings. |
+| A2 research development | `scripts/research/a2/<category>/`, `scripts/maintenance/research_registry.py` and `scripts/maintenance/prospective_research_lifecycle.py` | Locate the accepted identity and contract first. There is no single universally safe command for all research. Historical frozen references remain unchanged and may resolve through the Git recovery catalog. |
 | Read-only research presentation | `apps/demo_console/start.ps1` | Uses `envs_root/demo-console`; reads existing artifacts through its adapters. See that app's README for the authorized presentation scope. |
 | R1E service and Dashboard V2 | `scripts/v22/start_v22_047_r1e_service.ps1`, `start_v22_047_r1e_ui.ps1`, `status_v22_047_r1e_service.ps1` | These and `install_v22_047_r1e_tasks.ps1` reuse `Get-UstqStoragePaths -RepoRoot`; task actions use external Python. A service start is not a unit test. |
 
@@ -306,16 +312,24 @@ purpose is unresolved. Frozen source bindings and other worktrees remain intact.
 
 ## Repository organization (2026-09-23)
 
-Unreferenced V18/V20 research source is preserved under
-`archive/research/legacy/scripts/`; retained current callers and their transitive
-dependencies remain at their original paths. See the archive manifest for exact
-paths and hashes. The default test collection excludes the archive. Archived
-runners require restoration of their original layout in an isolated checkout
-before reuse; moving a file does not make an old script safe to execute.
+Unused historical source has been removed from the current working tree,
+including the former `archive/research/` copy and retired FAST4/FAST5 code.
+`docs/research/retired_sources.json` records each removed file's path, hash and
+recovery path in commit `3d0783a8c864552273394358268292f6d389e99b`.
+It is a file lookup catalog, not a new registry or a scientific status decision.
+Retained current callers and their required dependencies remain available,
+including FAST3's PIT foundation and the FAST6 data-provider modules.
 
-`docs/research/README.md` is a regenerated navigation view, not another registry.
-`scripts/maintenance/research_inventory.py` reuses `research_registry.py` to
-refresh the existing external branch CSV and search every accepted status, alias
-and local source name. Old scientific conclusions remain separate from current
-identity status; discrepancies and missing registrations require review.
-The accepted registry head, frozen assets, data and live state are unchanged.
+The registry and lifecycle implementations now live in `scripts/maintenance/`;
+their tests are under `tests/governance/`. New checkouts use these locations
+directly and need no root aliases or generated wrappers. FAST3 navigation lives
+in `fast3/README.md`; its retained compatibility commands live below `fast3/`.
+
+`docs/research/README.md` remains a generated navigation view. The existing
+`scripts/maintenance/research_inventory.py` refreshes the external branch CSV
+and searches accepted identities, aliases, retained source names and retired
+source metadata. Use `python -B -m scripts.maintenance.research_registry` for
+the canonical registry CLI. Old scientific conclusions remain separate from
+current identity status; discrepancies and missing registrations require review.
+Deletion does not reopen research. Accepted registry state, external frozen
+records, data and live state are unchanged by this repository cleanup.

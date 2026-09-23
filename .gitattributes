@@ -4,6 +4,5 @@
 *.json text eol=lf
 *.csv text eol=lf
 
-# Preserve original archived source bytes across checkouts (manifest SHA-256).
-archive/research/legacy/**/*.py -text
-archive/research/legacy/**/*.ps1 -text
+# Frozen normalizer source: preserve its existing byte SHA across checkouts.
+scripts/research/a2/data/a2_free_pit_foundation_r1.py -text

@@ -125,3 +125,14 @@ def test_download_union_includes_pre2023_exit_without_reading_later_surface(monk
     plan = p.universe_download_plan()
     assert plan["symbols"] == ["EXITED"]
     assert plan["qualification_keys"][0]["date"] == "2021-05-03"
+
+
+def test_sealed_normalizer_survives_source_relocation():
+    # Source-only extraction never imports the historical research runner.
+    manifest = {"sources": {}}
+    frozen = {"runner_sha256": p.HASHES[p.NORMALIZER.name]}
+    normalizer = p._normalizer(manifest, frozen)
+    assert normalizer("TEST CORPORATION") == normalizer("Test Corp.")
+    assert manifest["sources"][str(p.NORMALIZER)]["sha256"] == frozen["runner_sha256"]
+    with pytest.raises(p.SourceContractError, match="NORMALIZER_NOT_SEALED"):
+        p._normalizer({"sources": {}}, {"runner_sha256": "0" * 64})

@@ -7258,7 +7258,9 @@ def test_prospective_real_entrypoint_orders_finalize_cleanup_and_retirement(
     storage = use_supervisor_test_storage(isolated_roots, monkeypatch)
     storage.repo_root = module.REPO
     (module.REPO / "config").mkdir(parents=True)
-    shutil.copy2(REPOSITORY_ROOT / "research_registry.py", module.REPO / "research_registry.py")
+    registry_relative = Path("scripts/maintenance/research_registry.py")
+    (module.REPO / registry_relative).parent.mkdir(parents=True)
+    shutil.copy2(REPOSITORY_ROOT / registry_relative, module.REPO / registry_relative)
     registry_root = storage.results_root / "synthetic-existing-registry"
     (module.REPO / "config" / "research_registry.json").write_text(json.dumps({
         "schema_version": 1, "registry_root": str(registry_root),

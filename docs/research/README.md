@@ -3,14 +3,15 @@
 这是既有注册表的派生导航视图，不是新的身份、研究结论或授权依据。旧表字段原样保留；空白表示元数据未登记。
 本次读取的 accepted registry head：`65af5778307750e26e3d287ed47d33ad93e7513ba4d2f3d3f6988fc9290756da`。
 
-开始新工作前：先按机制关键词及旧别名 query，并核对未登记的本地源码；再运行既有 research_registry.py preflight-proposal。
+开始新工作前：先按机制关键词及旧别名 query，并核对未登记的本地源码；再运行既有注册表的 preflight-proposal。
 查询覆盖全部注册状态，包括关闭和 tombstone。NOT_FOUND_REQUIRES_REVIEW 不代表允许新建；直接脚本可能未登记，后续研究仍须原有契约。
 归档位置只作导航，不改写原冻结引用。状态口径或历史结论不一致会显式提示，不能据此重开研究。
+已移除的历史源码仍可通过 [Git 恢复与查重索引](retired_sources.json) 查找；文件退出当前程序不代表其研究结论失效或允许重复开发。
 
 ```powershell
 python -B scripts/maintenance/research_inventory.py query --repo-root . --text "机制关键词"
 python -B scripts/maintenance/research_inventory.py query --repo-root . --alias "旧别名"
-python -B research_registry.py preflight-proposal --proposal <proposal.json>
+python -B -m scripts.maintenance.research_registry preflight-proposal --proposal <proposal.json>
 ```
 
 | Canonical ID | 当前登记状态 | 旧状态 | 核对 |

@@ -317,7 +317,7 @@ def compatibility():
     targets = {"run_fast3_overnight_autopilot.ps1": "fast3\\compatibility\\run_fast3_overnight_autopilot.ps1", "start_codex_fast3_full_chain.ps1": "fast3\\compatibility\\start_codex_fast3_full_chain.ps1", "start_codex_v22_080a.ps1": "fast3\\compatibility\\start_codex_v22_080a.ps1"}
     bad = []
     for old, relative in targets.items():
-        if not (REPO / old).is_file() or not (REPO / relative).is_file(): bad.append(f"compatibility_missing:{old}")
+        if not (REPO / relative).is_file(): bad.append(f"compatibility_missing:{old}")
     return {"name": "compatibility", "violations": bad, "compatibility_wrapper_count": len(targets)}
 
 

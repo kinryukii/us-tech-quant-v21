@@ -25,7 +25,7 @@ from typing import Any, Callable, Iterator, Sequence
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = Path(__file__).resolve()
 R1_PREFLIGHT = SCRIPT.with_name("harness_preflight.py")
-PROSPECTIVE_LIFECYCLE = REPO / "prospective_research_lifecycle.py"
+PROSPECTIVE_LIFECYCLE = REPO / "scripts/maintenance/prospective_research_lifecycle.py"
 POLICY = REPO / "configs/anti_bloat_policy.toml"
 TERMINAL_STATES = {"STOPPED", "COMPLETED", "COMPLETED_WITH_DEFERRED_WORK", "FAILED"}
 ACTIVE_STATES = {"PLANNING", "RUNNING", "PAUSING", "REVIEWING", "STOPPING"}

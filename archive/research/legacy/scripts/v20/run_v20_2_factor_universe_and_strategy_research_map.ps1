@@ -1,1 +1,0 @@
-python "$PSScriptRoot/v20_2_factor_universe_and_strategy_research_map.py"

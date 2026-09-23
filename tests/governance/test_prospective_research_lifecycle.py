@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import prospective_research_lifecycle as lifecycle
+from scripts.maintenance import prospective_research_lifecycle as lifecycle
 
 
 @pytest.fixture
@@ -60,6 +60,12 @@ def research_spec(task_root: Path, **changes: object) -> dict[str, object]:
     }
     value.update(changes)
     return lifecycle.normalize_research_spec(value)
+
+
+def stage_registry(repo: Path) -> None:
+    target = repo / "scripts/maintenance/research_registry.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(lifecycle.__file__).with_name("research_registry.py"), target)
 
 
 def prior_entity(spec: dict[str, object], status: str = "CLOSED_NEGATIVE") -> dict[str, object]:
@@ -547,11 +553,74 @@ def test_host_cleanup_is_exact_and_hash_gated(tmp_path: Path) -> None:
     assert kept.exists()
 
 
+def test_previous_physical_completion_references_violate_registry_firewall() -> None:
+    registry = lifecycle._registry_module(Path(lifecycle.__file__).resolve().parents[2])
+    physical_reference = (
+        "D:/synthetic/holdout-sharpe-1/retained/result_receipt.json"
+    )
+    reference_fields = (
+        "research_knowledge_ref", "final_conclusion_ref",
+        "key_result_summary_ref", "stop_reason_ref", "reopen_condition_ref",
+    )
+    operations = [{
+        "op": "add_entity",
+        "entity": {
+            "metadata": {field: physical_reference for field in reference_fields},
+        },
+    }]
+
+    with pytest.raises(
+        registry.RegistryError, match="PERFORMANCE_METRIC_VALUES_FORBIDDEN",
+    ) as raised:
+        registry._reject_outcome_fields({"operations": operations})
+
+    for field in reference_fields:
+        assert f"operations[0].entity.metadata.{field}" in str(raised.value)
+
+
+def test_completion_uses_content_addressed_receipt_reference(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    registry_root = tmp_path / "registry"
+    (repo / "config").mkdir(parents=True)
+    stage_registry(repo)
+    (repo / "config" / "research_registry.json").write_text(json.dumps({
+        "schema_version": 1, "registry_root": str(registry_root),
+    }), encoding="utf-8")
+    task_root = tmp_path / "holdout-sharpe-1" / "results" / "task"
+    task_root.mkdir(parents=True)
+    spec = research_spec(task_root)
+    knowledge = task_root / "result_receipt.json"
+    knowledge.write_text("{}", encoding="utf-8")
+    completed = receipt(spec)
+    registry = lifecycle._registry_module(repo)
+
+    result = lifecycle.apply_registry_completion(
+        repo, spec, completed, knowledge, reviewer="independent-reviewer",
+    )
+    stored = registry.query_registry(
+        registry_root, entity_id=str(spec["research_id"]),
+    )["entities"][0]
+    metadata = stored["metadata"]
+    expected_sha256 = hashlib.sha256(knowledge.read_bytes()).hexdigest()
+    expected_reference = f"receipt://sha256/{expected_sha256}"
+    reference_fields = (
+        "research_knowledge_ref", "final_conclusion_ref",
+        "key_result_summary_ref", "stop_reason_ref", "reopen_condition_ref",
+    )
+
+    assert result["status"] == "APPLIED"
+    assert metadata["research_knowledge_sha256"] == expected_sha256
+    assert all(metadata[field] == expected_reference for field in reference_fields)
+    assert str(knowledge.resolve()) not in json.dumps(metadata, sort_keys=True)
+    assert registry._performance_value_paths(metadata) == []
+    assert registry.validate_registry(registry_root)["status"] == "PASS"
+
+
 def test_existing_immutable_registry_accepts_compact_completion(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     registry_root = tmp_path / "registry"
     (repo / "config").mkdir(parents=True)
-    shutil.copy2(Path(lifecycle.__file__).with_name("research_registry.py"), repo / "research_registry.py")
+    stage_registry(repo)
     (repo / "config" / "research_registry.json").write_text(json.dumps({
         "schema_version": 1, "registry_root": str(registry_root),
     }), encoding="utf-8")
@@ -575,7 +644,7 @@ def test_existing_active_registry_row_is_closed_with_completion_knowledge(tmp_pa
     repo = tmp_path / "repo"
     registry_root = tmp_path / "registry"
     (repo / "config").mkdir(parents=True)
-    shutil.copy2(Path(lifecycle.__file__).with_name("research_registry.py"), repo / "research_registry.py")
+    stage_registry(repo)
     (repo / "config" / "research_registry.json").write_text(json.dumps({
         "schema_version": 1, "registry_root": str(registry_root),
     }), encoding="utf-8")
@@ -614,7 +683,9 @@ def test_existing_active_registry_row_is_closed_with_completion_knowledge(tmp_pa
     assert stored["status"] == "CLOSED"
     assert stored["metadata"]["prior_note"] == "keep"
     expected_sha256 = hashlib.sha256(knowledge.read_bytes()).hexdigest()
-    assert stored["metadata"]["research_knowledge_ref"] == f"receipt://sha256/{expected_sha256}"
+    assert stored["metadata"]["research_knowledge_ref"] == (
+        f"receipt://sha256/{expected_sha256}"
+    )
     assert stored["metadata"]["research_knowledge_sha256"] == expected_sha256
 
 
@@ -622,7 +693,7 @@ def test_terminal_completion_idempotency_rejects_receipt_drift(tmp_path: Path) -
     repo = tmp_path / "repo"
     registry_root = tmp_path / "registry"
     (repo / "config").mkdir(parents=True)
-    shutil.copy2(Path(lifecycle.__file__).with_name("research_registry.py"), repo / "research_registry.py")
+    stage_registry(repo)
     (repo / "config" / "research_registry.json").write_text(json.dumps({
         "schema_version": 1, "registry_root": str(registry_root),
     }), encoding="utf-8")
@@ -646,7 +717,7 @@ def test_terminal_completion_pins_receipt_hash(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     registry_root = tmp_path / "registry"
     (repo / "config").mkdir(parents=True)
-    shutil.copy2(Path(lifecycle.__file__).with_name("research_registry.py"), repo / "research_registry.py")
+    stage_registry(repo)
     (repo / "config" / "research_registry.json").write_text(json.dumps({
         "schema_version": 1, "registry_root": str(registry_root),
     }), encoding="utf-8")
