@@ -16,6 +16,12 @@ is not permission to read its contents; use task-authorized non-result metadata.
 - `EXPERIMENTAL`: bounded research, not an adopted production component.
 - `UNKNOWN`: inspect callers, tests, manifests, and evidence before use or change.
 
+## Current navigation
+
+- [Runtime and development entrypoints](../README.md)
+- [Research reuse table](research/README.md): derived from the existing accepted identity registry and the retained branch table.
+- [Historical source archive](../archive/research/README.md): original bytes plus exact old-to-new path mapping.
+
 ## Domain locations
 
 | Domain | Evidence-backed status | Start here |
@@ -297,3 +303,19 @@ available; `worktree-closeout/retirement-decisions.json` in the same maintenance
 directory records exact paths, decisions and recovery commands. The sixth
 candidate, `rx-authority-durability-r1`, remains because task ownership/recovery
 purpose is unresolved. Frozen source bindings and other worktrees remain intact.
+
+## Repository organization (2026-09-23)
+
+Unreferenced V18/V20 research source is preserved under
+`archive/research/legacy/scripts/`; retained current callers and their transitive
+dependencies remain at their original paths. See the archive manifest for exact
+paths and hashes. The default test collection excludes the archive. Archived
+runners require restoration of their original layout in an isolated checkout
+before reuse; moving a file does not make an old script safe to execute.
+
+`docs/research/README.md` is a regenerated navigation view, not another registry.
+`scripts/maintenance/research_inventory.py` reuses `research_registry.py` to
+refresh the existing external branch CSV and search every accepted status, alias
+and local source name. Old scientific conclusions remain separate from current
+identity status; discrepancies and missing registrations require review.
+The accepted registry head, frozen assets, data and live state are unchanged.

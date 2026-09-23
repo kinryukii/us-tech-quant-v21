@@ -1,3 +1,5 @@
+> 历史快照：本页保留当时的状态和命令。731 个旧研究文件已收进 [研究档案](../archive/research/README.md)。下列历史命令可能依赖原目录，不能直接作为当前运行入口。当前入口见 [项目地图](PROJECT_MAP.md)。
+
 # V20 Current Status
 
 Status date: current repository state after the V20 lane-aware observation repair.

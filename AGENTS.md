@@ -60,8 +60,13 @@ Backtests and governance validation never authorize production trading.
 
 - First inspect `git status --short` and relevant processes. Preserve unrelated
   dirty files, other branches/worktrees and running workers; never stop them.
+- Before proposing a new research implementation, search `docs/research/README.md`
+  and run `python -B -m scripts.maintenance.research_inventory query --text "<concept>"`.
+  This reuses the accepted identity registry and includes archived source names.
+  A missing identity is not permission to rebuild; inspect unregistered matches
+  and use the existing `research_registry.py preflight-proposal` gate.
 - Search names with `rg --files | rg -i '<concept>'`, then relevant symbols with
-  `rg -n -i '<terms>' scripts fast3 tests config docs` and root canonical modules.
+  `rg -n -i '<terms>' scripts archive/research fast3 tests config docs` and root canonical modules.
   Check callers, tests, configs, aliases, manifests and accepted prior conclusions.
 - Classify AUTHORITATIVE / ACTIVE / FROZEN / SUPERSEDED / EXPERIMENTAL / UNKNOWN.
   Prefer the existing canonical implementation. Explain any necessary thin

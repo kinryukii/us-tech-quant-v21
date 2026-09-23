@@ -108,3 +108,15 @@ us-tech-quanttmppytest/
 __pycache__/
 *.pyc
 *.before_*.bak
+
+# Versioned historical source only; result files and credentials stay ignored.
+!archive/research/README.md
+!archive/research/legacy/
+archive/research/legacy/**
+!archive/research/legacy/**/
+!archive/research/legacy/**/*.py
+!archive/research/legacy/**/*.ps1
+!archive/research/legacy/manifest.json
+archive/research/legacy/**/*secret*
+archive/research/legacy/**/*token*
+archive/research/legacy/**/credentials*

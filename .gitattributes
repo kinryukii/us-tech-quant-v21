@@ -3,3 +3,7 @@
 *.md text eol=lf
 *.json text eol=lf
 *.csv text eol=lf
+
+# Preserve original archived source bytes across checkouts (manifest SHA-256).
+archive/research/legacy/**/*.py -text
+archive/research/legacy/**/*.ps1 -text
