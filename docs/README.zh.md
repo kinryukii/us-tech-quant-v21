@@ -7,21 +7,21 @@
 
 [项目概览](#overview) · [架构](#architecture) · [技术设计](#engineering) · [研究体系](#research) · [运行演示](#quickstart) · [验证](#verification) · [源码导航](#navigation)
 
-> **当前验证：** 2026-10-01，默认合成回归 **203 passed**。这是指定工程测试集的结果，不能替代策略有效性或实盘验证。完整数据、模型文件和研究账本位于仓库之外；公开源码包含一个可用合成数据运行的模拟工作台。
+> **当前验证：** 2026-10-01，默认合成回归 **203 passed**。这是指定工程测试集的结果，不能证明策略有效或已具备实盘运行条件。完整数据、模型文件和研究账本位于仓库之外；公开源码包含一个可用合成数据运行的模拟工作台。
 
 <a id="overview"></a>
 ## 项目概览
 
-量化项目的难点不仅在于模型，还在于模型周围的信息与执行链：财报何时公开、历史证券身份是否正确、预测值究竟代表什么、已有持仓能否交易，以及一次失败试验能否被复盘。
+量化项目的难点不仅在于模型，还在于模型周围的信息与执行链：申报文件何时公开、历史证券身份是否正确、预测值究竟代表什么、已有持仓能否交易，以及一次失败试验能否被复盘。
 
-PIT（point-in-time）指按决策时实际可得信息重建输入；OOF（out-of-fold）指按时间折生成的样本外预测。HGB 是直方图梯度提升模型。
+PIT（point-in-time）指按决策时实际可得信息重建输入；OOF（out-of-fold）指按时间顺序生成的折外预测：生成该行预测的模型在拟合和选择时，不使用该行标签或未来信息。HGB 是直方图梯度提升模型。
 
 这个项目围绕这些问题实现了三类能力：
 
 | 能力 | 具体实现 | 可检查的输出 |
 | --- | --- | --- |
-| **数据与 PIT** | Parquet / SQLite 目录、来源与价格口径、13F 披露时间与证券身份 | 数据身份、公开时间、血缘和拒绝原因 |
-| **研究与组合** | 模型原生预测、成熟 OOF 桥接、风险矩阵、持仓感知组合、共同账户回放 | 冻结参数、目标权重、成本与账户约束 |
+| **数据与 PIT** | Parquet / SQLite 目录、来源与价格口径、13F 披露时间与证券身份 | 数据身份、信息可得时间戳、血缘和拒绝原因 |
+| **研究与组合** | 模型原生预测、使用标签已成熟 OOF 记录拟合的桥接、风险矩阵、持仓感知组合、共同账户回放 | 冻结参数、目标权重、成本与账户约束 |
 | **展示与模拟** | 三语 Streamlit 研究界面、标准库模拟工作台、订单核对与审计 | 决策链、持仓差额、订单状态与运行记录 |
 
 项目公开名称保留 **v21**；源码中的 `V22`、`A2` 和 `FAST3` 分别是内部管线与研究系列标识。研究实现、当前展示方案和模拟执行组件具有不同状态，不能仅凭文件名认定某个模型已被采纳。
@@ -33,13 +33,13 @@ PIT（point-in-time）指按决策时实际可得信息重建输入；OOF（out-
 flowchart TB
     Sources[行情与公开披露] --> PIT[PIT 时间 / 证券身份 / 来源检查]
     PIT --> Store[Parquet + SQLite DataStore]
-    Store --> HGB[冻结 HGB 方案发布]
+    Store --> HGB[冻结 HGB 方案产物]
     HGB --> Demo[三语 Streamlit 研究展示]
     Store --> Forecast[研究模型原生预测]
-    Forecast --> Bridge[仅用此前成熟 OOF 的桥接]
+    Forecast --> Bridge[仅用此前标签已成熟 OOF 拟合桥接]
     Bridge --> Policy[持仓感知组合目标]
     Risk[风险估计接口] --> Policy
-    Policy --> Replay[共同账户次日开盘回放]
+    Policy --> Replay[共同账户下一交易时段开盘回放]
     Registry[研究身份 / 试验记录 / 内容校验] -.-> HGB
     Registry -.-> Forecast
     Registry -.-> Replay
@@ -69,7 +69,7 @@ flowchart TB
 
 | 情况 | 是否可用于决策 | 原因 |
 | --- | --- | --- |
-| 2025-11-12 10:20 公开，决策截止为当天 09:45（纽约时间） | 否 | 披露发生在决策之后 |
+| 2025-11-12 10:20 公开，决策截止为当天 09:45（两者均为纽约时间） | 否 | 披露发生在决策之后 |
 | 同一申报用于下一交易日 09:45 的决策 | 可以进入后续检查 | 公开时间满足截止；身份、修订和资格仍须有效 |
 | 只有 ticker，缺少可靠历史身份 | 拒绝依赖计算 | 不能补造证券映射 |
 
@@ -77,9 +77,9 @@ flowchart TB
 
 ### 2. 模型预测与组合目标之间保留语义
 
-概率、横截面排名、回报预测和分位数不能直接当作同一类权重。[原生预测桥接](../scripts/research/a2/ensemble/joint_oof_bridge.py)先保留预测坐标，再用**决策之前已成熟的 OOF 记录**拟合标准化与 Ridge 桥接；每个日期总权重相等，避免候选较多的日期压倒其他日期。
+概率、横截面排名、回报预测和分位数不能直接当作同一类权重。[原生预测桥接](../scripts/research/a2/ensemble/joint_oof_bridge.py)先保留预测坐标，再用**决策之前标签已成熟的 OOF 记录**拟合标准化与 Ridge 桥接；每个日期总权重相等，避免候选较多的日期压倒其他日期。
 
-冻结后的推断只应用既有参数。对应[测试定义](../tests/research/a2/ensemble/test_joint_oof_bridge.py)覆盖成熟截止、原始坐标保留，以及追加未来记录不改变较早拟合的检查。
+冻结后的推断只应用既有参数。对应[测试定义](../tests/research/a2/ensemble/test_joint_oof_bridge.py)覆盖标签成熟截止、原始坐标保留，以及追加未来记录不改变较早拟合的检查。
 
 **取舍：** 模型可以扩展，时间边界和预测含义仍由同一接口约束。这里的统计算法来自既有库，项目工作集中在信息边界与接口组合。
 
@@ -94,12 +94,12 @@ flowchart TB
 <a id="research"></a>
 ## 研究体系与当前状态
 
-研究接口将 Alpha、Risk、Portfolio 和账户回放分层。模型名称的数量不代表有效策略数量；当前展示、研究探索和真实确认必须分别说明。
+研究接口将 Alpha、Risk、Portfolio 和账户回放分层。模型名称的数量不代表有效策略数量；当前展示方案、研究探索和真实数据确认性评价必须分别说明。
 
 | 组件 | 当前可以说明的能力 | 应保留的限制 |
 | --- | --- | --- |
 | **HGB 展示方案** | 冻结评分器与 `HGB_DIAG_5` / `HGB_FACTOR_5` 发布适配器；加载前校验内容身份 | 两种方案由用户在证据暴露后选定，不是独立测试自动选出的最优策略 |
-| **JOINT 研究接口** | 原生预测 → 成熟 OOF 桥接 → 风险与组合 → 次日开盘账户回放 | 接口和回放实现不等于模型已被采用或已证明盈利 |
+| **JOINT 研究接口** | 原生预测 → 基于标签已成熟 OOF 拟合的桥接 → 风险与组合 → 下一交易时段开盘账户回放 | 接口和回放实现不等于模型已被采用或已证明盈利 |
 | **模型探索** | 线性模型、HGB、RF / ExtraTrees；XGBoost / LightGBM / CatBoost、MLP 与部分时序网络 | 扩展依赖按任务安装，各模型的接受状态独立判断 |
 | **风险估计** | DIAG、样本协方差、Ledoit–Wolf / OAS、因子与其他研究估计接口 | 期限、单位和来源要匹配；非线性收缩依赖当前标记为阻塞 |
 | **FAST3** | 既有研究架构、契约与合成验证 | 当前为 synthetic-only；冻结 Confirmation 不作为普通开发读取目标 |
@@ -111,7 +111,7 @@ flowchart TB
 
 - 训练与开发验证严格早于 **2026-01-01**；预处理、特征选择、调参、校准和规则选择同样属于选择过程，且服从更早的 fold 与标签成熟边界。
 - 2026 测试观测与目标限定在 **[2026-01-01, 2027-01-01)**。只能在适用授权下应用已冻结状态，不更新拟合；只评价当时已发生且标签成熟的部分。
-- A2 的 2026 证据已有暴露，不能重新称为未见的独立留出集。2027 以后属于另行约定的前瞻评价。
+- A2 的 2026 证据已有暴露，不能重新称为未见的独立留出集。2027 年及以后属于另行约定的前瞻评价。
 - 本 README 展示工程和研究设计，不据此宣称收益、Sharpe、优于基准或所有输入已通过完整 PIT 认证。具体状态以适用契约和接受记录为准。
 
 <a id="quickstart"></a>
@@ -134,14 +134,15 @@ python -B -m apps.moomoo_trading_component.moomoo_component `
   --repo-root $PWD.Path --data-dir $demoState --port 8766
 ```
 
-打开 <http://127.0.0.1:8766/>，依次操作：**载入离线演示 → 预览订单与风控 → 检查资金、报价与订单差额 → 执行一轮 → 查看持仓与审计**。示例使用合成目标和价格；演示时保持手动 paper 模式，不切换券商连接。终端中按 `Ctrl+C` 停止。
+工作台当前使用中文按钮标签。打开 <http://127.0.0.1:8766/>，依次操作：**载入离线演示 → 预览订单与风控 → 检查资金、报价与订单差额 → 执行一轮 → 查看持仓与审计**。示例使用合成目标和价格；演示时保持手动 paper 模式，不切换券商连接。终端中按 `Ctrl+C` 停止。
 
 这个入口展示“目标如何变成可核对的模拟订单”。它与研究回放是两套不同用途的执行语义。已有本机环境也可使用 `apps/moomoo_trading_component/start.ps1 -Offline`，但该脚本默认复用 `daily_root/moomoo_trading_component/manual`，应先确认没有已有状态需要保留。
 
 ### B. 配置完整的本机：三语研究界面
 
 ```powershell
-# 从现有权威仓库执行；需要外部 demo-console 环境与已发布研究文件。
+# 从现有权威仓库执行。
+# 需要外部 demo-console 环境与已发布研究文件。
 Set-Location D:\us-tech-quant
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\apps\demo_console\start.ps1 -Port 8504
@@ -154,21 +155,26 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 <a id="verification"></a>
 ## 验证与复现
 
-**本次工程基线：203 passed，2026-10-01。** 从权威仓库运行：
+**已记录的工程基线：203 passed，2026-10-01。** 在配置完整的本机仓库复现默认测试集：
 
 ```powershell
 Set-Location D:\us-tech-quant
-& D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -B -m pytest -q
+$projectPython = 'D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe'
+$cacheRoot = (& $projectPython -B -c "from scripts.common.storage_paths import resolve; print(resolve().cache_root)").Trim()
+$verificationRoot = Join-Path $cacheRoot ('_maintenance\readme-verification-' + [guid]::NewGuid().ToString('N'))
+$pytestTemp = Join-Path $verificationRoot 'tmp'
+$pytestCache = Join-Path $verificationRoot 'pytest-cache'
+& $projectPython -B -m pytest -q --basetemp $pytestTemp -o "cache_dir=$pytestCache"
 ```
 
-[pytest.ini](../pytest.ini)列出精确的默认测试文件，覆盖存储、目录与来源检查、维护及服务生命周期的合成场景。临时数据与 pytest 缓存写入外部 `cache_root`。
+[pytest.ini](../pytest.ini)列出精确的默认测试文件，覆盖存储、目录与来源检查、维护及服务生命周期的合成场景。上述命令显式将临时数据与 pytest 缓存写入解析后的外部 `cache_root`，每次运行使用独立目录。
 
 | 验证层 | 本 README 的证据范围 |
 | --- | --- |
-| 默认工程回归 | 本次实际运行，203 项通过；不是全仓库测试覆盖率 |
-| 离线运行入口 | Python 3.12.10 下启动与 HTTP 检查通过；合成演示、策略预览与一次 paper 执行通过；未连接券商 |
+| 默认工程回归 | 2026-10-01 实际运行，203 项通过；不是全仓库测试覆盖率 |
+| 离线模拟流程 | 使用 Python 3.12.10 和全新的 `daily_root` 子目录验证：健康检查、首页和状态接口均返回 HTTP 200；合成演示载入、订单与风控预览及一轮 paper 执行通过。未读取真实研究结果，未连接券商，券商调用为零 |
 | 专项研究设计 | 提供源码与测试定义链接；不自动运行历史研究或扩展真实数据测试 |
-| 策略效果与泛化 | 需要适用数据、冻结契约、失败试验与合法评价；不能由工程测试推出 |
+| 策略效果与泛化 | 需要适用数据、冻结契约、失败试验与获适用授权的评价；不能由工程测试推出 |
 | 券商端到端与实盘 | 本次未验证；paper 状态和模拟成交不能替代真实执行证据 |
 
 <a id="navigation"></a>

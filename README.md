@@ -7,24 +7,24 @@ It organizes data, forecasts, portfolios, and demos around information availabil
 
 [Overview](#overview) · [Architecture](#architecture) · [Engineering](#engineering) · [Research](#research) · [Run the demos](#quickstart) · [Verification](#verification) · [Source guide](#navigation)
 
-> **Current verification:** On 2026-10-01, the default synthetic regression suite reported **203 passed**. This result covers the selected engineering test suite; it does not establish strategy effectiveness or live trading readiness. Full datasets, model artifacts, and research ledgers are stored outside the repository. The public source includes a simulation workbench that runs on synthetic data.
+> **Current verification:** On 2026-10-01, the default synthetic regression suite reported **203 passed**. This result covers the specified engineering test suite; it does not establish strategy effectiveness or live trading readiness. Full datasets, model artifacts, and research ledgers are stored outside the repository. The public source includes a simulation workbench that runs on synthetic data.
 
 <a id="overview"></a>
 ## Overview
 
 The challenge in a quantitative project extends beyond the model to the information and execution chain around it: when a filing became public, whether historical security identities are correct, what a prediction actually represents, whether existing holdings can be traded, and whether a failed experiment can be reconstructed.
 
-PIT (point-in-time) means reconstructing inputs from information available at the decision time. OOF (out-of-fold) refers to predictions generated outside each time-based training fold. HGB stands for histogram gradient boosting.
+PIT (point-in-time) means reconstructing inputs from information available at the decision time. OOF (out-of-fold) refers to chronological fold-external predictions: the predicting model's fitting and selection do not use that row's label or future information. HGB stands for histogram gradient boosting.
 
 This project implements three groups of capabilities around those questions:
 
 | Capability | Implementation | Inspectable output |
 | --- | --- | --- |
 | **Data and PIT** | Parquet / SQLite catalog, source and price conventions, 13F disclosure timing and security identity | Data identity, availability timestamps, lineage, and rejection reasons |
-| **Research and portfolios** | Native model forecasts, matured OOF bridges, risk matrices, holding-aware portfolios, and shared account replay | Frozen parameters, target weights, costs, and account constraints |
+| **Research and portfolios** | Native model forecasts, bridges fitted on label-matured OOF records, risk matrices, holding-aware portfolios, and shared account replay | Frozen parameters, target weights, costs, and account constraints |
 | **Presentation and simulation** | A trilingual Streamlit research UI, a standard-library simulation workbench, order reconciliation, and audit records | Decision chains, position differences, order status, and run records |
 
-The public project name retains **v21**. In the source, `V22`, `A2`, and `FAST3` identify internal pipelines and research series. Research implementations, published policies, and simulation components have distinct statuses; a filename alone does not establish that a model has been adopted.
+The public project name retains **v21**. In the source, `V22`, `A2`, and `FAST3` identify internal pipelines and research series. Research implementations, current presentation policies, and simulation components have distinct statuses; a filename alone does not establish that a model has been adopted.
 
 <a id="architecture"></a>
 ## Architecture
@@ -33,10 +33,10 @@ The public project name retains **v21**. In the source, `V22`, `A2`, and `FAST3`
 flowchart TB
     Sources[Market data and public disclosures] --> PIT[PIT timing / security identity / source checks]
     PIT --> Store[Parquet + SQLite DataStore]
-    Store --> HGB[Frozen HGB policy publication]
+    Store --> HGB[Frozen HGB policy artifacts]
     HGB --> Demo[Trilingual Streamlit research UI]
     Store --> Forecast[Native research model forecasts]
-    Forecast --> Bridge[Bridge fitted only on earlier matured OOF]
+    Forecast --> Bridge[Fit only on earlier label-matured OOF]
     Bridge --> Policy[Holding-aware portfolio targets]
     Risk[Risk estimation interfaces] --> Policy
     Policy --> Replay[Shared account replay at next-session open]
@@ -69,7 +69,7 @@ The following is a **synthetic illustration**, not a research observation:
 
 | Scenario | Usable for a decision? | Reason |
 | --- | --- | --- |
-| Public at 10:20 on 2025-11-12; the decision cutoff is 09:45 that day in New York | No | Disclosure occurred after the decision |
+| Public at 10:20 on 2025-11-12; the decision cutoff is 09:45 that day (both New York time) | No | Disclosure occurred after the decision |
 | The same filing is considered for a 09:45 decision on the next trading day | Eligible for further checks | Availability meets the cutoff; identity, amendments, and eligibility must still be valid |
 | Only a ticker is available, without reliable historical identity | Block the dependent calculation | A security mapping cannot be fabricated |
 
@@ -79,7 +79,7 @@ The following is a **synthetic illustration**, not a research observation:
 
 Probabilities, cross-sectional ranks, return forecasts, and quantiles cannot be treated as interchangeable weights. The [native forecast bridge](scripts/research/a2/ensemble/joint_oof_bridge.py) preserves each prediction's coordinate system, then fits scaling and a Ridge bridge on **OOF records whose labels had matured before the decision**. Each date receives equal total weight so that dates with more candidates do not dominate the fit.
 
-Frozen inference applies existing parameters only. The corresponding [test definitions](tests/research/a2/ensemble/test_joint_oof_bridge.py) cover maturity cutoffs, preservation of native coordinates, and checks that appending future records does not alter an earlier fit.
+Frozen inference applies existing parameters only. The corresponding [test definitions](tests/research/a2/ensemble/test_joint_oof_bridge.py) cover label-maturity cutoffs, preservation of native coordinates, and checks that appending future records does not alter an earlier fit.
 
 **Tradeoff:** Models can be extended while the same interface continues to constrain time boundaries and prediction meaning. The statistical algorithms come from established libraries; the project work focuses on information boundaries and interface integration.
 
@@ -99,7 +99,7 @@ The research interfaces separate Alpha, Risk, Portfolio, and account replay. The
 | Component | Capabilities supported by the implementation | Limitations to retain |
 | --- | --- | --- |
 | **HGB presentation policies** | A frozen scorer and publication adapters for `HGB_DIAG_5` / `HGB_FACTOR_5`; content identity is checked before loading | Both policies were selected by the user after evidence exposure, not automatically selected as optimal by an independent test |
-| **JOINT research interfaces** | Native forecasts → matured OOF bridge → risk and portfolio → account replay at the next session's open | Implemented interfaces and replay do not establish model adoption or profitability |
+| **JOINT research interfaces** | Native forecasts → bridge fitted on label-matured OOF → risk and portfolio → account replay at the next session's open | Implemented interfaces and replay do not establish model adoption or profitability |
 | **Model exploration** | Linear models, HGB, RF / ExtraTrees; XGBoost / LightGBM / CatBoost, MLP, and selected sequence networks | Extension dependencies are installed for the relevant task; each model's acceptance status is assessed separately |
 | **Risk estimation** | DIAG, sample covariance, Ledoit–Wolf / OAS, factor models, and other research estimation interfaces | Horizons, units, and sources must match; the nonlinear shrinkage dependency is currently marked blocked |
 | **FAST3** | Existing research architecture, contracts, and synthetic validation | Currently synthetic-only; frozen Confirmation data is outside ordinary development reads |
@@ -155,19 +155,24 @@ Open <http://127.0.0.1:8504/> and present the project through **system overview 
 <a id="verification"></a>
 ## Verification and reproduction
 
-**Engineering baseline for this update: 203 passed on 2026-10-01.** Run from the authoritative repository:
+**Recorded engineering baseline: 203 passed on 2026-10-01.** To reproduce the default suite in the configured local checkout:
 
 ```powershell
 Set-Location D:\us-tech-quant
-& D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -B -m pytest -q
+$projectPython = 'D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe'
+$cacheRoot = (& $projectPython -B -c "from scripts.common.storage_paths import resolve; print(resolve().cache_root)").Trim()
+$verificationRoot = Join-Path $cacheRoot ('_maintenance\readme-verification-' + [guid]::NewGuid().ToString('N'))
+$pytestTemp = Join-Path $verificationRoot 'tmp'
+$pytestCache = Join-Path $verificationRoot 'pytest-cache'
+& $projectPython -B -m pytest -q --basetemp $pytestTemp -o "cache_dir=$pytestCache"
 ```
 
-[pytest.ini](pytest.ini) lists the exact default test files, covering synthetic scenarios for storage, catalog and source checks, maintenance, and service lifecycle. Temporary data and the pytest cache are written to the external `cache_root`.
+[pytest.ini](pytest.ini) lists the exact default test files, covering synthetic scenarios for storage, catalog and source checks, maintenance, and service lifecycle. The commands above explicitly place temporary data and the pytest cache in a separate run directory under the resolved external `cache_root`.
 
 | Verification layer | Evidence covered by this README |
 | --- | --- |
-| Default engineering regression | Actually run for this update, with 203 tests passing; this is not whole-repository test coverage |
-| Offline simulation flow | Checked with Python 3.12.10: startup health, homepage, and state returned HTTP 200; synthetic demo loading, preview, and one execution cycle passed in paper mode, with no broker connection and zero broker calls |
+| Default engineering regression | Executed on 2026-10-01, with 203 tests passing; this is not whole-repository test coverage |
+| Offline simulation flow | Checked with Python 3.12.10 in a new `daily_root` subdirectory: health, homepage, and state endpoints each returned HTTP 200; synthetic demo loading, order and risk preview, and one execution cycle passed in paper mode. No actual research results were read, no broker was connected, and broker calls were zero |
 | Focused research design | Source and test-definition links are provided; historical research and additional real-data tests are not automatically run |
 | Strategy effectiveness and generalization | Require applicable data, frozen contracts, failed-trial records, and authorized evaluation; engineering tests cannot establish these properties |
 | Broker end-to-end behavior and live trading | Not verified in this update; paper state and simulated fills cannot substitute for real execution evidence |
