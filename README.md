@@ -1,197 +1,187 @@
 # US Tech Quant v21
 
-**面向美股的量化研究与模拟执行工程项目。**
-围绕信息可得时间组织数据、预测、组合与演示，并保留来源、时间边界和决策记录。
+**A quantitative research and simulated execution project for U.S. equities.**
+It organizes data, forecasts, portfolios, and demos around information availability, retaining source references, time boundaries, and decision records.
 
-[中文](README.md) · [日本語](docs/README.ja.md) · [English](docs/README.en.md)
+[English](README.md) · [中文](docs/README.zh.md) · [日本語](docs/README.ja.md)
 
-[项目概览](#overview) · [架构](#architecture) · [技术设计](#engineering) · [研究体系](#research) · [运行演示](#quickstart) · [验证](#verification) · [源码导航](#navigation)
+[Overview](#overview) · [Architecture](#architecture) · [Engineering](#engineering) · [Research](#research) · [Run the demos](#quickstart) · [Verification](#verification) · [Source guide](#navigation)
 
-> **当前验证：** 2026-10-01，默认合成回归 **203 passed**。这是指定工程测试集的结果，不能替代策略有效性或实盘验证。完整数据、模型文件和研究账本位于仓库之外；公开源码包含一个可用合成数据运行的模拟工作台。
+> **Current verification:** On 2026-10-01, the default synthetic regression suite reported **203 passed**. This result covers the selected engineering test suite; it does not establish strategy effectiveness or live trading readiness. Full datasets, model artifacts, and research ledgers are stored outside the repository. The public source includes a simulation workbench that runs on synthetic data.
 
 <a id="overview"></a>
-## 项目概览
+## Overview
 
-量化项目的难点不仅在于模型，还在于模型周围的信息与执行链：财报何时公开、历史证券身份是否正确、预测值究竟代表什么、已有持仓能否交易，以及一次失败试验能否被复盘。
+The challenge in a quantitative project extends beyond the model to the information and execution chain around it: when a filing became public, whether historical security identities are correct, what a prediction actually represents, whether existing holdings can be traded, and whether a failed experiment can be reconstructed.
 
-PIT（point-in-time）指按决策时实际可得信息重建输入；OOF（out-of-fold）指按时间折生成的样本外预测。HGB 是直方图梯度提升模型。
+PIT (point-in-time) means reconstructing inputs from information available at the decision time. OOF (out-of-fold) refers to predictions generated outside each time-based training fold. HGB stands for histogram gradient boosting.
 
-这个项目围绕这些问题实现了三类能力：
+This project implements three groups of capabilities around those questions:
 
-| 能力 | 具体实现 | 可检查的输出 |
+| Capability | Implementation | Inspectable output |
 | --- | --- | --- |
-| **数据与 PIT** | Parquet / SQLite 目录、来源与价格口径、13F 披露时间与证券身份 | 数据身份、公开时间、血缘和拒绝原因 |
-| **研究与组合** | 模型原生预测、成熟 OOF 桥接、风险矩阵、持仓感知组合、共同账户回放 | 冻结参数、目标权重、成本与账户约束 |
-| **展示与模拟** | 三语 Streamlit 研究界面、标准库模拟工作台、订单核对与审计 | 决策链、持仓差额、订单状态与运行记录 |
+| **Data and PIT** | Parquet / SQLite catalog, source and price conventions, 13F disclosure timing and security identity | Data identity, availability timestamps, lineage, and rejection reasons |
+| **Research and portfolios** | Native model forecasts, matured OOF bridges, risk matrices, holding-aware portfolios, and shared account replay | Frozen parameters, target weights, costs, and account constraints |
+| **Presentation and simulation** | A trilingual Streamlit research UI, a standard-library simulation workbench, order reconciliation, and audit records | Decision chains, position differences, order status, and run records |
 
-项目公开名称保留 **v21**；源码中的 `V22`、`A2` 和 `FAST3` 分别是内部管线与研究系列标识。研究实现、当前展示方案和模拟执行组件具有不同状态，不能仅凭文件名认定某个模型已被采纳。
+The public project name retains **v21**. In the source, `V22`, `A2`, and `FAST3` identify internal pipelines and research series. Research implementations, published policies, and simulation components have distinct statuses; a filename alone does not establish that a model has been adopted.
 
 <a id="architecture"></a>
-## 架构
+## Architecture
 
 ```mermaid
 flowchart TB
-    Sources[行情与公开披露] --> PIT[PIT 时间 / 证券身份 / 来源检查]
+    Sources[Market data and public disclosures] --> PIT[PIT timing / security identity / source checks]
     PIT --> Store[Parquet + SQLite DataStore]
-    Store --> HGB[冻结 HGB 方案发布]
-    HGB --> Demo[三语 Streamlit 研究展示]
-    Store --> Forecast[研究模型原生预测]
-    Forecast --> Bridge[仅用此前成熟 OOF 的桥接]
-    Bridge --> Policy[持仓感知组合目标]
-    Risk[风险估计接口] --> Policy
-    Policy --> Replay[共同账户次日开盘回放]
-    Registry[研究身份 / 试验记录 / 内容校验] -.-> HGB
+    Store --> HGB[Frozen HGB policy publication]
+    HGB --> Demo[Trilingual Streamlit research UI]
+    Store --> Forecast[Native research model forecasts]
+    Forecast --> Bridge[Bridge fitted only on earlier matured OOF]
+    Bridge --> Policy[Holding-aware portfolio targets]
+    Risk[Risk estimation interfaces] --> Policy
+    Policy --> Replay[Shared account replay at next-session open]
+    Registry[Research identity / trial records / content checks] -.-> HGB
     Registry -.-> Forecast
     Registry -.-> Replay
-    JSON[合成目标 JSON] --> Paper[模拟工作台 / 订单核对 / 审计]
+    JSON[Synthetic target JSON] --> Paper[Simulation workbench / order reconciliation / audit]
 ```
 
-图中展示的是模块职责。**冻结 HGB 展示链与 JOINT 研究链分开维护**；共同账户回放使用研究价格指数单位，模拟工作台有独立的状态与订单生命周期。
+The diagram shows module responsibilities. **The frozen HGB presentation chain and the JOINT research chain are maintained separately.** Shared account replay uses research price-index units; the simulation workbench has its own state and order lifecycle.
 
-| 层 | 技术 | 设计重点 |
+| Layer | Technology | Design focus |
 | --- | --- | --- |
-| 数据 | Python、Pandas、NumPy、PyArrow、Parquet、SQLite | 区分来源、复权口径、vintage 与 lineage |
-| 模型 | scikit-learn；可选 boosting 与 PyTorch 研究实现 | 保留回报、概率、排名、分位数等原始语义 |
-| 研究控制 | JSON、SHA-256、不可变快照与事件哈希链 | 身份查重、冻结校验、失败试验与接受状态 |
-| 展示 | Streamlit、Altair、中文 / 日文 / 英文 | 从已发布文件读取，展示日期、缺口和决策链 |
-| 模拟与服务 | Python 标准库、HTML / CSS / JavaScript、SQLite WAL、PowerShell | 文件锁、状态持久化、订单核对与进程所有权 |
+| Data | Python, Pandas, NumPy, PyArrow, Parquet, SQLite | Keep source, price adjustment, vintage, and lineage distinct |
+| Models | scikit-learn; optional boosting and PyTorch research implementations | Preserve the native meaning of returns, probabilities, ranks, and quantiles |
+| Research control | JSON, SHA-256, immutable snapshots, and event hash chains | Duplicate detection, freeze checks, failed trials, and acceptance status |
+| Presentation | Streamlit, Altair, Chinese / Japanese / English | Read published artifacts and show dates, gaps, and decision chains |
+| Simulation and services | Python standard library, HTML / CSS / JavaScript, SQLite WAL, PowerShell | File locks, persistent state, order reconciliation, and process ownership |
 
-源码、测试和小配置保存在仓库；数据、环境、缓存、实验、报告和日常状态由[共享路径配置](config/storage_paths.json)与[统一解析器](scripts/common/storage_paths.py)路由到互不嵌套的外部根。详见[存储说明](docs/STORAGE_LAYOUT.md)。
+Source, tests, and small configuration files live in the repository. Data, environments, caches, experiments, reports, and daily state are routed to distinct, non-nested external roots through the [shared path configuration](config/storage_paths.json) and [common resolver](scripts/common/storage_paths.py). See the [storage guide](docs/STORAGE_LAYOUT.md).
 
 <a id="engineering"></a>
-## 三个值得深入看的技术设计
+## Three engineering designs worth exploring
 
-### 1. 13F 按公开时间重建，而不是按季度提前使用
+### 1. Reconstruct 13F information by availability, not by reporting quarter
 
-[13F PIT 重建](scripts/v22/pit_13f_reconstruction_r1.py)依据 SEC 实际接受时间、纽约决策截止、修订语义和历史证券身份选择可用申报。`security_id` / CUSIP 与 ticker 有不同职责；仅凭 ticker 不能证明历史身份一致。机构名单按季度生效区间解析，相关逻辑位于[13F 刷新模块](scripts/storage/refresh_13f_quarter.py)。
+The [13F PIT reconstruction module](scripts/v22/pit_13f_reconstruction_r1.py) selects usable filings from SEC acceptance timestamps, New York decision cutoffs, amendment semantics, and historical security identity. `security_id` / CUSIP and ticker serve different purposes; a ticker alone cannot establish consistent historical identity. Manager rosters are resolved from quarter-effective intervals in the [13F refresh module](scripts/storage/refresh_13f_quarter.py).
 
-下面是**合成说明**，不是研究观测：
+The following is a **synthetic illustration**, not a research observation:
 
-| 情况 | 是否可用于决策 | 原因 |
+| Scenario | Usable for a decision? | Reason |
 | --- | --- | --- |
-| 2025-11-12 10:20 公开，决策截止为当天 09:45（纽约时间） | 否 | 披露发生在决策之后 |
-| 同一申报用于下一交易日 09:45 的决策 | 可以进入后续检查 | 公开时间满足截止；身份、修订和资格仍须有效 |
-| 只有 ticker，缺少可靠历史身份 | 拒绝依赖计算 | 不能补造证券映射 |
+| Public at 10:20 on 2025-11-12; the decision cutoff is 09:45 that day in New York | No | Disclosure occurred after the decision |
+| The same filing is considered for a 09:45 decision on the next trading day | Eligible for further checks | Availability meets the cutoff; identity, amendments, and eligibility must still be valid |
+| Only a ticker is available, without reliable historical identity | Block the dependent calculation | A security mapping cannot be fabricated |
 
-**取舍：** 宁愿给出缺失证据的原因，也不以今天的映射或后来的披露补齐过去。
+**Tradeoff:** Report missing evidence explicitly rather than reconstructing the past from today's mappings or later disclosures.
 
-### 2. 模型预测与组合目标之间保留语义
+### 2. Preserve semantics between model predictions and portfolio targets
 
-概率、横截面排名、回报预测和分位数不能直接当作同一类权重。[原生预测桥接](scripts/research/a2/ensemble/joint_oof_bridge.py)先保留预测坐标，再用**决策之前已成熟的 OOF 记录**拟合标准化与 Ridge 桥接；每个日期总权重相等，避免候选较多的日期压倒其他日期。
+Probabilities, cross-sectional ranks, return forecasts, and quantiles cannot be treated as interchangeable weights. The [native forecast bridge](scripts/research/a2/ensemble/joint_oof_bridge.py) preserves each prediction's coordinate system, then fits scaling and a Ridge bridge on **OOF records whose labels had matured before the decision**. Each date receives equal total weight so that dates with more candidates do not dominate the fit.
 
-冻结后的推断只应用既有参数。对应[测试定义](tests/research/a2/ensemble/test_joint_oof_bridge.py)覆盖成熟截止、原始坐标保留，以及追加未来记录不改变较早拟合的检查。
+Frozen inference applies existing parameters only. The corresponding [test definitions](tests/research/a2/ensemble/test_joint_oof_bridge.py) cover maturity cutoffs, preservation of native coordinates, and checks that appending future records does not alter an earlier fit.
 
-**取舍：** 模型可以扩展，时间边界和预测含义仍由同一接口约束。这里的统计算法来自既有库，项目工作集中在信息边界与接口组合。
+**Tradeoff:** Models can be extended while the same interface continues to constrain time boundaries and prediction meaning. The statistical algorithms come from established libraries; the project work focuses on information boundaries and interface integration.
 
-### 3. 不可交易持仓进入组合约束
+### 3. Include non-tradable holdings in portfolio constraints
 
-[组合策略](scripts/research/a2/inference/joint_portfolio_policy.py)给锁定持仓预留资金和名额；遇到缺失预测、风险输入不足或不可行目标时保留实际单位，避免在回放中凭空生成现金或清仓。
+The [portfolio policy](scripts/research/a2/inference/joint_portfolio_policy.py) reserves capital and position slots for locked holdings. When predictions are missing, risk inputs are insufficient, or targets are infeasible, it preserves actual units rather than creating cash or liquidating positions implicitly in the replay.
 
-其[测试定义](tests/research/a2/inference/test_joint_portfolio_policy.py)覆盖预留持仓、不可行组合与权重上限。持仓数量约束采用确定性近似求解，**没有全局最优保证**。
+Its [test definitions](tests/research/a2/inference/test_joint_portfolio_policy.py) cover reserved holdings, infeasible portfolios, and weight caps. The position-count constraint uses a deterministic approximate solver, with **no guarantee of global optimality**.
 
-**取舍：** 一个分数更高的新候选，不能自动抹去账户中尚无法交易的持仓。
+**Tradeoff:** A higher-scoring candidate cannot automatically erase a holding that the account is currently unable to trade.
 
 <a id="research"></a>
-## 研究体系与当前状态
+## Research framework and current status
 
-研究接口将 Alpha、Risk、Portfolio 和账户回放分层。模型名称的数量不代表有效策略数量；当前展示、研究探索和真实确认必须分别说明。
+The research interfaces separate Alpha, Risk, Portfolio, and account replay. The number of model names is not the number of effective strategies. Current presentation policies, exploratory research, and real-data confirmation must be described separately.
 
-| 组件 | 当前可以说明的能力 | 应保留的限制 |
+| Component | Capabilities supported by the implementation | Limitations to retain |
 | --- | --- | --- |
-| **HGB 展示方案** | 冻结评分器与 `HGB_DIAG_5` / `HGB_FACTOR_5` 发布适配器；加载前校验内容身份 | 两种方案由用户在证据暴露后选定，不是独立测试自动选出的最优策略 |
-| **JOINT 研究接口** | 原生预测 → 成熟 OOF 桥接 → 风险与组合 → 次日开盘账户回放 | 接口和回放实现不等于模型已被采用或已证明盈利 |
-| **模型探索** | 线性模型、HGB、RF / ExtraTrees；XGBoost / LightGBM / CatBoost、MLP 与部分时序网络 | 扩展依赖按任务安装，各模型的接受状态独立判断 |
-| **风险估计** | DIAG、样本协方差、Ledoit–Wolf / OAS、因子与其他研究估计接口 | 期限、单位和来源要匹配；非线性收缩依赖当前标记为阻塞 |
-| **FAST3** | 既有研究架构、契约与合成验证 | 当前为 synthetic-only；冻结 Confirmation 不作为普通开发读取目标 |
-| **模拟执行** | paper / 券商模拟模式、订单核对与持久化审计 | 实盘接口限定为读取；工程通过不构成实盘或收益认证 |
+| **HGB presentation policies** | A frozen scorer and publication adapters for `HGB_DIAG_5` / `HGB_FACTOR_5`; content identity is checked before loading | Both policies were selected by the user after evidence exposure, not automatically selected as optimal by an independent test |
+| **JOINT research interfaces** | Native forecasts → matured OOF bridge → risk and portfolio → account replay at the next session's open | Implemented interfaces and replay do not establish model adoption or profitability |
+| **Model exploration** | Linear models, HGB, RF / ExtraTrees; XGBoost / LightGBM / CatBoost, MLP, and selected sequence networks | Extension dependencies are installed for the relevant task; each model's acceptance status is assessed separately |
+| **Risk estimation** | DIAG, sample covariance, Ledoit–Wolf / OAS, factor models, and other research estimation interfaces | Horizons, units, and sources must match; the nonlinear shrinkage dependency is currently marked blocked |
+| **FAST3** | Existing research architecture, contracts, and synthetic validation | Currently synthetic-only; frozen Confirmation data is outside ordinary development reads |
+| **Simulated execution** | Paper / broker simulation modes, order reconciliation, and persistent audit records | Live-account interfaces are read-only; passing engineering checks does not certify live trading or returns |
 
-研究身份由[现有注册表](scripts/maintenance/research_registry.py)管理；[生命周期模块](scripts/maintenance/prospective_research_lifecycle.py)保存试验、停止原因和重开条件。查询同时利用现有源码与[退役源码索引](docs/research/retired_sources.json)，避免用改名重复既有研究。
+Research identity is managed by the [existing registry](scripts/maintenance/research_registry.py). The [lifecycle module](scripts/maintenance/prospective_research_lifecycle.py) retains trials, stop reasons, and reopening conditions. Lookup also uses existing source and the [retired-source index](docs/research/retired_sources.json), preventing renamed work from duplicating prior research.
 
-**信息边界：**
+**Information boundaries:**
 
-- 训练与开发验证严格早于 **2026-01-01**；预处理、特征选择、调参、校准和规则选择同样属于选择过程，且服从更早的 fold 与标签成熟边界。
-- 2026 测试观测与目标限定在 **[2026-01-01, 2027-01-01)**。只能在适用授权下应用已冻结状态，不更新拟合；只评价当时已发生且标签成熟的部分。
-- A2 的 2026 证据已有暴露，不能重新称为未见的独立留出集。2027 以后属于另行约定的前瞻评价。
-- 本 README 展示工程和研究设计，不据此宣称收益、Sharpe、优于基准或所有输入已通过完整 PIT 认证。具体状态以适用契约和接受记录为准。
+- Training and development validation must be strictly before **2026-01-01**. Preprocessing, feature selection, tuning, calibration, and rule selection are also part of the selection process and must respect any earlier fold and label-maturity boundaries.
+- 2026 test observations and targets are limited to **[2026-01-01, 2027-01-01)**. Frozen state may be applied only under the applicable authorization, without updating fitted state. Evaluation includes only observations that have occurred and labels that have matured as of the evaluation time.
+- A2's 2026 evidence has already been exposed and cannot be relabeled as an unseen independent holdout. Observations from 2027 onward require a separately scoped prospective evaluation.
+- This README presents engineering and research design. It does not claim returns, Sharpe ratios, outperformance, or complete PIT certification of all inputs. Applicable contracts and acceptance records determine the actual status.
 
 <a id="quickstart"></a>
-## 运行演示
+## Run the demos
 
-### A. 公开源码：合成数据模拟工作台
+### A. Public source: simulation workbench with synthetic data
 
-**需求：** Windows、PowerShell、Python 3.12（`python` 命令可用）。该手动模拟入口使用标准库，无需 Streamlit、Moomoo SDK、OpenD 或外部研究数据。
+**Requirements:** Windows, PowerShell, and Python 3.12 available as `python` on PATH. This manual simulation entrypoint uses the standard library and requires no Streamlit, Moomoo SDK, OpenD, or external research data.
 
-在独立 PowerShell 窗口运行以下命令，结束后关闭该窗口。再演示 B 时使用现有项目环境，避免继承本段的 `USTQ_DAILY_ROOT` 覆盖。
+Run these commands in a separate PowerShell window and close it when finished. Use the existing project environment for demo B so it does not inherit this section's `USTQ_DAILY_ROOT` override.
 
 ```powershell
 git clone https://github.com/kinryukii/us-tech-quant-v21.git
 Set-Location us-tech-quant-v21
 
-# 每次生成独立状态目录，位于仓库之外。
+# Create a separate state directory outside the repository for each run.
 $env:USTQ_DAILY_ROOT = Join-Path $env:LOCALAPPDATA 'US Tech Quant\demo-daily'
 $demoState = Join-Path $env:USTQ_DAILY_ROOT ('paper-' + [guid]::NewGuid().ToString('N'))
 python -B -m apps.moomoo_trading_component.moomoo_component `
   --repo-root $PWD.Path --data-dir $demoState --port 8766
 ```
 
-打开 <http://127.0.0.1:8766/>，依次操作：**载入离线演示 → 预览订单与风控 → 检查资金、报价与订单差额 → 执行一轮 → 查看持仓与审计**。示例使用合成目标和价格；演示时保持手动 paper 模式，不切换券商连接。终端中按 `Ctrl+C` 停止。
+The workbench currently uses Chinese button labels. Open <http://127.0.0.1:8766/> and follow this sequence: **载入离线演示 (Load offline demo) → 预览订单与风控 (Preview orders and risk checks) → inspect funds, quotes, and order differences → 执行一轮 (Run once) → review holdings and audit records**. The example uses synthetic targets and prices. Keep the demo in manual paper mode without switching to a broker connection. Press `Ctrl+C` in the terminal to stop it.
 
-这个入口展示“目标如何变成可核对的模拟订单”。它与研究回放是两套不同用途的执行语义。已有本机环境也可使用 `apps/moomoo_trading_component/start.ps1 -Offline`，但该脚本默认复用 `daily_root/moomoo_trading_component/manual`，应先确认没有已有状态需要保留。
+This entrypoint shows how targets become inspectable simulated orders. It and the research replay use execution semantics tailored to different purposes. An existing local installation can also use `apps/moomoo_trading_component/start.ps1 -Offline`, but that script defaults to reusing `daily_root/moomoo_trading_component/manual`; first check whether it contains state that needs to be preserved.
 
-### B. 配置完整的本机：三语研究界面
+### B. Fully configured local installation: trilingual research UI
 
 ```powershell
-# 从现有权威仓库执行；需要外部 demo-console 环境与已发布研究文件。
+# Run from the existing authoritative repository.
+# Requires the external demo-console environment and published research files.
 Set-Location D:\us-tech-quant
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\apps\demo_console\start.ps1 -Port 8504
 ```
 
-打开 <http://127.0.0.1:8504/>，沿着**系统概览 → 模型与方案 → 决策与组合 → 表现与风险 → 研究证据**展示。界面支持三语切换和个股历史查询。真实研究内容的读取仍受适用授权限制。
+Open <http://127.0.0.1:8504/> and present the project through **system overview → models and policies → decisions and portfolios → performance and risk → research evidence**. The UI supports three languages and historical queries for individual stocks. Access to actual research content remains subject to the applicable authorization.
 
-`requirements.lock.txt` 是基础环境快照，不是全项目的一键依赖清单。[研究界面依赖](apps/demo_console/requirements.txt)和[可选券商依赖](apps/moomoo_trading_component/requirements-moomoo.txt)分开管理；模型探索另有相应依赖。完整研究数据、冻结模型与账本没有随仓库分发。
+`requirements.lock.txt` is a base-environment snapshot, not a one-command dependency list for the entire project. [Research UI dependencies](apps/demo_console/requirements.txt) and [optional broker dependencies](apps/moomoo_trading_component/requirements-moomoo.txt) are maintained separately; model exploration has additional dependencies. Full research datasets, frozen models, and ledgers are not distributed with this repository.
 
 <a id="verification"></a>
-## 验证与复现
+## Verification and reproduction
 
-**本次工程基线：203 passed，2026-10-01。** 从权威仓库运行：
+**Engineering baseline for this update: 203 passed on 2026-10-01.** Run from the authoritative repository:
 
 ```powershell
 Set-Location D:\us-tech-quant
 & D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -B -m pytest -q
 ```
 
-[pytest.ini](pytest.ini)列出精确的默认测试文件，覆盖存储、目录与来源检查、维护及服务生命周期的合成场景。临时数据与 pytest 缓存写入外部 `cache_root`。
+[pytest.ini](pytest.ini) lists the exact default test files, covering synthetic scenarios for storage, catalog and source checks, maintenance, and service lifecycle. Temporary data and the pytest cache are written to the external `cache_root`.
 
-| 验证层 | 本 README 的证据范围 |
+| Verification layer | Evidence covered by this README |
 | --- | --- |
-| 默认工程回归 | 本次实际运行，203 项通过；不是全仓库测试覆盖率 |
-| 离线运行入口 | Python 3.12.10 下启动与 HTTP 检查通过；合成演示、策略预览与一次 paper 执行通过；未连接券商 |
-| 专项研究设计 | 提供源码与测试定义链接；不自动运行历史研究或扩展真实数据测试 |
-| 策略效果与泛化 | 需要适用数据、冻结契约、失败试验与合法评价；不能由工程测试推出 |
-| 券商端到端与实盘 | 本次未验证；paper 状态和模拟成交不能替代真实执行证据 |
+| Default engineering regression | Actually run for this update, with 203 tests passing; this is not whole-repository test coverage |
+| Offline simulation flow | Checked with Python 3.12.10: startup health, homepage, and state returned HTTP 200; synthetic demo loading, preview, and one execution cycle passed in paper mode, with no broker connection and zero broker calls |
+| Focused research design | Source and test-definition links are provided; historical research and additional real-data tests are not automatically run |
+| Strategy effectiveness and generalization | Require applicable data, frozen contracts, failed-trial records, and authorized evaluation; engineering tests cannot establish these properties |
+| Broker end-to-end behavior and live trading | Not verified in this update; paper state and simulated fills cannot substitute for real execution evidence |
 
 <a id="navigation"></a>
-## 源码导航
+## Source guide
 
-| 想了解什么 | 从这里开始 |
+| Topic | Start here |
 | --- | --- |
-| 项目入口与状态规则 | [项目地图](docs/PROJECT_MAP.md)、[文档目录](docs/README.md) |
-| 数据与存储 | [DataStore](scripts/storage/storage_r2a.py)、[数据层说明](docs/DATA_LAYER.md) |
-| 13F 的点时逻辑 | [PIT 重建](scripts/v22/pit_13f_reconstruction_r1.py) |
-| 当前冻结 HGB 发布链 | [selected_hgb.py](scripts/research/a2/portfolio/selected_hgb.py) |
-| 原生预测、风险与组合 | [OOF 桥接](scripts/research/a2/ensemble/joint_oof_bridge.py)、[风险估计](scripts/research/a2/risk/joint_risk_estimators.py)、[组合策略](scripts/research/a2/inference/joint_portfolio_policy.py) |
-| 研究身份与失败记录 | [注册表](scripts/maintenance/research_registry.py)、[生命周期](scripts/maintenance/prospective_research_lifecycle.py) |
-| 展示与模拟订单 | [研究界面](apps/demo_console/)、[模拟工作台](apps/moomoo_trading_component/) |
-| 开发约定与保留规则 | [AGENTS.md](AGENTS.md)、[仓库布局](docs/governance/REPOSITORY_LAYOUT.md)、[Anti-Bloat](docs/governance/ANTI_BLOAT_POLICY.md) |
-
-### 面试展示路线
-
-用约五分钟串起四个问题：**当时能知道什么 → 预测值代表什么 → 账户实际能做什么 → 如何验证与复盘**。
-
-1. 用上面的 13F 合成时间例子解释前视偏差，再打开 PIT 模块说明拒绝条件。
-2. 用 OOF 桥接说明模型输出与组合目标的区别，以及为什么成熟时间进入训练资格。
-3. 用不可交易持仓和一次离线订单预览，说明现实约束如何进入组合与执行。
-4. 展示默认工程测试、注册表与失败记录，区分代码正确性、研究有效性和实盘准备度。
-
-项目专属的工程价值在于把这些约束接入同一套可追溯工作流。基础模型沿用成熟开源实现；面试时可以据此讨论架构、数据正确性、研究方法和工程取舍，而无需依赖未经复核的成绩数字。
+| Project entrypoints and status rules | [Project map](docs/PROJECT_MAP.md), [documentation index](docs/README.md) |
+| Data and storage | [DataStore](scripts/storage/storage_r2a.py), [data-layer guide](docs/DATA_LAYER.md) |
+| Point-in-time 13F logic | [PIT reconstruction](scripts/v22/pit_13f_reconstruction_r1.py) |
+| Current frozen HGB publication chain | [selected_hgb.py](scripts/research/a2/portfolio/selected_hgb.py) |
+| Native forecasts, risk, and portfolios | [OOF bridge](scripts/research/a2/ensemble/joint_oof_bridge.py), [risk estimation](scripts/research/a2/risk/joint_risk_estimators.py), [portfolio policy](scripts/research/a2/inference/joint_portfolio_policy.py) |
+| Research identity and failed-trial records | [Registry](scripts/maintenance/research_registry.py), [lifecycle](scripts/maintenance/prospective_research_lifecycle.py) |
+| Presentation and simulated orders | [Research UI](apps/demo_console/), [simulation workbench](apps/moomoo_trading_component/) |
+| Development conventions and retention rules | [AGENTS.md](AGENTS.md), [repository layout](docs/governance/REPOSITORY_LAYOUT.md), [Anti-Bloat policy](docs/governance/ANTI_BLOAT_POLICY.md) |
