@@ -31,19 +31,19 @@ PIT（point-in-time）指按决策时实际可得信息重建输入；OOF（out-
 
 ```mermaid
 flowchart TB
-    Sources[行情与公开披露] --> PIT[PIT 时间 / 证券身份 / 来源检查]
+    Sources[行情与公开披露] --> PIT["PIT 时间 / 证券身份<br/>来源检查"]
     PIT --> Store[Parquet + SQLite DataStore]
     Store --> HGB[冻结 HGB 方案产物]
     HGB --> Demo[三语 Streamlit 研究展示]
     Store --> Forecast[研究模型原生预测]
-    Forecast --> Bridge[仅用此前标签已成熟 OOF 拟合桥接]
+    Forecast --> Bridge["桥接拟合仅使用此前<br/>标签已成熟的 OOF"]
     Bridge --> Policy[持仓感知组合目标]
     Risk[风险估计接口] --> Policy
-    Policy --> Replay[共同账户下一交易时段开盘回放]
-    Registry[研究身份 / 试验记录 / 内容校验] -.-> HGB
+    Policy --> Replay["共同账户回放<br/>下一交易时段开盘"]
+    Registry["研究身份 / 试验记录<br/>内容校验"] -.-> HGB
     Registry -.-> Forecast
     Registry -.-> Replay
-    JSON[合成目标 JSON] --> Paper[模拟工作台 / 订单核对 / 审计]
+    JSON[合成目标 JSON] --> Paper["模拟工作台<br/>订单核对 / 审计"]
 ```
 
 图中展示的是模块职责。**冻结 HGB 展示链与 JOINT 研究链分开维护**；共同账户回放使用研究价格指数单位，模拟工作台有独立的状态与订单生命周期。

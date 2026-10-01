@@ -31,19 +31,19 @@ PIT（point-in-time）は、意思決定時点で利用可能だった情報か�
 
 ```mermaid
 flowchart TB
-    Sources[市場データと公開開示] --> PIT[PIT 時刻 / 証券識別 / データソース検証]
+    Sources[市場データと公開開示] --> PIT["PIT 時刻 / 証券識別<br/>データソース検証"]
     PIT --> Store[Parquet + SQLite DataStore]
-    Store --> HGB[凍結 HGB ポリシーの成果ファイル]
+    Store --> HGB["凍結 HGB ポリシー<br/>成果ファイル"]
     HGB --> Demo[三言語 Streamlit 研究画面]
     Store --> Forecast[研究モデル本来の予測出力]
-    Forecast --> Bridge[過去にラベルが成熟した OOF のみで学習]
+    Forecast --> Bridge["過去にラベルが成熟した<br/>OOF のみで学習"]
     Bridge --> Policy[保有状態を考慮した目標ポートフォリオ]
-    Risk[リスク推定インターフェース] --> Policy
-    Policy --> Replay[共通口座 / 次の取引セッションの始値でリプレイ]
-    Registry[研究識別 / 試行記録 / 内容検証] -.-> HGB
+    Risk["リスク推定<br/>インターフェース"] --> Policy
+    Policy --> Replay["共通口座でのリプレイ<br/>次の取引セッションの始値"]
+    Registry["研究識別 / 試行記録<br/>内容検証"] -.-> HGB
     Registry -.-> Forecast
     Registry -.-> Replay
-    JSON[合成の目標 JSON] --> Paper[シミュレーション画面 / 注文照合 / 監査]
+    JSON[合成の目標 JSON] --> Paper["シミュレーション画面<br/>注文照合 / 監査"]
 ```
 
 この図は各モジュールの責務を示しています。**凍結 HGB の表示パイプラインと JOINT の研究パイプラインは別々に管理しています。** 共通口座のリプレイは研究用の価格指数単位を使い、シミュレーション画面は独立した状態と注文ライフサイクルを持ちます。

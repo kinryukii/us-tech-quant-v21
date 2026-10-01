@@ -31,19 +31,19 @@ The public project name retains **v21**. In the source, `V22`, `A2`, and `FAST3`
 
 ```mermaid
 flowchart TB
-    Sources[Market data and public disclosures] --> PIT[PIT timing / security identity / source checks]
+    Sources[Market data and public disclosures] --> PIT["PIT timing / security identity<br/>source checks"]
     PIT --> Store[Parquet + SQLite DataStore]
     Store --> HGB[Frozen HGB policy artifacts]
     HGB --> Demo[Trilingual Streamlit research UI]
     Store --> Forecast[Native research model forecasts]
-    Forecast --> Bridge[Fit only on earlier label-matured OOF]
+    Forecast --> Bridge["Fit only on earlier OOF<br/>with matured labels"]
     Bridge --> Policy[Holding-aware portfolio targets]
     Risk[Risk estimation interfaces] --> Policy
-    Policy --> Replay[Shared account replay at next-session open]
-    Registry[Research identity / trial records / content checks] -.-> HGB
+    Policy --> Replay["Shared account replay<br/>at next-session open"]
+    Registry["Research identity<br/>trial records / content checks"] -.-> HGB
     Registry -.-> Forecast
     Registry -.-> Replay
-    JSON[Synthetic target JSON] --> Paper[Simulation workbench / order reconciliation / audit]
+    JSON[Synthetic target JSON] --> Paper["Simulation workbench<br/>order reconciliation / audit"]
 ```
 
 The diagram shows module responsibilities. **The frozen HGB presentation chain and the JOINT research chain are maintained separately.** Shared account replay uses research price-index units; the simulation workbench has its own state and order lifecycle.
