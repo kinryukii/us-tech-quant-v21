@@ -31,14 +31,14 @@ PIT（point-in-time）は、意思決定時点で利用可能だった情報か�
 
 ```mermaid
 flowchart TB
-    Sources[市場データと公開開示] --> PIT[PIT 時刻 / 証券識別 / データソースの確認]
+    Sources[市場データと公開開示] --> PIT[PIT 時刻 / 証券識別 / 出所]
     PIT --> Store[Parquet + SQLite DataStore]
     Store --> HGB[凍結 HGB 構成の公開]
     HGB --> Demo[三言語 Streamlit 研究画面]
     Store --> Forecast[研究モデル本来の予測出力]
     Forecast --> Bridge[過去に成熟した OOF のみを使う変換]
     Bridge --> Policy[保有状態を考慮した目標ポートフォリオ]
-    Risk[リスク推定インターフェース] --> Policy
+    Risk[リスク推定] --> Policy
     Policy --> Replay[共通口座での翌営業日始値リプレイ]
     Registry[研究識別 / 試行記録 / 内容検証] -.-> HGB
     Registry -.-> Forecast
@@ -134,7 +134,7 @@ python -B -m apps.moomoo_trading_component.moomoo_component `
   --repo-root $PWD.Path --data-dir $demoState --port 8766
 ```
 
-<http://127.0.0.1:8766/> を開き、**「载入离线演示」（オフラインデモの読み込み）→「预览订单与风控」（戦略のプレビュー）→ 資金・気配値・注文差分の確認 →「执行一轮」（一度実行）→ 保有ポジションと監査記録の確認**の順に操作します。例では合成の目標と価格を使います。デモ中は手動 paper モードを維持し、証券会社との接続へ切り替えないでください。ターミナルで `Ctrl+C` を押すと停止します。
+このワークスペースのボタンは現在中国語表示です。<http://127.0.0.1:8766/> を開き、**「载入离线演示」（オフラインデモの読み込み）→「预览订单与风控」（注文とリスクチェックのプレビュー）→ 資金・気配値・注文差分の確認 →「执行一轮」（一度実行）→ 保有ポジションと監査記録の確認**の順に操作します。例では合成の目標と価格を使います。デモ中は手動 paper モードを維持し、証券会社との接続へ切り替えないでください。ターミナルで `Ctrl+C` を押すと停止します。
 
 このエントリーポイントでは、目標をどのように照合可能なシミュレーション注文へ変換するかを示します。研究リプレイとは用途も実行の意味も異なります。既存のローカル環境では `apps/moomoo_trading_component/start.ps1 -Offline` も利用できますが、既定で `daily_root/moomoo_trading_component/manual` を再利用するため、保持すべき状態がないか先に確認してください。
 
