@@ -13,7 +13,8 @@ _DISABLED_CSS = """
   animation: none !important;
   scroll-behavior: auto !important;
 }
-[data-testid="stButton"] button:hover { transform: none !important; }
+[data-testid="stButton"] button:hover,
+[data-testid="stLinkButton"] a:hover { transform: none !important; }
 """
 
 

@@ -1,39 +1,43 @@
-/* Content is visible without this stylesheet or JavaScript. Only opt-in polish. */
-html[data-uq-motion="enabled"] [data-testid="stButton"] button {
-  transition: transform 160ms ease, box-shadow 180ms ease, background 160ms ease;
+/* Effects are opt-in and content remains visible without JavaScript. */
+html[data-uq-motion="enabled"] [data-testid="stButton"] button,
+html[data-uq-motion="enabled"] [data-testid="stLinkButton"] a {
+  transition: transform 160ms ease, border-color 180ms ease, background 180ms ease;
 }
-html[data-uq-motion="enabled"] [data-testid="stButton"] button:not(:disabled):hover {
+html[data-uq-motion="enabled"] [data-testid="stButton"] button:not(:disabled):hover,
+html[data-uq-motion="enabled"] [data-testid="stLinkButton"] a:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 18px #273a2515;
 }
-html[data-uq-motion="enabled"] [data-testid="stButton"] button:not(:disabled):active {
+html[data-uq-motion="enabled"] [data-testid="stButton"] button:not(:disabled):active,
+html[data-uq-motion="enabled"] [data-testid="stLinkButton"] a:active {
   transform: translateY(0);
-  box-shadow: 0 2px 8px #273a2510;
+}
+html[data-uq-motion="enabled"] [data-testid="stSidebar"] [data-testid="stRadio"] label {
+  transition: background 180ms ease, border-color 180ms ease;
+}
+html[data-uq-motion="enabled"] .uq-table tbody tr {
+  transition: background 160ms ease;
 }
 html[data-uq-motion="enabled"] :is(
   .st-key-uq_chart_panel, .st-key-uq_inspector,
   .st-key-uq_history_portfolio, .st-key-uq_history_security,
   .st-key-uq_performance_path, .st-key-uq_execution_quality,
   .st-key-uq_holding_matrix, .st-key-uq_demo_tour,
-  .st-key-uq_decision_focus, .st-key-uq_research_workspace,
-  .st-key-ml_engine_workspace, .uq-ml-method-sheet
+  .st-key-uq_research_workspace, .st-key-ml_engine_workspace,
+  .st-key-applied_portfolio_canvas, .uq-ml-method-sheet
 ) {
-  transition: box-shadow 200ms ease, border-color 200ms ease;
+  transition: border-color 200ms ease;
 }
 html[data-uq-motion="enabled"] :is(
   .st-key-uq_chart_panel, .st-key-uq_inspector,
   .st-key-uq_history_portfolio, .st-key-uq_history_security,
   .st-key-uq_performance_path, .st-key-uq_execution_quality,
   .st-key-uq_holding_matrix, .st-key-uq_demo_tour,
-  .st-key-uq_decision_focus, .st-key-uq_research_workspace,
-  .st-key-ml_engine_workspace, .uq-ml-method-sheet
+  .st-key-uq_research_workspace, .st-key-ml_engine_workspace,
+  .st-key-applied_portfolio_canvas, .uq-ml-method-sheet
 ):hover {
-  box-shadow: 0 8px 26px #273a2508;
-  border-color: #a2b493;
+  border-color:#a7b7da;
 }
-/* Match reduced motion across the complete UI, including native sidebar/tab
-   transitions and future replay-progress descendants or pseudo-elements.
-   Final colors/widths and interaction state still update immediately. */
+/* Explicit off covers native controls, progress, and future descendants. */
 html[data-uq-motion="disabled"] *,
 html[data-uq-motion="disabled"] *::before,
 html[data-uq-motion="disabled"] *::after {
@@ -41,7 +45,8 @@ html[data-uq-motion="disabled"] *::after {
   animation: none !important;
   scroll-behavior: auto !important;
 }
-html[data-uq-motion="disabled"] [data-testid="stButton"] button:hover {
+html[data-uq-motion="disabled"] [data-testid="stButton"] button:hover,
+html[data-uq-motion="disabled"] [data-testid="stLinkButton"] a:hover {
   transform: none !important;
 }
 @media (prefers-reduced-motion: reduce) {
@@ -50,7 +55,8 @@ html[data-uq-motion="disabled"] [data-testid="stButton"] button:hover {
     animation: none !important;
     scroll-behavior: auto !important;
   }
-  [data-testid="stButton"] button:hover {
+  [data-testid="stButton"] button:hover,
+  [data-testid="stLinkButton"] a:hover {
     transform: none !important;
   }
 }

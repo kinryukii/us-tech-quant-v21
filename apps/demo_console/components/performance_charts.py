@@ -9,6 +9,8 @@ from apps.demo_console.i18n import tr
 from apps.demo_console.components.market_benchmarks import BENCHMARK_COLORS, benchmark_label
 from apps.demo_console.components.performance_lines import line_end_labels, line_label_x_range
 
+STRATEGY_COLORS = {"RAW_A2": "#2357d9", "HGB_DIAG_5": "#d97706", "HGB_FACTOR_5": "#087f71"}
+
 
 def _style(chart):
     # Heights below describe the complete frame, including axes and legends.
@@ -48,9 +50,65 @@ def _date_axis(records, *, title=None):
                                labelOverlap=True, labelFlush=True))
 
 
+def nav_comparison_chart(series, *, baseline=1.0, title="NAV", percent=False, colors=None, dashed=()):
+    """Show already rebased observed paths on an exactly shared recorded calendar."""
+    calendars = [tuple(row["execution_date"] for row in points) for points in series.values()]
+    if not calendars or not calendars[0] or any(dates != calendars[0] for dates in calendars[1:]):
+        raise ValueError("Compared paths require the same nonempty recorded dates")
+    records = [{"execution_date": row["execution_date"], "value": row["value"], "series": label}
+               for label, points in series.items() for row in points]
+    values = [baseline, *(row["value"] for row in records)]
+    low, high = min(values), max(values)
+    padding = (high - low) * .06 or .04
+    axis = _date_axis([{"execution_date": day} for day in calendars[0]], title=tr("Execution date"))
+    axis.scale = alt.Scale(domain=axis.to_dict()["scale"]["domain"], nice=False)
+    known_colors = {tr("Raw A2"): STRATEGY_COLORS["RAW_A2"],
+                    tr("HGB + diagonal risk"): STRATEGY_COLORS["HGB_DIAG_5"],
+                    tr("HGB + factor / shrinkage risk"): STRATEGY_COLORS["HGB_FACTOR_5"],
+                    "HGB＋对角风险": STRATEGY_COLORS["HGB_DIAG_5"],
+                    "HGB＋因子／收缩风险": STRATEGY_COLORS["HGB_FACTOR_5"]}
+    known_colors.update(colors or {})
+    palette = [known_colors.get(label, ["#2357d9", "#d97706", "#087f71", "#87929d"][i % 4])
+               for i, label in enumerate(series)]
+    legend_labels={label:label for label in series}
+    for label in (tr("HGB + diagonal risk"),"HGB＋对角风险"):
+        if label in legend_labels:legend_labels[label]=tr("HGB · Diagonal")
+    for label in (tr("HGB + factor / shrinkage risk"),"HGB＋因子／收缩风险"):
+        if label in legend_labels:legend_labels[label]=tr("HGB · Factor")
+    # Keep legend rows fixed during Streamlit SVG resizing. A columns width
+    # expression can leave Vega fit's top padding stale after a resize.
+    lines = (alt.Chart(alt.Data(values=records)).mark_line(clip=True, strokeWidth=3,
+                        point=alt.OverlayMarkDef(filled=True, size=65) if len(calendars[0]) == 1 else False)
+            .encode(x=axis,
+                    y=alt.Y("value:Q", title=tr(title),
+                            scale=alt.Scale(domain=[low - padding, high + padding], zero=False, nice=False),
+                            axis=alt.Axis(format=".1%" if percent else ".2f")),
+                    color=alt.Color("series:N", title=None,
+                                    scale=alt.Scale(domain=list(series), range=palette),
+                                    legend=alt.Legend(orient="top", labelExpr=_legend(legend_labels),
+                                                      labelLimit=150, columns=1, rowPadding=2, padding=4)),
+                    strokeDash=alt.StrokeDash("series:N",
+                        scale=alt.Scale(domain=list(series),range=[[7,4] if label in dashed else [1,0] for label in series])),
+                    tooltip=[alt.Tooltip("execution_date:T", title=tr("Execution date"), format="%Y-%m-%d"),
+                             alt.Tooltip("series:N", title=tr("Portfolio / control")),
+                             alt.Tooltip("value:Q", title=tr(title), format=".2%" if percent else ".4f")]))
+    wide = [{"execution_date": day, **{f"s{i}": points[index]["value"]
+             for i, points in enumerate(series.values())}} for index, day in enumerate(calendars[0])]
+    hover = alt.selection_point(name="comparison_observation", fields=["execution_date"],
+                                nearest=True, on="pointerover", clear="pointerout", empty=False)
+    observed = alt.Chart(alt.Data(values=wide))
+    targets = observed.mark_point(opacity=0).encode(x=axis).add_params(hover)
+    rule = observed.mark_rule(color="#89959b", strokeWidth=1).encode(
+        x=axis, opacity=alt.condition(hover, alt.value(.7), alt.value(0)),
+        tooltip=[alt.Tooltip("execution_date:T", title=tr("Execution date"), format="%Y-%m-%d"),
+                 *[alt.Tooltip(f"s{i}:Q", title=label, format=".2%" if percent else ".4f")
+                   for i, label in enumerate(series)]])
+    return _style(alt.layer(lines, targets, rule).properties(height=340))
+
+
 def wealth_chart(summary, *, show_reference=True, show_gross=False,
                  inspect_selection: str | None = None, inspected_date: str | None = None,
-                 benchmarks=(), visible_series=None):
+                 benchmarks=(), visible_series=None, rx_summary=None):
     """Keep recorded-date hover; optionally expose a raw ISO-date click selection.
 
     The optional inspection field exists only on chart copies, so native
@@ -58,6 +116,14 @@ def wealth_chart(summary, *, show_reference=True, show_gross=False,
     validated inspected date keeps its rule when the native chart is remounted.
     """
     records = [asdict(point) for point in summary.wealth]
+    dates = tuple(row["execution_date"] for row in records)
+    if rx_summary is not None:
+        if tuple(point.execution_date for point in rx_summary.wealth) != dates:
+            raise ValueError("RX and A2 dates must match exactly")
+        if rx_summary.initial_wealth != summary.initial_wealth:
+            raise ValueError("RX and A2 initial wealth must match exactly")
+        for record, point in zip(records, rx_summary.wealth):
+            record["rx_net_wealth"] = point.net_wealth
     if inspect_selection is not None:
         for record in records:
             record["inspection_date"] = record["execution_date"]
@@ -66,13 +132,16 @@ def wealth_chart(summary, *, show_reference=True, show_gross=False,
     labels = {"net_wealth": "Raw A2 · Net", "reference_net_wealth": "Frozen A control · Net",
               "gross_wealth": "Raw A2 · Gross"}
     fields, colors = ["net_wealth"], ["#2357d9"]
+    if rx_summary is not None:
+        fields.append("rx_net_wealth")
+        colors.append("#dd8ca5")
+        labels["rx_net_wealth"] = "A2 + RX · Net"
     if show_reference and summary.reference_available:
         fields.append("reference_net_wealth")
         colors.append("#d97706")
     if show_gross:
         fields.append("gross_wealth")
         colors.append("#7e9ee8")
-    dates = tuple(row["execution_date"] for row in records)
     for benchmark in benchmarks:
         if benchmark.error or tuple(point.date for point in benchmark.points) != dates:
             raise ValueError("Market and strategy dates must match exactly")
@@ -83,12 +152,14 @@ def wealth_chart(summary, *, show_reference=True, show_gross=False,
         for record, point in zip(records, benchmark.points):
             record[field] = point.equity * summary.initial_wealth
     if visible_series is not None:
-        known = {"A2": "net_wealth", "A": "reference_net_wealth",
+        known = {"A2": "net_wealth", "A": "reference_net_wealth", "RX": "rx_net_wealth",
                  "QQQ": "benchmark_qqq", "SPY": "benchmark_spy"}
         if (isinstance(visible_series, str) or "A2" not in visible_series
                 or len(set(visible_series)) != len(visible_series)
                 or any(symbol not in known for symbol in visible_series)):
             raise ValueError("A curve comparison must include A2 and known reference symbols")
+        if "RX" in visible_series and rx_summary is None:
+            raise ValueError("RX curve comparison requires matching RX observations")
         wanted = {known[symbol] for symbol in visible_series}
         chosen = [(field, color) for field, color in zip(fields, colors) if field in wanted]
         fields, colors = map(list, zip(*chosen))
@@ -111,6 +182,7 @@ def wealth_chart(summary, *, show_reference=True, show_gross=False,
                                      legend=legend),
                      strokeDash=alt.StrokeDash("series:N", scale=alt.Scale(domain=fields,
                                                range=[{"net_wealth": [1, 0], "reference_net_wealth": [9, 4],
+                                                       "rx_net_wealth": [1, 0],
                                                        "benchmark_qqq": [4, 3], "benchmark_spy": [10, 3, 2, 3],
                                                        "gross_wealth": [2, 3]}[field]
                                                       for field in fields]), legend=legend)))
@@ -163,7 +235,7 @@ def wealth_chart(summary, *, show_reference=True, show_gross=False,
                 .mark_rect(color="#64748b", opacity=.07, clip=True)
                 .encode(x=span_axis, x2=alt.X2("max(execution_date):T"))
                 .properties(name="performance_drawdown_span"))
-    end_names = {"net_wealth": "A2", "reference_net_wealth": "A",
+    end_names = {"net_wealth": "A2", "reference_net_wealth": "A", "rx_net_wealth": "A2 + RX",
                  "gross_wealth": tr("A2 gross"), "benchmark_qqq": "QQQ", "benchmark_spy": "SPY"}
     endpoints = {field: records[-1][field] for field in fields if records[-1][field] is not None}
     end_leaders, end_labels = line_end_labels(lines, date_field="execution_date", value_field="wealth",

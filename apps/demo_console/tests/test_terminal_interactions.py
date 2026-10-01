@@ -1,7 +1,6 @@
 """Exercise terminal navigation and filters over the existing synthetic adapter."""
 
 from dataclasses import asdict, replace
-from pathlib import Path
 
 import pytest
 
@@ -61,10 +60,33 @@ def _assert_healthy(app):
     assert "NOT EXPOSED" in _content(app), "The interface lost its unavailable-RX scope"
 
 
+def _synthetic_terminal(monkeypatch):
+    """Inject component fixtures explicitly; production uses one updated workspace.
+
+    Retain the synthetic frozen model identity for these historical component
+    contracts. Unified manifest routing is covered by test_daily_demo_workspace.
+    Resolve the patched reader at call time so per-rerun counting stays useful.
+    """
+    import streamlit as st
+    from streamlit.testing.v1 import AppTest
+    from apps.demo_console import app as console
+    from apps.demo_console.adapters import decision_reader, workspace_reader
+
+    monkeypatch.setattr(console, "_load_workspace_model",
+                        lambda: decision_reader.load_overview(st.session_state.get("decision_date")))
+    monkeypatch.setattr(workspace_reader, "load_overview",
+                        lambda day=None, **kwargs: decision_reader.load_overview(day))
+    monkeypatch.setattr(workspace_reader, "source_reference", lambda model: None)
+    app = AppTest.from_string(
+        "from apps.demo_console import app as console\nconsole.main()",
+        default_timeout=20)
+    app.session_state["workspace_sample"] = "historical"
+    return app
+
+
 @pytest.fixture
 def terminal_app(make_overview_config, monkeypatch, landing_without_performance):
     pytest.importorskip("streamlit")
-    from streamlit.testing.v1 import AppTest
     from apps.demo_console.adapters import decision_reader
 
     config = make_overview_config()
@@ -74,7 +96,7 @@ def terminal_app(make_overview_config, monkeypatch, landing_without_performance)
     before = {date: asdict(model) for date, model in models.items()}
     monkeypatch.setattr(decision_reader, "load_overview",
                         lambda date=None: models[date or dates[-1]])
-    app = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=20)
+    app = _synthetic_terminal(monkeypatch)
     app.run()
     _assert_healthy(app)
     yield app, models
@@ -211,7 +233,6 @@ def test_selected_snapshot_is_read_once_per_navigation_filter_and_language_rerun
 ])
 def test_initial_date_uses_reader_calendar_for_fallback_or_remains_blocked(
         make_overview_config, monkeypatch, landing_without_performance, selected, expected_calls, displayed):
-    from streamlit.testing.v1 import AppTest
     from apps.demo_console.adapters import decision_reader
 
     # Use the real bounded adapter against synthetic files. Invalid dates
@@ -224,7 +245,7 @@ def test_initial_date_uses_reader_calendar_for_fallback_or_remains_blocked(
         return load_overview(date, config=config)
 
     monkeypatch.setattr(decision_reader, "load_overview", counted_overview)
-    app = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=20)
+    app = _synthetic_terminal(monkeypatch)
     if selected is not None:
         app.session_state["decision_date"] = selected
     app.run()

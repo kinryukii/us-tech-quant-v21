@@ -176,6 +176,13 @@ def render_demo_tour(model: DecisionOverview, view: str) -> None:
         _render_focus_request("launcher")
         return
     _, title, explanation = _STOPS[index]
+    if model.source_id == "A2_UPDATED_RESEARCH":
+        if view == "Machine learning":
+            explanation = "Keep the same security in focus. Inspect its saved rank and score, then the verified annual model lineage."
+        elif view == "Research":
+            explanation = "Keep the selected case in view while inspecting the portfolio's executed path, drawdowns and recovery through its verified cutoff."
+        elif view == "Portfolio" and model.execution_status == "PENDING_NEXT_OPEN":
+            explanation = "The signal awaits the next session open. Compare it with the last verified portfolio; do not treat the new ranking as an executed holding."
     focus = _history_focus(model)
     with st.container(border=True, key="uq_demo_tour"):
         copy, controls = st.columns([3.4, 2.7], gap="medium", vertical_alignment="center")

@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from itertools import groupby
-from math import fsum, isclose, isfinite, log1p, sqrt
+from math import expm1, fsum, isclose, isfinite, log, log1p, sqrt
 from typing import TYPE_CHECKING, Sequence
 
 if TYPE_CHECKING:
@@ -57,6 +57,7 @@ class RiskComparisonRow:
     max_drawdown: float
     worst_daily_net_return: float
     observations: int
+    annualized_sharpe: float | None = None
 
 
 @dataclass(frozen=True)
@@ -330,7 +331,106 @@ def rolling_returns(summary: PerformanceSummary, span: int = 63) -> tuple[Rollin
     return tuple(result)
 
 
-def matched_risk_comparison(summary: PerformanceSummary) -> tuple[RiskComparisonRow, ...]:
+def annualized_sharpe(returns) -> float | None:
+    """Descriptive sqrt(252)*mean/sample SD, daily risk-free return zero."""
+    values=tuple(_number(value,'Sharpe daily return') for value in returns)
+    if len(values)<2:return None
+    mean=fsum(values)/len(values)
+    variance=fsum((value-mean)**2 for value in values)/(len(values)-1)
+    if variance<=0:return None
+    return sqrt(252)*mean/sqrt(variance)
+
+
+def summarize_nav_window(daily, start, end):
+    """Describe a recorded NAV window, retaining its real preceding NAV.
+
+    Daily risk ratios use 252 observations/year, sample SD and zero risk-free
+    return. Sortino uses a zero daily target and all observations in its lower
+    partial second moment. Optional execution fields never become zero by default.
+    """
+    daily = tuple(daily)
+    _dates(tuple(point["date"] for point in daily))
+    indexes = [i for i, point in enumerate(daily) if start <= point["date"] <= end]
+    if not indexes:
+        return None
+    first = indexes[0]
+    baseline = _number(daily[first - 1]["nav"] if first else 1.0, "window baseline", minimum=0)
+    if baseline <= 0:
+        raise ValueError("Window baseline must be positive.")
+    rows = []
+    for index in indexes:
+        point = daily[index]
+        nav = _number(point["nav"], "recorded NAV", minimum=0)
+        previous = _number(daily[index - 1]["nav"] if index else 1.0, "previous NAV", minimum=0)
+        cash = _number(point["cash_weight"], "cash weight", minimum=0)
+        if nav <= 0 or previous <= 0 or cash > 1:
+            raise ValueError("NAV must be positive and cash weight within [0, 1].")
+        net = nav / previous - 1.0
+        if point.get("net_return") is not None and not isclose(
+                _number(point["net_return"], "recorded return"), net, rel_tol=1e-8, abs_tol=1e-10):
+            raise ValueError("Recorded daily return does not match NAV.")
+        rows.append({**point, "execution_date": point["date"], "value": nav / baseline,
+                     "nav": nav, "net_return": net, "cash_weight": cash})
+    dates = tuple(row["execution_date"] for row in rows)
+    values = tuple(row["value"] for row in rows)
+    drawdowns, drawdown = _drawdowns(dates, values, 1.0)
+    for row, depth in zip(rows, drawdowns):
+        row["drawdown"] = depth
+    returns = tuple(row["net_return"] for row in rows)
+    count, mean = len(rows), fsum(returns) / len(rows)
+    volatility = sqrt(fsum((r - mean) ** 2 for r in returns) / (count - 1)) * sqrt(252) if count > 1 else None
+    downside = sqrt(fsum(min(r, 0.0) ** 2 for r in returns) / count)
+    try:
+        annual_return = expm1(log(values[-1]) * 252 / count)
+    except OverflowError:
+        annual_return = None
+    if annual_return is not None and not isfinite(annual_return):
+        annual_return = None
+    longest, current = 0, 0
+    for depth in drawdowns:
+        current = current + 1 if depth < -1e-12 else 0
+        longest = max(longest, current)
+    peak_index = dates.index(drawdown.peak_date) if drawdown.peak_date else -1
+    recovery_days = (dates.index(drawdown.recovery_date) - peak_index if drawdown.recovery_date else None)
+    months = []
+    archive_months = (daily[0]["date"][:7], daily[-1]["date"][:7])
+    for month, group in groupby(rows, key=lambda row: row["execution_date"][:7]):
+        part = tuple(group)
+        available_count = sum(point["date"][:7] == month for point in daily)
+        months.append({"period": month, "start": part[0]["execution_date"], "end": part[-1]["execution_date"],
+                       "days": len(part), "return": _path(tuple(row["net_return"] for row in part), 1.0)[-1] - 1,
+                       "partial": len(part) != available_count or month in archive_months})
+    def complete(field):
+        return all(row.get(field) is not None for row in rows)
+    gross = (_path(tuple(_number(row["gross_return"], "gross return") for row in rows), 1.0)[-1] - 1
+             if complete("gross_return") else None)
+    fees = fsum(_number(row["transaction_cost_amount"], "fee", minimum=0) for row in rows) / baseline if complete("transaction_cost_amount") else None
+    turnover = fsum(_number(row["turnover"], "turnover", minimum=0) for row in rows) if complete("turnover") else None
+    cash = fsum(row["cash_weight"] for row in rows) / count
+    return {"rows": rows, "start": dates[0], "end": dates[-1], "days": count,
+            "end_nav": values[-1], "cumulative_return": values[-1] - 1,
+            "max_drawdown": drawdown.depth, "peak_date": drawdown.peak_date,
+            "trough_date": drawdown.trough_date, "recovery_date": drawdown.recovery_date,
+            "recovery_days": recovery_days, "longest_underwater_days": longest,
+            "mean_cash": cash, "mean_exposure": 1 - cash, "end_cash": rows[-1]["cash_weight"],
+            "worst_return": min(returns), "best_return": max(returns),
+            "positive_day_fraction": sum(r > 0 for r in returns) / count,
+            "sharpe": annualized_sharpe(returns), "annualized_return": annual_return,
+            "annualized_volatility": volatility,
+            "sortino": sqrt(252) * mean / downside if downside > 0 and count > 1 else None,
+            "calmar": annual_return / abs(drawdown.depth) if drawdown.depth < 0 and annual_return is not None else None,
+            "gross_return": gross, "cost_fraction": fees,
+            "gross_net_difference_pp": 100 * (gross - (values[-1] - 1)) if gross is not None else None,
+            "turnover": turnover, "mean_turnover": turnover / count if turnover is not None else None,
+            "best_month_return": max(month["return"] for month in months),
+            "worst_month_return": min(month["return"] for month in months),
+            **{field: sum(row[field] for row in rows) if complete(field) else None for field in
+               ("skipped_buy_count","blocked_sell_count","stale_mark_count")},
+            "months": months, "positive_month_fraction": sum(month["return"] > 0 for month in months) / len(months),
+            "mean_holding_count": fsum(row["holding_count"] for row in rows) / count if complete("holding_count") else None}
+
+
+def matched_risk_comparison(summary: PerformanceSummary, *, skip_initial_cash_baseline=False) -> tuple[RiskComparisonRow, ...]:
     """Describe each net path over the same selected execution observations.
 
     Both paths are normalized to 1 before their first return, including that
@@ -353,7 +453,8 @@ def matched_risk_comparison(summary: PerformanceSummary) -> tuple[RiskComparison
         daily = tuple(_number(value / previous - 1.0, "daily net return")
                       for previous, value in zip((1.0, *path[:-1]), path))
         _, drawdown = _drawdowns(dates, path, 1.0)
-        return RiskComparisonRow(series, path[-1] - 1.0, drawdown.depth, min(daily), len(path))
+        return RiskComparisonRow(series, path[-1] - 1.0, drawdown.depth, min(daily), len(path),
+                                 annualized_sharpe(daily[1:] if skip_initial_cash_baseline else daily))
 
     result = [describe("Raw A2", (point.net_wealth for point in summary.wealth))]
     if summary.reference_available:

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Moomoo 真实账户只读工作台。实盘执行锁定，不提供解锁、下单、撤单或自动策略操作。">
+  <title>实盘 · Moomoo 账户只读工作台</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/live.js" defer></script>
+</head>
+<body class="live-page">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/live"><span class="brand-icon" aria-hidden="true">↗</span><span>交易工作台<small>STRATEGY TERMINAL</small></span></a>
+      <div class="workspace-label">交易环境</div>
+      <nav class="environment-nav" aria-label="交易环境"><a class="environment-link" href="/paper"><span class="environment-dot"></span>模拟盘 <small>PAPER</small></a><a class="environment-link active" href="/live" aria-current="page"><span class="environment-dot live-dot"></span>实盘 <small>LIVE</small></a></nav>
+      <div class="sidebar-note">真实账户只读<br>页面切换不改变模拟执行状态。</div>
+      <div class="sidebar-bottom"><span class="local-indicator"></span> 本机服务<span id="service-status">正在连接</span><p>账户连接与模拟盘独立<br>不请求密码，不解锁交易</p><div class="sidebar-lock">真实交易权限：未开放</div></div>
+    </aside>
+    <main class="main">
+      <header class="environment-bar"><div class="environment-heading"><span class="environment-pill">LIVE</span><div><strong>实盘账户</strong><span>真实资金 · 仅只读</span></div></div><div class="environment-context"><span class="status-dot" id="connection-dot"></span><span id="top-connection">OpenD 未连接</span><a class="environment-switch" data-environment-link href="/paper">返回模拟盘 ↗</a></div></header>
+      <div class="page-content">
+        <nav class="section-tabs" aria-label="实盘工作区"><span class="nav-item active" aria-current="page">账户工作台</span><span class="badge badge-warning">交易权限锁定</span></nav>
+        <div class="page-heading"><div><div class="breadcrumb">实盘 <span>/</span> <span>账户只读</span></div><h1>真实账户工作台</h1><p>连接本机 OpenD，选择真实账户后手动读取账户快照。</p></div><div class="heading-actions"><button class="button button-light" id="state-refresh-btn">↻ 更新连接状态</button></div></div>
+        <div class="safety-banner"><span class="safety-marker">LIVE · 只读</span><p>尚未授权自动交易。本页仅查询真实账户；实盘解锁、下单、改单、撤单和策略执行均不可用。</p><span class="badge badge-warning">交易通道锁定</span></div>
+        <div id="error-banner" class="notice notice-error" role="alert" hidden></div>
+        <div class="metric-grid">
+          <article class="metric-card"><div class="metric-label">账户净值 <span id="equity-currency">USD</span></div><div class="metric-value" id="equity-value">—</div><div class="metric-foot" id="account-footnote">尚未读取真实账户</div></article>
+          <article class="metric-card"><div class="metric-label">美元现金 <span>USD</span></div><div class="metric-value" id="cash-value">—</div><div class="metric-foot" id="cash-footnote">美元现金（非可下单额度）</div></article>
+          <article class="metric-card"><div class="metric-label">账户持仓 <span>POSITIONS</span></div><div class="metric-value" id="positions-value">—</div><div class="metric-foot">仅显示已读取的真实持仓</div></article>
+          <article class="metric-card"><div class="metric-label">实盘交易权限 <span class="tiny-dot halted"></span></div><div class="metric-value engine-value">未开放</div><div class="metric-foot">不提供实盘交易能力</div></article>
+        </div>
+        <div id="account-warnings" class="account-warnings" role="status" hidden></div>
+        <div class="live-layout">
+          <div>
+            <article class="panel"><div class="panel-heading"><div><h2>真实账户连接</h2><p>连接只列出符合条件的真实账户，不会自动选择或读取余额。</p></div><span class="badge" id="probe-badge">未连接</span></div>
+              <div class="live-connect-grid"><div><div class="field-row"><div><label class="field-label" for="live-host">主机</label><input id="live-host" value="127.0.0.1" readonly></div><div><label class="field-label" for="live-port">OpenD 端口</label><input id="live-port" type="number" min="1" max="65535" value="18441"></div></div><label class="field-label" for="live-security-firm">证券公司参数</label><select id="live-security-firm"><option value="FUTUSECURITIES">FUTUSECURITIES</option><option value="FUTUINC">FUTUINC</option><option value="FUTUSG">FUTUSG</option><option value="FUTUAU">FUTUAU</option><option value="FUTUCA">FUTUCA</option><option value="FUTUMY">FUTUMY</option><option value="FUTUJP">FUTUJP · 日本</option></select><button class="button button-light full-width" id="live-connect-btn">检测真实账户 · 只读</button></div>
+              <div><label class="field-label" for="live-account">选择真实账户</label><select id="live-account"><option value="">先检测 OpenD 连接</option></select><p class="helper top-space">明确选择账户后，再读取净值、美元现金、持仓与订单。连接参数须匹配 OpenD 账户所属公司。</p><div class="live-select-actions"><button class="button button-light" id="live-select-btn" disabled>选择此账户</button><button class="button button-primary" id="live-refresh-btn" disabled>读取账户快照</button></div><div class="connection-message" id="connection-message">尚未连接；没有读取账户资金数据。</div></div></div>
+            </article>
+            <article class="panel ledger-panel"><div class="ledger-heading"><nav class="ledger-tabs" aria-label="真实账户记录"><button class="ledger-tab active" data-ledger="holdings" aria-pressed="true">真实持仓</button><button class="ledger-tab" data-ledger="orders" aria-pressed="false">券商订单 <span id="order-count">—</span></button></nav><span class="ledger-caption">OpenD 只读快照</span></div><div class="live-info"><span id="snapshot-time">快照时间：未读取</span><span>币种不同不混合汇总</span></div><div data-ledger-panel="holdings"><div class="table-wrap"><table><thead><tr><th>标的</th><th class="align-right">持仓</th><th class="align-right">可卖</th><th class="align-right">市值</th><th>币种</th></tr></thead><tbody id="live-holdings-body"><tr><td colspan="5" class="table-empty">选择真实账户并读取快照后显示持仓</td></tr></tbody></table></div></div><div data-ledger-panel="orders" hidden><div class="table-wrap"><table><thead><tr><th>券商订单 / 时间</th><th>标的</th><th>方向</th><th class="align-right">数量 / 已成</th><th class="align-right">限价</th><th>币种</th><th>状态</th></tr></thead><tbody id="live-orders-body"><tr><td colspan="7" class="table-empty">尚未读取真实订单</td></tr></tbody></table></div></div></article>
+          </div>
+          <aside class="panel locked-ticket"><div class="readonly-lock" aria-hidden="true">⊘</div><h3>实盘交易未开放</h3><p>当前账户仅可只读查询。<br>未配置交易权限与真实订单通道。</p><div class="locked-fields" aria-hidden="true"><div class="locked-field"><span>执行策略</span><strong>未开放</strong></div><div class="locked-field"><span>交易标的</span><strong>—</strong></div><div class="locked-field"><span>数量 / 限价</span><strong>— / —</strong></div></div><button class="button button-light" id="live-order-disabled" disabled>实盘下单 · 已锁定</button><div class="readonly-rules">✓ 真实账户与模拟账户分离<br>✓ 不导入或自动启用模拟策略<br>✓ 不请求交易密码或解锁<br>✓ 下单、改单、撤单均禁用</div><div class="ticket-safety">此处仅展示连接与权限状态。不会生成示例真实订单；缺失数据以「—」显示。</div></aside>
+        </div>
+        <footer class="footer"><span>MOOMOO · 实盘账户只读 <span class="footer-separator">/</span> 本机连接 127.0.0.1</span><div><span id="last-update">等待连接状态</span><span>REAL · EXECUTION LOCKED</span></div></footer>
+      </div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

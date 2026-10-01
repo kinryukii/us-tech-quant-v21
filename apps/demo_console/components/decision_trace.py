@@ -14,6 +14,16 @@ _CASE_SELECTION_KEYS = ("ml_engine_ticker", "ml_trace_ticker", "ml_primary", "in
                         "history_ticker", "_history_focus", "system_focus_ticker")
 
 
+def performance_available(model: DecisionOverview) -> bool:
+    """A pending signal can still have a verified historical portfolio path."""
+    cutoff = model.performance_cutoff_date if model.source_id == "A2_UPDATED_RESEARCH" else model.provenance.execution_date
+    return not model.error and bool(cutoff)
+
+
+def pending_execution(facts: dict) -> bool:
+    return facts.get("execution_status") == "PENDING_NEXT_OPEN"
+
+
 def resolve_case_ticker(model: DecisionOverview) -> str | None:
     """Read the current case only from unambiguous, currently recorded names."""
     tickers = tuple(row.ticker for row in comparison_rows(model))
@@ -54,13 +64,17 @@ def trace_facts(model: DecisionOverview, ticker: str) -> dict | None:
     return {
         "ticker": ticker, "rank": selected.rank, "score": selected.score,
         "universe_count": count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else None,
-        "held_before": before, "held_after": ticker in held if held else None,
+        "held_before": before, "held_after": ticker in held if held or model.execution_status == "EXECUTED" else None,
         "overlap_count": len(ranked & held) if held else None,
         "ranked_count": len(ranked), "holdings_count": len(held) if held else None,
         "information_date": model.provenance.information_as_of,
         "decision_date": model.decision_date,
         "execution_date": model.provenance.execution_date,
         "previous_decision_date": model.previous_decision_date,
+        "updated": model.source_id == "A2_UPDATED_RESEARCH",
+        "execution_status": model.execution_status,
+        "scheduled_execution_date": model.scheduled_execution_date,
+        "performance_cutoff_date": model.performance_cutoff_date,
     }
 
 
@@ -75,16 +89,18 @@ def _membership(value: bool | None) -> str:
 
 def trace_html(facts: dict, *, presentation: bool = True) -> str:
     """Escaped, connected factual cards, with dates kept at their recorded precision."""
+    pending = pending_execution(facts)
     dates = (("Information as of", facts["information_date"]),
              ("Decision date", facts["decision_date"]),
-             ("Subsequent execution date", facts["execution_date"]))
+             ("Scheduled next open" if pending else "Subsequent execution date",
+              facts.get("scheduled_execution_date") if pending else facts["execution_date"]))
     rank = f'#{facts["rank"]}' if facts["rank"] is not None else None
     score = score_label(facts["score"])
     count = f'{facts["universe_count"]:,}' if facts["universe_count"] is not None else None
     return ('<section class="uq-trace ' + ('uq-trace-presentation' if presentation else '') + '">'
             '<div class="uq-trace-identity"><span class="uq-eyebrow">' + text(tr("ONE RECORDED DECISION"))
             + '</span><strong>' + text(facts["ticker"]) + '</strong><span>'
-            + text(tr("Original records · No inference rerun")) + '</span></div>'
+            + text(tr("Awaiting next session open" if pending else "Updated model output · Recorded execution" if facts.get("updated") else "Original records · No inference rerun")) + '</span></div>'
             '<ol class="uq-trace-chain"><li><span class="uq-trace-step">01</span><h3>'
             + text(tr("Eligible universe")) + '</h3><strong class="uq-trace-value">' + _display(count)
             + '</strong><p>' + text(tr("Producer-reported eligible names for this decision."))
@@ -93,12 +109,12 @@ def trace_html(facts: dict, *, presentation: bool = True) -> str:
             + '</h3><div class="uq-trace-output"><div><span>' + text(tr("Recorded rank"))
             + '</span><strong>' + _display(rank) + '</strong></div><div><span>'
             + text(tr("Recorded score")) + '</span><strong>' + _display(score) + '</strong></div></div><p>'
-            + text(tr("Original Top20 rank and model score, without recalculation.")) + '</p></li>'
+            + text(tr("Updated daily rank and score, read from saved results." if facts.get("updated") else "Original Top20 rank and model score, without recalculation.")) + '</p></li>'
             '<li><span class="uq-trace-step">03</span><h3>' + text(tr("Portfolio membership"))
             + '</h3><div class="uq-trace-membership"><div><span>' + text(tr("Before execution"))
             + '</span><strong>' + _membership(facts["held_before"]) + '</strong></div>'
             '<span class="uq-trace-arrow" aria-hidden="true">→</span><div><span>'
-            + text(tr("After execution")) + '</span><strong>' + _membership(facts["held_after"])
+            + text(tr("After execution")) + '</span><strong>' + (text(tr("Awaiting next session open")) if pending else _membership(facts["held_after"]))
             + '</strong></div></div><p>' + text(tr("Membership in the recorded Raw A2 portfolio.")) + '</p></li></ol>'
             '<div class="uq-trace-dates">' + ''.join(
                 '<div><span>' + text(tr(label)) + '</span><strong>' + _display(value) + '</strong></div>'
@@ -128,6 +144,8 @@ def render_decision_trace(model: DecisionOverview, presentation: bool = True) ->
                 + text(f'{facts["overlap_count"]} / {facts["ranked_count"]}') + '</strong><small>'
                 + text(tr("{held} distinct recorded holdings · Set overlap only", held=facts["holdings_count"]))
                 + '</small></div>')
+    elif pending_execution(facts):
+        st.caption(tr("The next execution is pending. Verified previous holdings remain distinct from the signal."))
     else:
         st.caption(tr("Subsequent holdings are unavailable; membership and set overlap remain unknown."))
     st.caption(tr("This is a linked sequence of records, not a causal explanation. Ranking selection does not establish execution or risk approval; RX decisions and feature contributions are not exposed."))

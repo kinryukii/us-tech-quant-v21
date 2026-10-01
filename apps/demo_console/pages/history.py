@@ -12,6 +12,7 @@ from apps.demo_console.components.chart_display import render_chart
 from apps.demo_console.components.decision_trace import remember_case, resolve_case_ticker, trace_facts
 from apps.demo_console.components.ml_comparison import comparison_rows
 from apps.demo_console.models import DecisionOverview
+from apps.demo_console.adapters import workspace_reader
 from apps.demo_console.i18n import option_labeler, tr
 
 
@@ -124,8 +125,9 @@ def render_history(model: DecisionOverview, *, presentation: bool) -> None:
     with st.spinner(tr("Loading verified historical snapshots…")):
         # A replay reveals its locked start through the current frame. Asking
         # for the original window size at frame one would expose older dates.
-        history = decision_reader.load_history(
-            model.decision_date, window=len(locked_dates) if locked_dates else _WINDOWS[window_label])
+        window = len(locked_dates) if locked_dates else _WINDOWS[window_label]
+        history = (workspace_reader.load_history(model, window) if workspace_reader.is_updated(model)
+                   else decision_reader.load_history(model.decision_date, window=window))
     if locked_dates:
         history = tuple(snapshot for snapshot in history if snapshot.decision_date in locked_dates)
     if not history:

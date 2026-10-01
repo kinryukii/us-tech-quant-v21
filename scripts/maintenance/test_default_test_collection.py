@@ -12,7 +12,6 @@ def test_default_acceptance_keeps_reviewed_runtime_and_read_boundary_suites(pyte
         "tests/storage/test_storage_paths.py",
         "scripts/maintenance/test_storage_maintenance_entrypoints.py",
         "scripts/maintenance/test_default_test_collection.py",
-        "scripts/maintenance/test_harness_preflight.py",
         "scripts/v22/test_v22_047_r1d_live_market_account_bridge.py",
         "scripts/v22/test_v22_047_r1e_windows_service_hardening.py",
     }

@@ -94,7 +94,7 @@ def default_benchmarks_config() -> BenchmarkConfig:
         "9eca5b8ab3ea566dfadf544d6a044b052f631f2d536f14ab3b735a1473838e6f", artifacts)
 
 
-def _window(dates, baseline_date):
+def _validate_dates(dates, baseline_date):
     if not isinstance(dates, tuple) or not dates:
         raise ArtifactError("BENCHMARK_DATES_REQUIRED")
     normalized = tuple(iso_date(day) for day in dates)
@@ -102,6 +102,10 @@ def _window(dates, baseline_date):
         raise ArtifactError("BENCHMARK_DATE_ORDER_OR_DUPLICATE")
     if baseline_date is not None and (iso_date(baseline_date) != baseline_date or baseline_date >= dates[0]):
         raise ArtifactError("BENCHMARK_INVALID_BASELINE_DATE")
+
+
+def _window(dates, baseline_date):
+    _validate_dates(dates, baseline_date)
     first = baseline_date or dates[0]
     if "2023-01-04" <= first <= dates[-1] <= "2025-12-30":
         return "historical"
@@ -203,6 +207,23 @@ def _read_prices(spec):
     return calendar, {row["date"]: float(row["open"]) for row in rows}
 
 
+def _aligned_points(calendar, prices, dates, baseline_date):
+    required = ((baseline_date,) if baseline_date is not None else ()) + dates
+    if any(day not in prices for day in required):
+        raise ArtifactError("BENCHMARK_REQUIRED_DATE_MISSING")
+    if calendar[calendar.index(required[0]):calendar.index(required[-1]) + 1] != required:
+        raise ArtifactError("BENCHMARK_NONCONTIGUOUS_WINDOW_OR_BASELINE")
+    baseline = prices[baseline_date or dates[0]]
+    previous, peak, points = baseline, 1.0, []
+    for day in dates:
+        value = prices[day]
+        equity = value / baseline
+        peak = max(peak, equity)
+        points.append(BenchmarkPoint(day, value, value / previous - 1, equity, equity / peak - 1))
+        previous = value
+    return tuple(points)
+
+
 def _series(symbol, dates, baseline_date, window, config, manifest):
     try:
         specs = [spec for spec in config.artifacts if spec.symbol == symbol and spec.window == window]
@@ -211,19 +232,7 @@ def _series(symbol, dates, baseline_date, window, config, manifest):
         spec = specs[0]
         source = _binding(spec, manifest)
         calendar, prices = _read_prices(spec)
-        required = ((baseline_date,) if baseline_date is not None else ()) + dates
-        if any(day not in prices for day in required):
-            raise ArtifactError("BENCHMARK_REQUIRED_DATE_MISSING")
-        if calendar[calendar.index(required[0]):calendar.index(required[-1]) + 1] != required:
-            raise ArtifactError("BENCHMARK_NONCONTIGUOUS_WINDOW_OR_BASELINE")
-        baseline = prices[baseline_date or dates[0]]
-        previous, peak, points = baseline, 1.0, []
-        for day in dates:
-            value = prices[day]
-            equity = value / baseline
-            peak = max(peak, equity)
-            points.append(BenchmarkPoint(day, value, value / previous - 1, equity, equity / peak - 1))
-            previous = value
+        points = _aligned_points(calendar, prices, dates, baseline_date)
         return BenchmarkSeries(symbol, _LABELS[symbol], points=tuple(points),
             total_return=points[-1].equity - 1, max_drawdown=min(point.drawdown for point in points),
             source_refs=((str(config.manifest_path), config.manifest_sha256),
@@ -253,3 +262,116 @@ def read_benchmarks(dates: tuple[str, ...], baseline_date: str | None = None,
     except Exception as exc:
         return BenchmarkHistory(error="ETF references are unavailable for the selected window.",
                                 debug_error=f"{type(exc).__name__}: {exc}")
+
+@dataclass(frozen=True)
+class UpdatedBenchmarkConfig:
+    """Hash-bound independent ETF projection; never alters the frozen binding."""
+    manifest_path: Path
+    manifest_sha256: str
+
+
+def _valid_digest(value):
+    return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+
+def default_updated_benchmarks_config() -> UpdatedBenchmarkConfig:
+    reference = resolve().results_root / "demo-console" / "benchmarks" / "updated_reference.json"
+    binding = json.loads(reference.read_text(encoding="utf-8"))
+    if not _valid_digest(binding.get("sha256")) or not isinstance(binding.get("path"), str):
+        raise ArtifactError("BENCHMARK_UPDATED_REFERENCE_INVALID")
+    path = Path(binding["path"])
+    if not path.is_absolute():
+        raise ArtifactError("BENCHMARK_UPDATED_REFERENCE_PATH_INVALID")
+    return UpdatedBenchmarkConfig(path, binding["sha256"])
+
+
+def _updated_manifest(config):
+    if not _valid_digest(config.manifest_sha256):
+        raise ArtifactError("BENCHMARK_MANIFEST_IDENTITY_MISMATCH")
+    with config.manifest_path.open("rb") as handle:
+        if hashlib.file_digest(handle, "sha256").hexdigest() != config.manifest_sha256:
+            raise ArtifactError("BENCHMARK_MANIFEST_IDENTITY_MISMATCH")
+        handle.seek(0)
+        manifest = json.load(handle)
+    if (manifest.get("schema_version") != 1 or manifest.get("adjustment") != "RAW"
+            or manifest.get("basis") != "OPEN_TO_OPEN_PRICE_RETURN"
+            or manifest.get("provider") != "MOOMOO_OPEND_AND_MASSIVE"):
+        raise ArtifactError("BENCHMARK_UPDATED_SOURCE_IDENTITY_MISMATCH")
+    artifacts = manifest.get("artifacts")
+    if (not isinstance(artifacts, list) or len(artifacts) != 2
+            or {row.get("symbol") for row in artifacts} != set(_LABELS)):
+        raise ArtifactError("BENCHMARK_UPDATED_ARTIFACT_SET_INVALID")
+    return manifest
+
+
+def _updated_prices(spec):
+    first, last = spec.get("start_date"), spec.get("end_date")
+    count = spec.get("row_count")
+    if (iso_date(first) != first or iso_date(last) != last or first > last
+            or type(count) is not int or count < 1 or not _valid_digest(spec.get("sha256"))):
+        raise ArtifactError("BENCHMARK_INVALID_ARTIFACT_CONTRACT")
+    source_refs = spec.get("source_refs")
+    if (not isinstance(source_refs, list) or not source_refs
+            or any(not isinstance(item.get("path"), str) or not item["path"]
+                   or not _valid_digest(item.get("sha256")) for item in source_refs)):
+        raise ArtifactError("BENCHMARK_SOURCE_BINDING_MISMATCH")
+    path = Path(spec["path"])
+    if not path.is_absolute():
+        raise ArtifactError("BENCHMARK_ARTIFACT_PATH_INVALID")
+    with path.open("rb") as handle:
+        if hashlib.file_digest(handle, "sha256").hexdigest() != spec["sha256"]:
+            raise ArtifactError("BENCHMARK_ARTIFACT_IDENTITY_MISMATCH")
+        handle.seek(0)
+        parquet = pq.ParquetFile(handle)
+        if parquet.metadata.num_rows != count or set(_COLUMNS) - set(parquet.schema_arrow.names):
+            raise ArtifactError("BENCHMARK_SCHEMA_OR_COUNT_MISMATCH")
+        rows = parquet.read(columns=list(_COLUMNS)).to_pylist()
+    calendar = tuple(iso_date(row["date"]) for row in rows)
+    if (calendar != tuple(sorted(set(calendar))) or (calendar[0], calendar[-1]) != (first, last)):
+        raise ArtifactError("BENCHMARK_ARCHIVE_DATE_ORDER_OR_BOUNDARY")
+    for row in rows:
+        price = row["open"]
+        if isinstance(price, bool) or not isinstance(price, (int, float)) or not isfinite(price) or price <= 0:
+            raise ArtifactError("BENCHMARK_INVALID_OPEN_PRICE")
+        if (row["ticker"] != spec["symbol"] or row["adjustment"] != "raw"
+                or row["source"] not in ("MOOMOO_OPEND", "MASSIVE_GROUPED")):
+            raise ArtifactError("BENCHMARK_SECURITY_OR_PROVIDER_MISMATCH")
+    return calendar, {day: float(row["open"]) for day, row in zip(calendar, rows)}
+
+
+def _updated_series(symbol, dates, baseline_date, config, manifest):
+    metadata = dict(provider=manifest["provider"], adjustment="RAW", basis="OPEN_TO_OPEN_PRICE_RETURN")
+    try:
+        spec = next(row for row in manifest["artifacts"] if row["symbol"] == symbol)
+        calendar, prices = _updated_prices(spec)
+        points = _aligned_points(calendar, prices, dates, baseline_date)
+        return BenchmarkSeries(symbol, _LABELS[symbol], **metadata, points=points,
+            total_return=points[-1].equity - 1, max_drawdown=min(point.drawdown for point in points),
+            source_refs=((str(config.manifest_path), config.manifest_sha256),
+                         (spec["path"], spec["sha256"]),
+                         *((item["path"], item["sha256"]) for item in spec["source_refs"])))
+    except Exception as exc:
+        return BenchmarkSeries(symbol, _LABELS[symbol], **metadata,
+            error="This ETF reference is unavailable for the complete selected window.",
+            debug_error=f"{type(exc).__name__}: {exc}")
+
+
+def read_updated_benchmarks(dates: tuple[str, ...], baseline_date: str | None = None,
+                            *, config: UpdatedBenchmarkConfig | None = None) -> BenchmarkHistory:
+    """Read actual RAW open-price returns, excluding dividends, for exact dates.
+
+    No baseline means first requested open = 1; an explicit immediately preceding
+    execution date includes the first daily return. Callers choose sample bounds;
+    this reader never prepends a prior sample or fills/truncates missing prices.
+    Source refs are hash-recorded provenance and are not reopened by the UI.
+    """
+    try:
+        _validate_dates(dates, baseline_date)
+        config = config or default_updated_benchmarks_config()
+        manifest = _updated_manifest(config)
+        return BenchmarkHistory(tuple(_updated_series(symbol, dates, baseline_date, config, manifest)
+                                      for symbol in _LABELS), dates[0], dates[-1], baseline_date)
+    except Exception as exc:
+        return BenchmarkHistory(error="ETF references are unavailable for the selected window.",
+                                debug_error=f"{type(exc).__name__}: {exc}")
+

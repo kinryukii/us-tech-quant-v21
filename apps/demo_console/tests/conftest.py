@@ -14,7 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from scripts.common.storage_paths import resolve_results_path
+from scripts.common.storage_paths import resolve_cache_path
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def landing_without_performance(monkeypatch, benchmark_stub):
 
 @pytest.fixture
 def artifact_dir():
-    root = resolve_results_path("demo-console", "cache")
+    root = resolve_cache_path("demo-console", "pytest-fixtures")
     root.mkdir(parents=True, exist_ok=True)
     # mkdtemp's restrictive mode can make its own children inaccessible in the
     # managed Windows sandbox. Use an ordinary new directory; never repair ACLs.

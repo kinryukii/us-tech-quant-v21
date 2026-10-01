@@ -58,6 +58,14 @@ def _paths() -> StoragePaths: return resolve()
 def get_repo_root() -> Path: return _paths().repo_root
 def get_data_root() -> Path: return _paths().data_root
 def get_cache_root() -> Path: return _paths().cache_root
+def official_raw_archive_root() -> Path:
+    """Physical root for official originals staged for external storage."""
+    return Path(os.environ.get("USTQ_OFFICIAL_RAW_ARCHIVE_ROOT", r"D:\us-tech-quant-cold-archive")).expanduser().resolve()
+
+def is_authorized_official_raw_path(path: Path, cache_root: Path) -> bool:
+    resolved = Path(path).resolve()
+    return (resolved.is_relative_to(Path(cache_root).resolve())
+            or resolved.is_relative_to(official_raw_archive_root()))
 def get_daily_root() -> Path: return _paths().daily_root
 def get_backtest_root() -> Path: return _paths().backtest_root
 def get_results_root() -> Path: return _paths().results_root

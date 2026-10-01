@@ -1,4 +1,4 @@
-# Script-local theme for the research terminal.
+# Native theme paired with the observatory's paper-and-ink visual system.
 [browser]
 gatherUsageStats = false
 
@@ -8,23 +8,23 @@ showErrorDetails = false
 
 [theme]
 base = "light"
-primaryColor = "#235c48"
-backgroundColor = "#f7f8f5"
-secondaryBackgroundColor = "#eef1ea"
-textColor = "#202a28"
+primaryColor = "#255bde"
+backgroundColor = "#f4f2eb"
+secondaryBackgroundColor = "#eeede5"
+textColor = "#141a22"
 font = "Segoe UI, Microsoft YaHei UI, Yu Gothic UI, sans-serif"
-borderColor = "#dde3dd"
-baseRadius = "6px"
-buttonRadius = "5px"
-headingFontWeights = [550, 550, 550, 500, 500, 500]
+borderColor = "#d6d8d2"
+baseRadius = "3px"
+buttonRadius = "3px"
+headingFontWeights = [450, 500, 500, 500, 500, 500]
 baseFontSize = 16
-dataframeHeaderBackgroundColor = "#f1f4ed"
-dataframeBorderColor = "#dde3dd"
+dataframeHeaderBackgroundColor = "#eeede5"
+dataframeBorderColor = "#d6d8d2"
 chartCategoricalColors = ["#2357d9", "#d97706", "#087f71", "#884ac7"]
 
 [theme.sidebar]
-backgroundColor = "#18211f"
-secondaryBackgroundColor = "#25312b"
-textColor = "#dfe7db"
-primaryColor = "#91ab76"
-borderColor = "#435148"
+backgroundColor = "#141a22"
+secondaryBackgroundColor = "#202936"
+textColor = "#e9edf2"
+primaryColor = "#9ab8ff"
+borderColor = "#343d49"

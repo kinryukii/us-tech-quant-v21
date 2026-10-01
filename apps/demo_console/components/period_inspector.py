@@ -141,6 +141,7 @@ def render_period_inspector(points: tuple[PerformancePoint, ...], *, full_histor
                          "execution_date": st.column_config.TextColumn(tr("Execution date")),
                          "net_return": st.column_config.NumberColumn(tr("Net return"), format="percent"),
                          "gross_return": st.column_config.NumberColumn(tr("Gross return"), format="percent"),
-                         "reference_net_return": st.column_config.NumberColumn(tr("Frozen A control · Net"), format="percent"),
+                         "reference_net_return": (st.column_config.NumberColumn(tr("Frozen A control · Net"), format="percent")
+                                                  if show_reference and summary.reference_available else None),
                          "transaction_cost": st.column_config.NumberColumn(tr("Transaction cost · Source units"), format="%.6g"),
                      })

@@ -1,8 +1,14 @@
 import copy
+from datetime import datetime, timedelta, timezone
+import json
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 import pandas as pd
 import pytest
 
 from scripts.storage.refresh_free_market import normalize_chart, write_versioned_parquet, sha256
+from scripts.storage import refresh_free_market as market
 
 
 def payload():
@@ -80,3 +86,79 @@ def test_numeric_strings_materialize_as_numeric():
     data['chart']['result'][0]['indicators']['adjclose'][0]['adjclose'] = ['5.5', '6']
     bars, *_ = norm(data)
     assert all(pd.api.types.is_numeric_dtype(bars[name]) for name in ['open','high','low','close','volume','adjusted_close'])
+
+
+def test_extended_events_keep_raw_splits_but_no_price_after_end(tmp_path, monkeypatch):
+    data = payload()
+    result = data['chart']['result'][0]
+    after_end = int(pd.Timestamp('2026-09-11T13:30:00Z').timestamp())
+    result['timestamp'].append(after_end)
+    for values in result['indicators']['quote'][0].values():
+        values.append(None)
+    result['indicators']['adjclose'][0]['adjclose'].append(None)
+    result['events']['splits'][str(after_end)] = {'date': after_end, 'numerator': 3, 'denominator': 1}
+    request = Mock(return_value=SimpleNamespace(status_code=200, content=json.dumps(data).encode(),
+        url='https://query1.finance.yahoo.com/v8/finance/chart/ABC', json=lambda: data))
+    monkeypatch.setattr(market.requests, 'get', request)
+    for part in ('raw', 'checkpoints'):
+        (tmp_path / part).mkdir()
+    receipt = market.acquire_one('ABC', 'ABC', '2026-09-01', '2026-09-10', tmp_path,
+        tmp_path / 'data', Mock(), events_through='2026-09-11')
+    assert receipt['status'] == 'SUCCESS' and receipt['rejected_row_count'] == 0
+    assert receipt['max_date'] == '2026-09-10'
+    assert receipt['contract']['end'] == '2026-09-10'
+    assert receipt['contract']['events_through'] == '2026-09-11'
+    params = request.call_args.kwargs['params']
+    assert 'splits' in params['events'].split(',')
+    assert params['period2'] == int(pd.Timestamp('2026-09-12T00:00:00', tz='America/New_York').timestamp())
+    raw = next(item for item in receipt['files'] if item['role'] == 'RAW_HTTP_RESPONSE')
+    assert str(after_end) in json.loads(Path(raw['path']).read_text())['chart']['result'][0]['events']['splits']
+    output = next(item for item in receipt['files'] if item['role'] == 'NORMALIZED_DAILY')
+    assert set(pd.read_parquet(output['path']).date) == {'2026-09-09', '2026-09-10'}
+
+
+def test_default_events_contract_and_checkpoint_remain_compatible(tmp_path, monkeypatch):
+    data = payload()
+    request = Mock(return_value=SimpleNamespace(status_code=200, content=json.dumps(data).encode(),
+        url='https://query1.finance.yahoo.com/v8/finance/chart/ABC', json=lambda: data))
+    monkeypatch.setattr(market.requests, 'get', request)
+    for part in ('raw', 'checkpoints'):
+        (tmp_path / part).mkdir()
+    args = ('ABC', 'ABC', '2026-09-01', '2026-09-11', tmp_path, tmp_path/'data', Mock())
+    receipt = market.acquire_one(*args)
+    assert 'events_through' not in receipt['contract']
+    assert request.call_args.kwargs['params']['period2'] == int(pd.Timestamp('2026-09-12T00:00:00Z').timestamp())
+    assert market.acquire_one(*args) == receipt
+    request.assert_called_once()
+
+
+def test_event_extension_rejects_invalid_bounds_and_keeps_price_end_guard(tmp_path):
+    with pytest.raises(ValueError, match='events_through'):
+        market.event_request_end('2026-09-10', '2026-09-09')
+    future = (datetime.now(timezone.utc).date() + timedelta(days=2)).isoformat()
+    with pytest.raises(ValueError, match='events_through'):
+        market.event_request_end('2026-09-10', future)
+    with pytest.raises(ValueError, match='completed New York'):
+        market.main(['--start', future, '--end', future, '--events-through', future,
+                     '--tickers', 'ABC', '--work-root', str(tmp_path)])
+
+
+@pytest.mark.parametrize('utc_stamp,accepted', [('2026-09-22T21:00:00+00:00', True),
+                                              ('2026-09-22T19:59:59+00:00', False)])
+def test_cli_uses_new_york_close_instead_of_utc_date(tmp_path, monkeypatch, utc_stamp, accepted):
+    fixed = datetime.fromisoformat(utc_stamp)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed.astimezone(tz) if tz else fixed.replace(tzinfo=None)
+
+    monkeypatch.setattr(market, 'datetime', Clock)
+    monkeypatch.setattr(market, 'resolve', lambda: SimpleNamespace(cache_root=tmp_path))
+    args = ['--start', '2026-09-21', '--end', '2026-09-22', '--events-through', '2026-09-22',
+            '--tickers', 'ABC', '--work-root', str(tmp_path)]
+    if accepted:
+        assert market.main(args) == 0
+    else:
+        with pytest.raises(ValueError, match='completed New York'):
+            market.main(args)

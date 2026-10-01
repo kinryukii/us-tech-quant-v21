@@ -15,11 +15,12 @@ from apps.demo_console.components.pit_timing import render_pit_timing
 from apps.demo_console.components.replay import pause_replay
 from apps.demo_console.components.visuals import section_header, text
 from apps.demo_console.adapters.performance_reader import read_performance
+from apps.demo_console.adapters import workspace_reader
 from apps.demo_console.components.performance_stats import summarize_performance
 from apps.demo_console.components.performance_charts import wealth_chart, drawdown_chart
 from apps.demo_console.components.chart_display import render_chart
 from apps.demo_console.components.top20_table import score_label
-from apps.demo_console.components.decision_trace import trace_facts, resolve_case_ticker, remember_case, carry_case
+from apps.demo_console.components.decision_trace import trace_facts, resolve_case_ticker, remember_case, carry_case, performance_available, pending_execution
 from apps.demo_console.components.ml_comparison import comparison_rows
 from apps.demo_console.i18n import option_labeler, tr
 
@@ -98,7 +99,10 @@ def system_hero_html(model):
     """Explain the workspace using only evidence exposed by the current snapshot."""
     usable = not model.error
     profile = model.learning
-    if (usable and profile.feature_columns and profile.parameters
+    if (workspace_reader.is_updated(model) and usable and profile.feature_columns
+            and profile.vintages and profile.source_fingerprint and model.provenance.config_identity):
+        learning = tr("Verified model · {count} feature definitions", count=len(profile.feature_columns))
+    elif (usable and profile.feature_columns and profile.parameters
             and profile.source_fingerprint and model.provenance.config_identity):
         learning = tr("Frozen configuration · {count} feature definitions", count=len(profile.feature_columns))
     elif comparison_rows(model):
@@ -107,6 +111,10 @@ def system_hero_html(model):
         learning = tr("Model evidence unavailable")
     portfolio = tr("Recorded holdings linked to execution" if usable and model.holdings
                    and model.provenance.execution_date else "Portfolio linkage unavailable")
+    if workspace_reader.is_updated(model) and usable and not model.provenance.execution_date:
+        portfolio = (tr("Portfolio history through {date}", date=model.performance_cutoff_date)
+                     if performance_available(model) else tr("Awaiting next session open")
+                     if model.execution_status == "PENDING_NEXT_OPEN" else portfolio)
     sources = set(model.provenance.artifact_sources)
     identities = {source for source, digest in model.provenance.artifact_hashes if source and digest}
     provenance = tr("Source files with recorded hashes" if usable and sources and sources <= identities
@@ -140,12 +148,12 @@ def _select_execution(dates, key):
         st.session_state['system_inspect_execution'] = selected
 
 
-def _result_context_html(summary, execution_cutoff):
+def _result_context_html(summary, execution_cutoff, *, updated=False):
     """Keep the recorded window and comparison basis beside the return values."""
     fee_basis = ('Both net paths include recorded execution fees.' if summary.reference_available
                  else 'Raw A2 includes recorded execution fees.')
     comparison = ('Same-study A control; not an independent alpha test.' if summary.reference_available
-                  else 'Frozen A comparison unavailable.')
+                  else 'Updated portfolio replay · No matched A control' if updated else 'Frozen A comparison unavailable.')
     return ('<div class="uq-result-context" role="note" title="'
             + text(tr('Selected execution cutoff: {date}', date=execution_cutoff))
             + '"><div class="uq-result-window"><span>'
@@ -156,7 +164,7 @@ def _result_context_html(summary, execution_cutoff):
             + text(tr('Comparison scope')) + '</span><p>' + text(tr(comparison)) + '</p></div></div>')
 
 
-def _research_metrics(summary):
+def _research_metrics(summary, *, updated=False):
     facts = (
         ('Net cumulative return', _percent(summary.net_total_return, signed=True), 'Raw A2 · Net', 'primary'),
         ('Frozen A control · Net', _percent(summary.reference_net_total_return, signed=True),
@@ -164,13 +172,15 @@ def _research_metrics(summary):
         ('Maximum window drawdown', _percent(summary.max_drawdown.depth), 'From the running peak', 'adverse'),
         ('Gross–net return gap', '—' if summary.gross_net_difference_pp is None else f'{summary.gross_net_difference_pp:.2f} pp', 'Compounded gross minus net', ''),
     )
+    if updated:
+        facts = (facts[0], facts[2], facts[3], ('Recorded execution days', str(summary.observations), 'Through the selected performance cutoff', ''))
     return '<div class="uq-research-metrics">' + ''.join(
         '<div class="uq-research-metric ' + kind + '" title="' + text(tr(note)) + '"><span>' + text(tr(label))
         + '</span><strong>' + text(value) + '</strong><small>' + text(tr(note)) + '</small></div>'
         for label, value, note, kind in facts) + '</div>'
 
 
-def _execution_html(point, wealth):
+def _execution_html(point, wealth, *, updated=False):
     facts = (
         ('Window drawdown', _percent(wealth.drawdown)),
         ('Cash / NAV', _percent(point.cash / point.nav)),
@@ -180,18 +190,20 @@ def _execution_html(point, wealth):
     return ('<div class="uq-execution-return"><span>' + text(tr('Daily net return'))
             + '</span><strong class="' + ('uq-negative' if point.net_return < 0 else 'uq-positive') + '">'
             + text(_percent(point.net_return, signed=True)) + '</strong><small>'
-            + text(tr('Frozen A control')) + ' ' + text(_percent(point.reference_net_return, signed=True))
+            + (text(tr('Post-trade open valuation')) if updated else text(tr('Frozen A control')) + ' ' + text(_percent(point.reference_net_return, signed=True)))
             + '</small></div><dl class="uq-facts uq-execution-facts">' + ''.join(
                 '<div><dt>' + text(tr(label)) + '</dt><dd>' + text(value) + '</dd></div>'
                 for label, value in facts) + '</dl>')
 
 
 def _render_research_canvas(model, *, presentation):
-    if model.error or not model.provenance.execution_date:
+    updated = workspace_reader.is_updated(model)
+    cutoff = model.performance_cutoff_date if updated else model.provenance.execution_date
+    if model.error or not cutoff:
         st.session_state['_system_chart_key'] = None
         st.info(tr('A verified execution record is needed to display the research canvas.'))
         return
-    history = read_performance(model.provenance.execution_date)
+    history = workspace_reader.read_performance(model) if updated else read_performance(cutoff)
     if history.error or not history.points:
         st.session_state['_system_chart_key'] = None
         st.info(tr('The performance path is unavailable. The recorded case remains available.'
@@ -203,30 +215,30 @@ def _render_research_canvas(model, *, presentation):
     # The canonical reader supplies verified, cutoff-limited observations.
     # The archive calendar is used only to retain coverage semantics.
     points = history.points
-    if any(point.execution_date > model.provenance.execution_date for point in points):
+    if any(point.execution_date > cutoff for point in points):
         st.session_state['_system_chart_key'] = None
         st.error(tr('Performance observations exceed the selected execution cutoff.'))
         return
     summary = summarize_performance(points, initial_wealth=history.initial_nav,
                                     full_history_dates=history.available_dates)
-    st.html(_result_context_html(summary, model.provenance.execution_date) + _research_metrics(summary))
+    st.html(_result_context_html(summary, cutoff, updated=updated) + _research_metrics(summary, updated=updated))
     dates = tuple(point.execution_date for point in points)
     selected = st.session_state.get('system_inspect_execution')
     if selected not in dates:
         selected = dates[-1]
         st.session_state['system_inspect_execution'] = selected
-    context = (model.decision_date, dates, selected)
+    context = (model.source_id, model.source_manifest_sha256, model.decision_date, dates, selected)
     if st.session_state.get('_system_chart_context') != context:
         st.session_state['_system_chart_revision'] = st.session_state.get('_system_chart_revision', 0) + 1
         st.session_state['_system_chart_context'] = context
     key = f'system_performance_chart_{st.session_state["_system_chart_revision"]}'
     st.session_state['_system_chart_key'] = key
-    canvas, inspector = st.columns([2.6, 1], gap='medium')
+    canvas, inspector = st.columns([2.8, 1], gap='large')
     with canvas, st.container(key='uq_research_canvas'):
         st.html(section_header(tr('Portfolio trajectory'), tr('RETURN & RISK'),
                                f'{summary.start_date} → {summary.end_date}'))
-        chart = wealth_chart(summary, show_reference=True, show_gross=False,
-                             inspect_selection='system_execution_pick', inspected_date=selected).properties(height=195)
+        chart = wealth_chart(summary, show_reference=not updated, show_gross=False,
+                             inspect_selection='system_execution_pick', inspected_date=selected).properties(height=280)
         render_chart(chart, width='stretch', theme=None, key=key,
                      on_select=partial(_select_execution, dates, key), selection_mode=['system_execution_pick'])
     with inspector, st.container(key='uq_execution_inspector'):
@@ -235,14 +247,14 @@ def _render_research_canvas(model, *, presentation):
                                 persist_state='session', label_visibility='collapsed')
         index = dates.index(selected)
         point = points[index]
-        st.html(_execution_html(point, summary.wealth[index]))
+        st.html(_execution_html(point, summary.wealth[index], updated=updated))
         with st.popover(tr('Execution record details'), width='stretch'):
             st.caption(tr('Stale marks {stale} · Skipped buys {skipped} · Blocked rebalances {blocked}',
                           stale=point.stale_mark_count, skipped=point.skipped_buy_count,
                           blocked=point.blocked_rebalance_count))
             st.button(tr('Open the execution ledger'), key='system_ledger', width='stretch',
                       on_click=open_capability, args=('Research',), kwargs={'research_tab':'Execution frictions'})
-    st.html('<div class="uq-canvas-caption"><span>' + text(tr('FROZEN REPLAY'))
+    st.html('<div class="uq-canvas-caption"><span>' + text(tr('UPDATED REPLAY' if updated else 'FROZEN REPLAY'))
             + '</span><p>' + text(tr('Click the curve to inspect a recorded day. The research cutoff stays fixed.'))
             + '</p><b>' + text(tr('{count} execution records', count=summary.observations)) + '</b></div>')
     if history.reference_error:
@@ -276,13 +288,14 @@ def _start_case_walkthrough(tickers):
 def _case_chain_html(facts):
     """A chronological record join; no feature values or trade reasons inferred."""
     missing = tr('Not recorded')
+    pending = pending_execution(facts)
     membership = lambda value: tr('Held' if value is True else 'Not held' if value is False else 'Not recorded')
     rank = f'#{facts["rank"]}' if facts['rank'] is not None else missing
     steps = (
         ('Information boundary', facts['information_date'] or missing, ''),
         ('Model output', score_label(facts['score']) or missing, tr('Recorded rank') + ' · ' + rank),
-        ('Portfolio membership', membership(facts['held_before']) + ' → ' + membership(facts['held_after']), 'Before execution → After execution'),
-        ('Linked execution', facts['execution_date'] or missing, ''),
+        ('Portfolio membership', membership(facts['held_before']) + ' → ' + (tr('Awaiting next session open') if pending else membership(facts['held_after'])), 'Before execution → After execution'),
+        ('Scheduled next open' if pending else 'Linked execution', (facts.get('scheduled_execution_date') if pending else facts['execution_date']) or missing, ''),
     )
     return '<ol class="uq-case-chain" data-ticker="' + text(facts['ticker']) + '">' + ''.join(
         '<li><span class="uq-case-step">' + f'{index:02}' + '</span><div><span>' + text(tr(label))
@@ -315,6 +328,8 @@ def _render_decision_focus(model):
         state = {(True, True): 'Holding continued', (False, True): 'Entered the recorded holdings',
                  (True, False): 'Not retained in recorded holdings',
                  (False, False): 'Not held after the recorded execution'}.get((before, after), 'Membership is not fully recorded')
+        if pending_execution(facts):
+            state = 'Awaiting next session open'
         st.html('<div class="uq-case-lead"><strong>' + text(ticker) + '</strong><div><b>'
                 + text(tr(state)) + '</b></div></div>' + _case_chain_html(facts))
         _render_overview_actions(model)
@@ -323,6 +338,9 @@ def _render_decision_focus(model):
 
 
 def _render_capability(capability, model, *, presentation):
+    if workspace_reader.is_updated(model) and capability.title == "Model lineage":
+        from dataclasses import replace
+        capability = replace(capability, scope="2023–2025 annual models were rebuilt under fixed rules; 2026 uses the original frozen model. This page does not train models or calculate local attribution.")
     state = "Historical inspection" if capability.replay else "Engineering mechanism"
     if capability.replay and model.error:
         state = "Replay unavailable"
@@ -341,7 +359,7 @@ def _render_capability(capability, model, *, presentation):
         st.button(tr("Inspect portfolio setbacks & recovery" if risk else "Inspect the execution ledger"),
                   key="system_open_records", type="primary", on_click=open_capability, args=("Research",),
                   kwargs={"research_tab": "Drawdown & recovery" if risk else "Execution frictions"},
-                  disabled=bool(model.error or not model.provenance.execution_date))
+                  disabled=not performance_available(model))
     elif capability.title == "Research discipline":
         stages = ("Resolve identity", "Check prior trials", "Bind completion evidence")
         st.html('<div class="uq-system-rule-flow">' + ''.join('<div><span>' + f'{index:02}'
@@ -383,7 +401,7 @@ def _render_secondary_tools(model):
                   args=(tickers,), disabled=not bool(tickers))
         st.button(tr("Inspect portfolio setbacks & recovery"), key="system_risk", icon=":material/monitoring:",
                   on_click=open_capability, args=("Research",), kwargs={"research_tab": "Drawdown & recovery"},
-                  disabled=bool(model.error or not model.provenance.execution_date))
+                  disabled=not performance_available(model))
         with st.popover(tr('Reliability drill'), icon=':material/verified_user:', width='content'):
             render_pit_timing()
 
@@ -398,12 +416,13 @@ def render_system_overview(model, *, presentation=True):
     with st.container(key='uq_research_workspace'):
         _render_research_canvas(model, presentation=presentation)
     from apps.demo_console.components.recorded_2026 import open_recorded_2026
-    st.button(tr("View the 2026 recorded window →"), key="system_2026",
-              on_click=open_recorded_2026, type="tertiary")
+    if not workspace_reader.is_updated(model):
+        st.button(tr("View the 2026 recorded window →"), key="system_2026",
+                  on_click=open_recorded_2026, type="tertiary")
     with st.expander(tr('System mechanisms & research coverage'), expanded=False):
         _render_secondary_tools(model)
         labels = ("Recorded snapshots", "Recorded features", "Annual model vintages")
-        st.html('<div class="uq-system-evidence-strip"><span>' + text(tr("CURRENT FROZEN REPLAY")) + '</span>'
+        st.html('<div class="uq-system-evidence-strip"><span>' + text(tr("UPDATED REPLAY" if workspace_reader.is_updated(model) else "CURRENT FROZEN REPLAY")) + '</span>'
                 + ''.join('<div><strong>' + text(f'{value:,}' if value is not None else '—') + '</strong><span>'
                           + text(tr(label)) + '</span></div>' for value, label in zip(overview_facts(model), labels)) + '</div>')
         options = tuple(capability.title for capability in CAPABILITIES)

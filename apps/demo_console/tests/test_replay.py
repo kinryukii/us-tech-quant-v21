@@ -182,6 +182,7 @@ def replay_app(monkeypatch, landing_without_performance):
     monkeypatch.setattr(decision_reader, "load_overview", lambda day=None: models[day or _DATES[-1]])
     monkeypatch.setattr(decision_reader, "load_history", synthetic_history)
     app = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=20)
+    app.session_state["console_mode"] = "历史研究"
     app.session_state["workspace"] = "History"
     app.session_state["_history_focus"] = "SYNTH_21"
     state.app = app.run()

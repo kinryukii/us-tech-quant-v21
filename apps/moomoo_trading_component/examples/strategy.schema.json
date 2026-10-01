@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:moomoo-strategy-component:strategy:v1",
+  "title": "Moomoo 策略目标持仓 v1",
+  "description": "仅数据策略接口；实时来源不代表实盘权限。历史/过期记录可审阅但不得执行。",
+  "$comment": "Python validate_manifest 是最终结构校验。它还要求数量和版本在 JSON 解析后为 int 而非 float；检查 code 唯一性、显式时区和 expires_at > asof。执行阶段另校验来源、未来时间、失效时间和信号最大年龄。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "strategy_id", "name", "revision", "asof", "expires_at", "provenance", "targets"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "strategy_id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_-]+$"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "\\S"},
+    "revision": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "\\S"},
+    "asof": {"type": "string", "format": "date-time", "description": "原始信号生成时间，必须明确 UTC 或时区偏移。"},
+    "expires_at": {"type": "string", "format": "date-time", "description": "信号失效时间，必须晚于 asof。"},
+    "provenance": {"type": "string", "enum": ["demo", "live", "historical"]},
+    "source": {"type": "string", "maxLength": 4096},
+    "targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 100,
+      "uniqueItems": true,
+      "description": "代码不可重复；0 表示退出，未列代码保持原持仓。股数不得由权重隐式推导。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "target_qty"],
+        "properties": {
+          "code": {"type": "string", "pattern": "^US\\.[A-Z]{1,8}(?:\\.[A-Z])?$", "description": "证券类型还需由券商确认是支持的股票或 ETF。"},
+          "target_qty": {"type": "integer", "minimum": 0, "maximum": 1000000}
+        }
+      }
+    }
+  }
+}

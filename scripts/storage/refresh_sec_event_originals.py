@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from dataclasses import asdict
 from pathlib import Path
 
-from scripts.common.storage_paths import resolve
+from scripts.common.storage_paths import resolve, is_authorized_official_raw_path
 from scripts.storage.refresh_official_research_data import archive_module, save_json, VINTAGE
 from scripts.storage.refresh_13f_quarter import configured_user_agent, import_source
 from scripts.storage.restore_sec_data import sha256_file, file_identity
@@ -184,8 +184,8 @@ def load_pdf_package(path):
 
 
 def validate_raw_receipt(paths, row, raw):
-    path = DataStore(paths)._check_data_path(Path(raw['local_path']))
-    if not path.is_relative_to(paths.cache_root) or raw['source_reference'] != row['url']:
+    path = Path(raw['local_path']).resolve()
+    if not is_authorized_official_raw_path(path, paths.cache_root) or raw['source_reference'] != row['url']:
         raise ValueError('RAW_PATH_OR_SOURCE_URL_MISMATCH')
     sidecar = json.loads(path.with_suffix('.json').read_text(encoding='utf-8'))
     for key in ('source_reference','sha256','retrieval_timestamp_utc'):

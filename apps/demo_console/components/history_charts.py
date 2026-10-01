@@ -35,7 +35,7 @@ def _recorded_domain(records, field, *, zero):
 
 
 def _portfolio_available(model):
-    return (not model.error and bool(model.holdings)
+    return (not model.error and (bool(model.holdings) or model.execution_status == "EXECUTED")
             and any(stage.name == "Portfolio" and stage.status == "AVAILABLE"
                     for stage in model.pipeline))
 
@@ -97,7 +97,7 @@ def security_records(history: tuple[DecisionOverview, ...], ticker: str) -> list
             "held": held,
             "status": status,
             "ranking_status": ("Unavailable" if not ranking_available else
-                               "Recorded" if row is not None else "Outside Top20"),
+                               "Recorded" if row is not None else f"Outside Top{model.ranking_limit}"),
         })
     _segments(records, "rank")
     _segments(records, "score")
@@ -207,9 +207,10 @@ def security_chart(history: tuple[DecisionOverview, ...], ticker: str, metric: s
                alt.Tooltip("score_label:N", title=tr("Recorded score")),
                alt.Tooltip(f"{ranking_field}:N", title=tr("Ranking evidence")),
                alt.Tooltip(f"{status_field}:N", title=tr("Holdings state"))]
-    y = (alt.Y("rank:Q", title=tr("Top20 rank · 1 is highest"),
-               scale=alt.Scale(domain=[20, 1], zero=False),
-               axis=alt.Axis(values=[1, 5, 10, 15, 20], format="d"))
+    limit = max((model.ranking_limit for model in history), default=20)
+    y = (alt.Y("rank:Q", title=tr("Top20 rank · 1 is highest") if limit == 20 else "Top40 rank · 1 is highest",
+               scale=alt.Scale(domain=[limit, 1], zero=False),
+               axis=alt.Axis(values=[1, 5, 10, 15, 20] if limit == 20 else [1, 10, 20, 30, 40], format="d"))
          if metric == "rank" else
          alt.Y("score:Q", title=tr("Recorded model score"),
                scale=alt.Scale(domain=_recorded_domain(records, "score", zero=False), zero=False),

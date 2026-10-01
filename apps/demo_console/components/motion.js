@@ -63,7 +63,7 @@
     const chartPanels = [
       ".st-key-uq_chart_panel", ".st-key-uq_history_portfolio", ".st-key-uq_history_security",
       ".st-key-uq_performance_path", ".st-key-uq_execution_quality", ".st-key-uq_holding_matrix",
-      ".st-key-uq_research_workspace", ".st-key-ml_engine_workspace",
+      ".st-key-uq_research_workspace", ".st-key-ml_engine_workspace", ".st-key-applied_portfolio_canvas",
       ".st-key-research_execution_turnover", '[class*="st-key-history_holding_matrix_"]',
     ];
     const uniqueRegions = (selectors) => {
@@ -88,7 +88,7 @@
     };
     const enter = () => {
       const selectors = [
-        ".uq-page-header", ".uq-metrics", ".uq-snapshot-brief",
+        ".uq-page-header", ".uq-workspace-lead", ".uq-strategy-scorecard", ".uq-metrics", ".uq-snapshot-brief",
         ".uq-system-purpose", ".st-key-uq_decision_focus", ".uq-ml-method-sheet",
         ".uq-table-shell", ".uq-transition-panel",
         ".st-key-uq_inspector", ...chartPanels,
@@ -107,16 +107,16 @@
       });
     };
     const emphasizeDate = () => {
-      for (const element of find(".uq-date, .uq-snapshot-brief")) {
+      for (const element of find(".uq-date, .uq-workspace-observation, .uq-snapshot-brief")) {
         play(element, [
-          {backgroundColor: "rgba(85,125,64,.17)"},
-          {backgroundColor: "rgba(85,125,64,0)"},
+          {backgroundColor: "rgba(37,91,222,.13)"},
+          {backgroundColor: "rgba(37,91,222,0)"},
         ], {duration: 850});
       }
       for (const element of find(".uq-transition-panel, .uq-change-group")) {
         play(element, [
-          {boxShadow: "0 0 0 3px rgba(85,125,64,.16)"},
-          {boxShadow: "0 0 0 0 rgba(85,125,64,0)"},
+          {boxShadow: "0 0 0 3px rgba(37,91,222,.13)"},
+          {boxShadow: "0 0 0 0 rgba(37,91,222,0)"},
         ], {duration: 700});
       }
       for (const element of uniqueRegions([

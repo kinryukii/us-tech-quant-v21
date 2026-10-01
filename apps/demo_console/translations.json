@@ -1,4 +1,392 @@
 {
+  "Raw A2 details": {
+    "zh": "Raw A2 详细记录",
+    "ja": "Raw A2 の詳細記録"
+  },
+  "Recorded net NAV · Compare the same observed dates": {
+    "zh": "已记录净值 · 按相同记录日期对比",
+    "ja": "記録済み純資産価値 · 同じ記録日で比較"
+  },
+  "Portfolio comparison": {
+    "zh": "组合表现对比",
+    "ja": "ポートフォリオの比較"
+  },
+  "Raw A2: recorded execution-open prices and fees. HGB: QFQ price-coordinate proxy replay.": {
+    "zh": "Raw A2 使用已记录的执行开盘价及费用；HGB 使用 QFQ 价格坐标代理回放。",
+    "ja": "Raw A2 は記録済み執行寄り付き価格・費用、HGB は QFQ 価格座標の代理リプレイです。"
+  },
+  "Strategy details": {
+    "zh": "详情策略",
+    "ja": "詳細の戦略"
+  },
+  "Applied strategies": {
+    "zh": "已应用策略",
+    "ja": "適用済み戦略"
+  },
+  "Allocation comparison": {
+    "zh": "仓位对比",
+    "ja": "配分の比較"
+  },
+  "No comparable replay is available in this window.": {
+    "zh": "此区间暂无可比的回放记录。",
+    "ja": "この期間の比較可能な記録はありません。"
+  },
+  "Recorded holdings unavailable": {
+    "zh": "暂无已记录持仓",
+    "ja": "記録済み保有データはありません"
+  },
+  "Recorded execution date: {date}": {
+    "zh": "已执行记录日：{date}",
+    "ja": "執行記録日：{date}"
+  },
+  "Recorded cash **{cash}** · **{count}** securities": {
+    "zh": "已记录现金 **{cash}** · **{count}** 只证券",
+    "ja": "記録済み現金 **{cash}** · **{count}** 銘柄"
+  },
+  "Raw A2 shows recorded execution holdings; HGB shows target allocations. Dates are retained separately; unavailable weights are blank.": {
+    "zh": "Raw A2 为已执行回放持仓；HGB 为目标方案，分别标注日期；缺失权重留空。",
+    "ja": "Raw A2 は記録済み執行保有、HGB は目標配分です。日付を区別し、未取得比率は空欄にします。"
+  },
+  "End NAV · Window start 1": {
+    "zh": "期末 NAV · 区间起点 1",
+    "ja": "期末 NAV · 期間開始値 1"
+  },
+  "Target unavailable": {
+    "zh": "目标数据缺失",
+    "ja": "目標配分は利用できません"
+  },
+  "Target cash **{cash}** · **{count}** securities": {
+    "zh": "目标现金 **{cash}** · **{count}** 只证券",
+    "ja": "目標現金 **{cash}** · **{count}** 銘柄"
+  },
+  "Selected strategy details": {
+    "zh": "所选策略详情",
+    "ja": "選択した戦略の詳細"
+  },
+  "Cash at window end": {
+    "zh": "区间期末现金",
+    "ja": "期間末の現金比率"
+  },
+  "Target weight": {
+    "zh": "目标仓位",
+    "ja": "目標比率"
+  },
+  "Previous signal weight": {
+    "zh": "方案原仓位",
+    "ja": "シグナルの変更前比率"
+  },
+  "Adjustment": {
+    "zh": "调整",
+    "ja": "変更"
+  },
+  "Applied strategy": {
+    "zh": "策略",
+    "ja": "適用戦略"
+  },
+  "{position} / {total} recorded observation dates": {
+    "zh": "{position} / {total} 个记录日期",
+    "ja": "{position} / {total} 件の記録日"
+  },
+  "HGB + diagonal risk": {
+    "zh": "HGB＋对角风险",
+    "ja": "HGB＋対角リスク"
+  },
+  "HGB + factor / shrinkage risk": {
+    "zh": "HGB＋因子／收缩风险",
+    "ja": "HGB＋因子／縮小リスク"
+  },
+  "Observation date": {
+    "zh": "观察截止日",
+    "ja": "観測の締切日"
+  },
+  "US equities · Risk-aware allocation": {
+    "zh": "美国股票 · 风险约束配置",
+    "ja": "米国株 · リスク制約付き配分"
+  },
+  "Selected strategy portfolio trajectory": {
+    "zh": "所选策略的组合净值",
+    "ja": "選択戦略のポートフォリオ推移"
+  },
+  "Selected strategy data is unavailable or failed validation.": {
+    "zh": "所选策略的数据暂不可用或未通过校验。",
+    "ja": "選択戦略のデータを利用できないか、検証に失敗しました。"
+  },
+  "No strategy replay is recorded by this observation date.": {
+    "zh": "此观察截止日之前尚无该策略的回放记录。",
+    "ja": "この観測締切日までの戦略リプレイ記録はありません。"
+  },
+  "Recorded replay: {start} → {end} · {days} execution records": {
+    "zh": "已记录回放：{start} → {end} · {days} 个执行记录",
+    "ja": "記録済みリプレイ：{start} → {end} · {days} 件の執行記録"
+  },
+  "Historical mean cash": {
+    "zh": "历史平均现金",
+    "ja": "過去の平均現金比率"
+  },
+  "End NAV": {
+    "zh": "期末 NAV",
+    "ja": "期末 NAV"
+  },
+  "Replay ends on {date}; later target signals do not extend this return curve.": {
+    "zh": "回放截至 {date}；此后的目标信号不延长收益曲线。",
+    "ja": "リプレイは {date} まで。その後の目標シグナルは収益曲線に追加しません。"
+  },
+  "Strategy target allocation": {
+    "zh": "策略目标仓位",
+    "ja": "戦略の目標配分"
+  },
+  "SIGNAL PLAN": {
+    "zh": "信号方案",
+    "ja": "シグナル計画"
+  },
+  "No verified target allocation is available by the selected date.": {
+    "zh": "所选日期之前没有可用的已核验目标方案。",
+    "ja": "選択日までに検証済みの目標配分はありません。"
+  },
+  "Latest available target signal: {date}": {
+    "zh": "最近可用目标信号：{date}",
+    "ja": "直近の利用可能な目標シグナル：{date}"
+  },
+  "Target signal date: {date}": {
+    "zh": "目标信号日：{date}",
+    "ja": "目標シグナル日：{date}"
+  },
+  "Cash-start account plan · Initial cash 100% · Target weights only.": {
+    "zh": "空仓账户方案 · 初始现金 100% · 仅为目标权重",
+    "ja": "全額現金からの口座計画 · 初期現金 100% · 目標比率のみ"
+  },
+  "Recorded historical signal targets. These are not executed account holdings.": {
+    "zh": "已记录的历史信号目标，不代表账户已成交持仓。",
+    "ja": "記録済みの過去のシグナル目標であり、口座の約定済み保有ではありません。"
+  },
+  "Target equity allocation": {
+    "zh": "目标股票仓位",
+    "ja": "目標株式配分"
+  },
+  "Target cash allocation": {
+    "zh": "目标现金仓位",
+    "ja": "目標現金配分"
+  },
+  "Target securities": {
+    "zh": "目标持有证券",
+    "ja": "目標保有銘柄数"
+  },
+  "Target allocation": {
+    "zh": "目标仓位",
+    "ja": "目標配分"
+  },
+  "Target signal date": {
+    "zh": "目标信号日",
+    "ja": "目標シグナル日"
+  },
+  "Download target weights CSV": {
+    "zh": "下载目标仓位 CSV",
+    "ja": "目標配分 CSV をダウンロード"
+  },
+  "Use the observation date above to inspect a recorded signal and its target allocation.": {
+    "zh": "使用上方观察截止日查看历史信号及其目标仓位。",
+    "ja": "上の観測締切日で過去のシグナルと目標配分を確認できます。"
+  },
+  "Frozen HGB model and risk allocation": {
+    "zh": "冻结 HGB 模型与风险配置",
+    "ja": "凍結 HGB モデルとリスク配分"
+  },
+  "SELECTED STRATEGY": {
+    "zh": "所选策略",
+    "ja": "選択した戦略"
+  },
+  "Model input features": {
+    "zh": "模型输入特征",
+    "ja": "モデルの入力特徴量"
+  },
+  "Training boundary": {
+    "zh": "训练边界",
+    "ja": "学習の境界"
+  },
+  "Prediction target: next-open to five-session-later-open absolute return.": {
+    "zh": "预测目标：下一交易日开盘至五个交易会话后开盘的绝对收益。",
+    "ja": "予測対象：次の取引日の寄り付きから5取引セッション後の寄り付きまでの絶対リターン。"
+  },
+  "Feature family": {
+    "zh": "特征组",
+    "ja": "特徴量グループ"
+  },
+  "Feature count": {
+    "zh": "特征数量",
+    "ja": "特徴量数"
+  },
+  "Original A2 rank and standardized score": {
+    "zh": "原 A2 排名与标准化分数",
+    "ja": "元の A2 順位と標準化スコア"
+  },
+  "Returns, volatility, volume and price position": {
+    "zh": "收益、波动、成交量与价格位置",
+    "ja": "リターン、変動、出来高と価格位置"
+  },
+  "Ten observed close-return lags": {
+    "zh": "最近十个真实收盘收益",
+    "ja": "直近10回の実際の終値リターン"
+  },
+  "These policies reuse frozen HGB and downside-quantile models with their selected risk optimizer. No model is fitted in DEMO.": {
+    "zh": "策略复用冻结的 HGB、下行分位数模型与对应风险优化器；DEMO 不重新拟合模型。",
+    "ja": "凍結済み HGB・下側分位モデルと対応するリスク最適化器を再利用します。DEMO ではモデルを再学習しません。"
+  },
+  "Per-security HGB prediction scores are not exposed by this package. A2 ranking scores are not substituted for them.": {
+    "zh": "当前数据包未包含逐股 HGB 预测分数，不使用 A2 排名分数替代。",
+    "ja": "このデータには銘柄別 HGB 予測スコアが含まれていません。A2 順位スコアで代用しません。"
+  },
+  "The selected HGB policies have no published training-period replay here. Choose the 2026 sample or Raw A2.": {
+    "zh": "所选 HGB 策略尚无已发布的训练期回放，请选择 2026 样本或 Raw A2。",
+    "ja": "選択した HGB 戦略には公開済みの学習期間リプレイがありません。2026 年サンプルか Raw A2 を選択してください。"
+  },
+  "Historical return records and current target allocations have separate dates. Target weights do not represent executed trades.": {
+    "zh": "历史收益记录与当前目标方案分别标注日期；目标权重不代表已执行交易。",
+    "ja": "過去の収益記録と現在の目標配分には別々の日付を表示します。目標比率は約定済み取引ではありません。"
+  },
+  "Buy / increase": {
+    "zh": "买入／加仓",
+    "ja": "買い／追加"
+  },
+  "Sell / reduce": {
+    "zh": "卖出／减仓",
+    "ja": "売り／縮小"
+  },
+  "Hold": {
+    "zh": "保持",
+    "ja": "維持"
+  },
+  "Selected HGB strategy comparison": {
+    "zh": "已选 HGB 策略对比",
+    "ja": "選択 HGB 戦略の比較"
+  },
+  "COMMON RECORDED WINDOW": {
+    "zh": "共同记录窗口",
+    "ja": "共通の記録期間"
+  },
+  "Shared recorded window: {start} → {end} · {count} observations": {
+    "zh": "共同记录区间：{start} → {end} · {count} 个记录",
+    "ja": "共通記録期間：{start} → {end} · {count} 件"
+  },
+  "Each comparison uses exactly these recorded dates and the NAV immediately before its first record. Longer RAW history remains separate; no HGB result is extended beyond its archive.": {
+    "zh": "比较使用完全相同的记录日期，以首条记录之前的 NAV 为起点；Raw 的更长历史单独展示，HGB 不延伸到未记录日期。",
+    "ja": "同じ記録日と最初の記録直前の NAV を比較の起点にします。Raw の長い履歴は別表示とし、HGB を記録外の日付に延長しません。"
+  },
+  "Each source retains its recorded price and fee basis. This common-date comparison is descriptive, not an estimate of alpha.": {
+    "zh": "各来源保留原价格和费用口径；同日期比较用于描述历史，不视为超额收益估计。",
+    "ja": "各データの価格・費用基準を保持します。同日比較は過去の説明であり、アルファの推定ではありません。"
+  },
+  "RAW dates do not fully match this HGB window; RAW is omitted from this comparison.": {
+    "zh": "Raw 日期未完整匹配该 HGB 窗口，因此未加入这组比较。",
+    "ja": "Raw の日付がこの HGB 期間に完全一致しないため、比較から除外しています。"
+  },
+  "Historical average cash": {
+    "zh": "历史平均现金",
+    "ja": "過去の平均現金比率"
+  },
+  "Historical cash weight": {
+    "zh": "历史现金仓位",
+    "ja": "過去の現金比率"
+  },
+  "Recorded cash weights in this window": {
+    "zh": "区间内已记录的现金权重",
+    "ja": "期間内に記録された現金比率"
+  },
+  "Selected HGB performance is unavailable; no RAW result is substituted.": {
+    "zh": "所选 HGB 绩效暂不可用，不以 Raw 结果替代。",
+    "ja": "選択した HGB の績效は利用できません。Raw の結果では代用しません。"
+  },
+  "No recorded HGB performance is available through this observation date.": {
+    "zh": "此观察截止日之前尚无 HGB 绩效记录。",
+    "ja": "この観測締切日までの HGB 績效記録はありません。"
+  },
+  "Recorded net NAV · Gross path unavailable": {
+    "zh": "已记录净值 · 暂无毛收益路径",
+    "ja": "記録済み純 NAV · グロス経路は未提供"
+  },
+  "No recorded HGB performance is available in this selected window.": {
+    "zh": "所选区间暂无 HGB 绩效记录。",
+    "ja": "選択期間に HGB 績效記録はありません。"
+  },
+  "Selected observation: {selected}. Recorded HGB performance ends on {end}; a later target signal does not add returns.": {
+    "zh": "观察截止日 {selected}；HGB 绩效记录截至 {end}，此后的目标信号不增加收益记录。",
+    "ja": "観測締切日 {selected}。HGB の績效は {end} までで、その後の目標シグナルで収益は追加しません。"
+  },
+  "Deepest drawdown: {date} · Recovery: {recovery}": {
+    "zh": "最大回撤日：{date} · 恢复：{recovery}",
+    "ja": "最大ドローダウン日：{date} · 回復：{recovery}"
+  },
+  "Archive-edge and selected-window months may be partial; missing dates are never filled.": {
+    "zh": "记录边界及所选区间的月份可能不完整，不补造缺失日期。",
+    "ja": "記録の端と選択期間の月は一部のみの場合があります。欠落日を補いません。"
+  },
+  "HGB replay uses the corrected close-signal / next-session-open clock and QFQ price-coordinate proxies. These exposed 2026 outcomes are descriptive, not a new independent test.": {
+    "zh": "HGB 回放采用修正的收盘信号／次一交易日开盘时钟及 QFQ 价格坐标代理；2026 结果已暴露，属于历史描述，不是新的独立检验。",
+    "ja": "HGB リプレイは修正済みの終値シグナル／次取引日寄り付き時刻と QFQ 価格座標を使用します。既に公開された2026年結果は過去の説明であり、新しい独立検証ではありません。"
+  },
+  "Window returns use the NAV immediately before the first included record. Cash values are historical replay weights, separate from the latest cash-start target.": {
+    "zh": "区间收益以首条记录之前的 NAV 为起点；现金数值为历史回放权重，与最新空仓目标分开。",
+    "ja": "期間収益は最初の記録直前の NAV を起点にします。現金は過去のリプレイ比率であり、最新の全額現金からの目標とは別です。"
+  },
+  "The HGB package does not contain daily gross returns, fee amounts, turnover or execution flags. These fields remain unavailable and are never reported as zero.": {
+    "zh": "HGB 数据包没有逐日毛收益、费用金额、换手或执行标志，这些字段保持缺失，不显示为零。",
+    "ja": "HGB データには日次グロス収益、費用、売買回転率、執行フラグがありません。未提供として扱い、ゼロとは表示しません。"
+  },
+  "{old} → {new} share units": {
+    "zh": "{old} 股 → {new} 股",
+    "ja": "{old} 株 → {new} 株"
+  },
+  "{old} shares → {new} shares": {
+    "zh": "{old} 股合并／拆分为 {new} 股",
+    "ja": "{old} 株を {new} 株に変更"
+  },
+  "Split-adjusted comparable price (USD)": {
+    "zh": "按拆合股换算的可比股价（美元）",
+    "ja": "株式分割調整後の比較価格（米ドル）"
+  },
+  "Split / consolidation": {
+    "zh": "拆股／合股",
+    "ja": "株式分割／併合"
+  },
+  "Price display": {
+    "zh": "股价显示",
+    "ja": "株価表示"
+  },
+  "Actual historical USD prices": {
+    "zh": "历史实际美元股价",
+    "ja": "当時の実際の米ドル株価"
+  },
+  "Comparable prices after verified splits": {
+    "zh": "已核实拆合股后的可比股价",
+    "ja": "確認済み株式分割後の比較価格"
+  },
+  "Share-unit basis: {date}. Only verified split/consolidation ratios through this date are applied. No dividends or strategy returns are included.": {
+    "zh": "以 {date} 的股本单位为基准，仅换算此前已核实的拆合股比例；不含股息或策略收益。",
+    "ja": "{date} の株式単位に換算。確認済み分割・併合のみを反映し、配当と戦略リターンは含みません。"
+  },
+  "Some mixed corporate actions cannot be represented by split ratios alone. Comparable prices are unavailable for this range.": {
+    "zh": "该期间有无法仅用拆合股比例表达的公司行动，因此不显示可比股价。",
+    "ja": "この期間には分割比率だけで表せない企業行動があるため、比較価格は表示できません。"
+  },
+  "Identity history": {
+    "zh": "证券身份历史",
+    "ja": "証券識別子の履歴"
+  },
+  "Verified company continuity": {
+    "zh": "已核实的公司连续历史",
+    "ja": "確認済みの企業継続履歴"
+  },
+  "Separate CUSIP records": {
+    "zh": "按 CUSIP 分开查看",
+    "ja": "CUSIP ごとに表示"
+  },
+  "Verified continuity: {old} → {new}, corporate action on {date}. Original reported identities remain unchanged.": {
+    "zh": "已核实 {old} → {new} 的连续关系，公司行动日期 {date}；原始申报身份保持不变。",
+    "ja": "{old} → {new} の継続性を確認済み。企業行動日 {date}。元の申告識別子は変更しません。"
+  },
+  "Dollar price history and splits": {
+    "zh": "美元股价与拆合股",
+    "ja": "米ドル株価と株式分割"
+  },
   "Ticker": {
     "zh": "证券代码",
     "ja": "銘柄コード"
@@ -8,7 +396,7 @@
     "ja": "記録順位"
   },
   "Recorded score": {
-    "zh": "已记录分数",
+    "zh": "已记录评分",
     "ja": "記録済みスコア"
   },
   "Previous snapshot": {
@@ -1069,7 +1457,7 @@
   },
   "Recorded execution days": {
     "zh": "已记录执行日",
-    "ja": "記録された執行日"
+    "ja": "記録済み執行日数"
   },
   "From the selected window's running peak": {
     "zh": "相对于选定区间内的历史峰值",
@@ -1420,7 +1808,7 @@
     "ja": "1 の成長推移 · 対象期間の始点"
   },
   "Window drawdown": {
-    "zh": "区间内回撤",
+    "zh": "区间回撤",
     "ja": "対象期間内のドローダウン"
   },
   "Raw A2": {
@@ -4389,5 +4777,1295 @@
   "From models. To evidence.": {
     "zh": "从模型，到证据。",
     "ja": "モデルから、根拠へ。"
+  },
+  "Updated research": {
+    "zh": "更新研究",
+    "ja": "更新研究"
+  },
+  "Frozen research": {
+    "zh": "原冻结研究",
+    "ja": "元の凍結研究"
+  },
+  "Data edition": {
+    "zh": "数据版本",
+    "ja": "データ版"
+  },
+  "Updated rankings and performance, or the original frozen study.": {
+    "zh": "查看更新后的排名与绩效，或切回原冻结研究。",
+    "ja": "更新された順位と運用成績、または元の凍結研究を表示します。"
+  },
+  "SIGNAL DATE": {
+    "zh": "信号日期",
+    "ja": "シグナル日"
+  },
+  "Updated data · Recorded replay": {
+    "zh": "更新数据 · 历史回放",
+    "ja": "更新データ · 記録済みリプレイ"
+  },
+  "Recorded signal dates in this data edition. Browsing does not recalculate.": {
+    "zh": "当前数据版本中已保存的信号日期；浏览不会触发重算。",
+    "ja": "このデータ版に保存されたシグナル日です。閲覧で再計算は行いません。"
+  },
+  "Browse a period": {
+    "zh": "期间查询",
+    "ja": "期間を指定"
+  },
+  "Signal date in this period": {
+    "zh": "期间交易日",
+    "ja": "期間内のシグナル日"
+  },
+  "Choose a signal date": {
+    "zh": "选择区间内交易日",
+    "ja": "期間内のシグナル日を選択"
+  },
+  "{count} recorded signal dates. Your selection applies to every section.": {
+    "zh": "区间内有 {count} 个记录日，选择后同步所有页面。",
+    "ja": "記録済みシグナル日が{count}日あります。選択は全ページに反映されます。"
+  },
+  "No recorded rankings in this period. Missing dates are not filled.": {
+    "zh": "该区间没有排名记录，不补造缺日。",
+    "ja": "この期間に順位の記録はありません。欠損日は補完しません。"
+  },
+  "Signal rankings": {
+    "zh": "信号排名",
+    "ja": "シグナル順位"
+  },
+  "Executed portfolio": {
+    "zh": "已执行持仓",
+    "ja": "執行済み保有銘柄"
+  },
+  "Latest executed portfolio · {execution} open · From signal {signal}": {
+    "zh": "最近已执行持仓 · {execution} 开盘 · 对应 {signal} 信号",
+    "ja": "直近の執行済みポートフォリオ · {execution}寄付 · {signal}のシグナル"
+  },
+  "No verified executed portfolio is available by the selected date.": {
+    "zh": "所选日期之前暂无可核验的已执行持仓。",
+    "ja": "選択日までに検証済みの執行ポートフォリオはありません。"
+  },
+  "These are the selected signal's rankings. Its next-open portfolio is still pending.": {
+    "zh": "这里显示所选信号的排名，下次开盘后的持仓尚待执行。",
+    "ja": "選択したシグナルの順位です。次回寄付のポートフォリオは執行待ちです。"
+  },
+  "Scheduled execution": {
+    "zh": "计划执行",
+    "ja": "執行予定"
+  },
+  "Rank range": {
+    "zh": "排名范围",
+    "ja": "順位範囲"
+  },
+  "UPDATED RESEARCH · SIMULATED PORTFOLIO": {
+    "zh": "更新研究 · 模拟组合",
+    "ja": "更新研究 · シミュレーション"
+  },
+  "Update data": {
+    "zh": "更新数据",
+    "ja": "データ更新"
+  },
+  "13F pool": {
+    "zh": "13F 股票池",
+    "ja": "13F銘柄群"
+  },
+  "Partial coverage": {
+    "zh": "部分覆盖",
+    "ja": "一部のみ利用可能"
+  },
+  "Calculated coverage": {
+    "zh": "可计算覆盖",
+    "ja": "計算対象"
+  },
+  "Performance through": {
+    "zh": "绩效截至",
+    "ja": "成績の最終日"
+  },
+  "Next open pending": {
+    "zh": "待下次开盘",
+    "ja": "次回寄付待ち"
+  },
+  "Data details": {
+    "zh": "数据说明",
+    "ja": "データ詳細"
+  },
+  "Data coverage": {
+    "zh": "数据覆盖",
+    "ja": "データ網羅率"
+  },
+  "Rankings and performance use {eligible} qualified names from a {total}-name pool; {excluded} are excluded.": {
+    "zh": "股票池共 {total} 支，其中 {eligible} 支满足计算条件，{excluded} 支未纳入。排名与绩效以可计算范围为准。",
+    "ja": "全{total}銘柄中{eligible}銘柄が計算条件を満たし、{excluded}銘柄は対象外です。順位と成績は計算可能な範囲に基づきます。"
+  },
+  "13F {quarter} · Effective {effective} · {count} institutions": {
+    "zh": "13F {quarter} · 生效 {effective} · {count} 家机构",
+    "ja": "13F {quarter} · 適用開始 {effective} · {count}機関"
+  },
+  "Verified security identities: {count}": {
+    "zh": "已核验证券身份：{count} 支",
+    "ja": "検証済みの銘柄識別情報：{count}銘柄"
+  },
+  "Signal and execution": {
+    "zh": "信号与执行",
+    "ja": "シグナルと執行"
+  },
+  "Signal {signal} · Performance through {cutoff}": {
+    "zh": "信号日期 {signal} · 绩效截至 {cutoff}",
+    "ja": "シグナル日 {signal} · 成績の最終日 {cutoff}"
+  },
+  "Execution is scheduled for {date}. The signal has no executed portfolio yet.": {
+    "zh": "计划在 {date} 开盘执行，该信号尚无执行后的持仓。",
+    "ja": "{date}の寄付で執行予定です。このシグナルの執行後保有銘柄はまだありません。"
+  },
+  "Executed at the {date} open.": {
+    "zh": "已在 {date} 开盘执行。",
+    "ja": "{date}の寄付で執行済みです。"
+  },
+  "The execution input is not ready for this signal.": {
+    "zh": "该信号所需的执行数据尚未就绪。",
+    "ja": "このシグナルの執行データは準備中です。"
+  },
+  "Descriptive replay · Execution-open valuation · Trading costs included": {
+    "zh": "历史回放 · 执行后开盘估值 · 已计入交易成本",
+    "ja": "記述的リプレイ · 執行後寄付評価 · 取引費用を含む"
+  },
+  "Performance ends on {cutoff}; it does not cover signal {signal}. Later execution data still needs verification.": {
+    "zh": "绩效仅计算到 {cutoff}，未覆盖所选信号日 {signal}；后续执行数据仍需核验。",
+    "ja": "成績は{cutoff}までです。{signal}のシグナルは対象外で、以降の執行データは検証待ちです。"
+  },
+  "Recommendations updated for {signal}; portfolio and performance updates are incomplete. The displayed performance still ends on {cutoff}.": {
+    "zh": "{signal} 的新推荐已生成，组合与绩效更新尚未完成；当前显示的绩效截至 {cutoff}。",
+    "ja": "{signal}の推奨銘柄を更新しましたが、ポートフォリオと成績の更新は未完了です。表示中の成績は{cutoff}までです。"
+  },
+  "Update details": {
+    "zh": "更新详情",
+    "ja": "更新の詳細"
+  },
+  "See the update report.": {
+    "zh": "详见更新报告。",
+    "ja": "更新レポートをご覧ください。"
+  },
+  "Rankings through {signal} · Performance through {cutoff}": {
+    "zh": "排名截至 {signal} · 绩效截至 {cutoff}",
+    "ja": "順位の最終日 {signal} · 成績の最終日 {cutoff}"
+  },
+  "Displayed research: signal {signal} · Performance through {cutoff}": {
+    "zh": "当前展示：{signal} 信号 · 绩效截至 {cutoff}",
+    "ja": "表示中の研究：{signal}のシグナル · 成績は{cutoff}まで"
+  },
+  "Today's recommendations are updated.": {
+    "zh": "当天推荐已更新。",
+    "ja": "本日の推奨銘柄を更新しました。"
+  },
+  "Last update {time} JST · Market data {date}": {
+    "zh": "上次更新 {time} JST · 行情日期 {date}",
+    "ja": "最終更新 {time} JST · 市場データ {date}"
+  },
+  "Update report": {
+    "zh": "更新报告",
+    "ja": "更新レポート"
+  },
+  "Update today's research": {
+    "zh": "更新今日推荐",
+    "ja": "本日の研究を更新"
+  },
+  "Refresh the 13F pool and available prices, then update A2 rankings, portfolio performance and risk.": {
+    "zh": "更新 13F 股票池和可获取的行情，随后同步 A2 排名、组合绩效与风险。",
+    "ja": "13F銘柄群と取得可能な価格を更新し、A2順位・ポートフォリオ成績・リスクを同期します。"
+  },
+  "Command": {
+    "zh": "指令",
+    "ja": "コマンド"
+  },
+  "Run update": {
+    "zh": "开始更新",
+    "ja": "更新を開始"
+  },
+  "Updating data and recommendations…": {
+    "zh": "正在更新数据与推荐…",
+    "ja": "データと推奨銘柄を更新中…"
+  },
+  "Recommendations updated": {
+    "zh": "推荐已更新",
+    "ja": "推奨銘柄を更新済み"
+  },
+  "Update incomplete": {
+    "zh": "更新尚未完成",
+    "ja": "更新は未完了"
+  },
+  "Run the command to get today's data. Browsing does not start an update.": {
+    "zh": "运行指令后获取当天数据；浏览页面不会启动更新。",
+    "ja": "コマンド実行後に本日のデータを取得します。閲覧だけでは更新を開始しません。"
+  },
+  "Awaiting next session open": {
+    "zh": "等待下次开盘",
+    "ja": "次回寄付待ち"
+  },
+  "Scheduled next open": {
+    "zh": "计划下次开盘执行",
+    "ja": "次回寄付に執行予定"
+  },
+  "Updated model output · Recorded execution": {
+    "zh": "更新后的模型输出 · 已记录执行",
+    "ja": "更新されたモデル出力 · 記録済み執行"
+  },
+  "Updated daily rank and score, read from saved results.": {
+    "zh": "逐日更新的排名与分数，读取自已保存结果。",
+    "ja": "保存済み結果から読み込む日次順位とスコアです。"
+  },
+  "The next execution is pending. Verified previous holdings remain distinct from the signal.": {
+    "zh": "下一次执行尚在等待；已核验的此前持仓与本次信号分别显示。",
+    "ja": "次回執行は保留中です。検証済みの従来の保有銘柄と今回のシグナルは別々に表示します。"
+  },
+  "{ticker}'s signal is awaiting the next session open.": {
+    "zh": "{ticker} 的信号等待下次开盘执行。",
+    "ja": "{ticker}のシグナルは次回寄付での執行待ちです。"
+  },
+  "Selected ranking range · Select a bar to focus the case.": {
+    "zh": "所选排名范围 · 点击柱形查看对应案例。",
+    "ja": "選択した順位範囲 · 棒を選ぶと該当ケースを表示します。"
+  },
+  "Updated daily Top40 rankings; simulated holdings still follow the original Top20 rule.": {
+    "zh": "逐日更新 Top40 排名，模拟持仓仍遵循原 Top20 规则。",
+    "ja": "Top40順位を日次更新し、シミュレーション保有銘柄は元のTop20ルールに従います。"
+  },
+  "Annual models were rebuilt and saved under fixed rules. Local feature contributions are not calculated here.": {
+    "zh": "年度模型按固定规则重建并保存；这里不计算单笔预测的特征贡献。",
+    "ja": "年度モデルは固定ルールで再構築・保存されています。個別予測の特徴量寄与は計算しません。"
+  },
+  "Verified model · {count} feature definitions": {
+    "zh": "已核验模型 · {count} 个特征定义",
+    "ja": "検証済みモデル · {count}個の特徴量定義"
+  },
+  "Portfolio history through {date}": {
+    "zh": "组合记录截至 {date}",
+    "ja": "ポートフォリオ記録は{date}まで"
+  },
+  "Updated portfolio replay · No matched A control": {
+    "zh": "更新后的组合回放 · 暂无同口径 A 对照",
+    "ja": "更新済みポートフォリオ再現 · 同一条件のA比較なし"
+  },
+  "Through the selected performance cutoff": {
+    "zh": "截至所选绩效日期",
+    "ja": "選択した成績最終日まで"
+  },
+  "Post-trade open valuation": {
+    "zh": "执行后开盘估值",
+    "ja": "取引後の寄付評価"
+  },
+  "UPDATED REPLAY": {
+    "zh": "更新研究回放",
+    "ja": "更新リプレイ"
+  },
+  "2023–2025 annual models were rebuilt under fixed rules; 2026 uses the original frozen model. This page does not train models or calculate local attribution.": {
+    "zh": "2023–2025 年度模型按固定规则重建，2026 年使用原冻结模型；本页不训练模型，也不计算局部归因。",
+    "ja": "2023–2025年の年度モデルは固定ルールで再構築し、2026年は元の凍結モデルを使用します。このページでは学習や個別帰属の計算は行いません。"
+  },
+  "Keep the same security in focus. Inspect its saved rank and score, then the verified annual model lineage.": {
+    "zh": "保持同一只股票，先查看已保存的排名和分数，再核对对应年度模型。",
+    "ja": "同じ銘柄を対象に、保存済み順位とスコアを確認し、対応する年度モデルをたどります。"
+  },
+  "Keep the selected case in view while inspecting the portfolio's executed path, drawdowns and recovery through its verified cutoff.": {
+    "zh": "保留所选案例，同时检查已执行组合截至核验日期的收益路径、回撤与恢复。",
+    "ja": "選択したケースを保ちながら、検証済み最終日までの執行ポートフォリオの推移・下落・回復を確認します。"
+  },
+  "The signal awaits the next session open. Compare it with the last verified portfolio; do not treat the new ranking as an executed holding.": {
+    "zh": "该信号等待下次开盘；可与最近已核验持仓对照，新排名尚不代表已执行持仓。",
+    "ja": "シグナルは次回寄付待ちです。直近の検証済みポートフォリオと比較でき、新順位は執行済み保有銘柄ではありません。"
+  },
+  "Portfolio growth after costs": {
+    "zh": "计入成本后的组合增长",
+    "ja": "費用控除後のポートフォリオ成長"
+  },
+  "The selected period, after recorded trading costs.": {
+    "zh": "所选期间表现，已计入记录中的交易成本。",
+    "ja": "選択期間の成績です。記録された取引費用を控除しています。"
+  },
+  "Historical comparisons": {
+    "zh": "原研究对照",
+    "ja": "元の研究との比較"
+  },
+  "The original A and ETF comparisons are available in their own recorded periods.": {
+    "zh": "原 A 模型及 ETF 对照保留在各自的原研究区间内。",
+    "ja": "元のAモデルとETFの比較は、それぞれの研究期間で確認できます。"
+  },
+  "Open historical comparisons": {
+    "zh": "查看原研究对照",
+    "ja": "元の研究比較を開く"
+  },
+  "After-cost returns · Valued at each execution open": {
+    "zh": "计入成本的收益 · 按每次执行后开盘估值",
+    "ja": "費用控除後収益 · 各執行後の寄付で評価"
+  },
+  "History and latest data · One research workspace": {
+    "zh": "历史至最新 · 统一研究工作台",
+    "ja": "過去から最新まで · 統合研究ワークスペース"
+  },
+  "Historical to latest · Read only": {
+    "zh": "历史至最新 · 只读",
+    "ja": "過去から最新まで · 読み取り専用"
+  },
+  "One signal timeline across history and the latest verified results. Browsing does not recalculate.": {
+    "zh": "历史与最新已验证结果共用一条信号时间轴。浏览不会触发重算。",
+    "ja": "過去と最新の検証済み結果を一つのシグナル時系列で表示します。閲覧では再計算しません。"
+  },
+  "Date range": {
+    "zh": "日期区间",
+    "ja": "日付範囲"
+  },
+  "Historical research comparisons": {
+    "zh": "历史研究对照",
+    "ja": "過去研究の比較"
+  },
+  "Original frozen A2 / A and ETF references retain their own recorded basis. These paths are not joined to the updated portfolio.": {
+    "zh": "原冻结 A2／A 与 ETF 保留各自记录口径，不与更新组合拼接。",
+    "ja": "元の凍結 A2／A と ETF は記録時の基準を保持し、更新ポートフォリオと連結しません。"
+  },
+  "No frozen comparison observations overlap the selected period.": {
+    "zh": "所选区间没有重叠的原冻结对照记录。",
+    "ja": "選択期間と重なる凍結比較記録はありません。"
+  },
+  "Frozen reference window: {start} → {end} · {count} execution days": {
+    "zh": "原冻结对照区间：{start} → {end} · {count} 个执行日",
+    "ja": "凍結比較期間：{start} → {end} · {count} 執行日"
+  },
+  "Each frozen path starts from 1 before this reference window. Only complete ETF observations for this window are displayed.": {
+    "zh": "各冻结曲线从对照区间前的 1 起算；仅显示完整覆盖该区间的 ETF。",
+    "ja": "各凍結曲線は比較期間直前の 1 から始まり、期間全体をカバーする ETF のみ表示します。"
+  },
+  "Source: original frozen execution archive": {
+    "zh": "来源：原冻结执行档案",
+    "ja": "出典：元の凍結執行記録"
+  },
+  "Sample": {
+    "zh": "样本范围",
+    "ja": "サンプル範囲"
+  },
+  "Historical training / validation": {
+    "zh": "历史训练／验证",
+    "ja": "過去の訓練／検証"
+  },
+  "2026 test sample": {
+    "zh": "2026 测试集",
+    "ja": "2026 テストセット"
+  },
+  "Historical results include annual out-of-fold validation. The frozen model's 2026 observations are displayed separately and are not used for training or tuning.": {
+    "zh": "历史结果包含按年度的样本外验证（OOF）；2026 使用冻结模型，单独展示，不参与训练或调参。",
+    "ja": "過去の結果には年度別のアウトオブフォールド検証（OOF）が含まれます。2026年は凍結モデルの観測として別表示し、訓練や調整に使用しません。"
+  },
+  "Calendar month": {
+    "zh": "按月",
+    "ja": "月別"
+  },
+  "Calendar quarter": {
+    "zh": "按季度",
+    "ja": "四半期別"
+  },
+  "Custom dates": {
+    "zh": "任意时间段",
+    "ja": "任意の期間"
+  },
+  "Calendar period: {start} → {end}. Only recorded execution dates within this period are included.": {
+    "zh": "日历区间：{start} → {end}，仅纳入区间内已记录的执行日。",
+    "ja": "暦の期間：{start} → {end}。期間内の記録済み執行日のみ含みます。"
+  },
+  "Boundary calendar period: available records {start} → {end}; this may be an incomplete month or quarter.": {
+    "zh": "边界日历期间：现有记录 {start} → {end}，可能不足完整月或季度。",
+    "ja": "境界期間：利用可能な記録は {start} → {end}。月または四半期の一部に限られる場合があります。"
+  },
+  "The historical QQQ / SPY reference window is unavailable.": {
+    "zh": "QQQ／SPY 历史参考区间不可用。",
+    "ja": "QQQ／SPY の過去比較期間を利用できません。"
+  },
+  "Shared reference coverage: {start} → {end} · {count} execution days": {
+    "zh": "共同对照区间：{start} → {end} · {count} 个执行日",
+    "ja": "共通比較期間：{start} → {end} · {count} 執行日"
+  },
+  "The comparison uses the common recorded window of frozen A2 / A, QQQ and SPY. The updated strategy above keeps its full selected period.": {
+    "zh": "对照使用原冻结 A2／A、QQQ 与 SPY 共同覆盖的记录区间；上方更新策略仍保留完整所选区间。",
+    "ja": "比較には凍結 A2／A、QQQ、SPY の共通記録期間を使用します。上の更新戦略は選択期間全体を保持します。"
+  },
+  "QQQ and SPY use the same displayed dates and raw open-to-open price returns, excluding cash dividends and benchmark fees. These are price references, not total-return indices.": {
+    "zh": "QQQ、SPY 与策略使用相同展示日期，按原始开盘价之间的价格收益比较，不含现金分红和基准交易费用；这不是含分红的总回报指数。",
+    "ja": "QQQ・SPY は戦略と同じ表示期間の未調整始値間リターンです。現金配当・ベンチマーク取引費用を含まず、配当込み指数ではありません。"
+  },
+  "ETF price references use hash-bound Moomoo and Massive raw prices with recorded source boundaries. They do not match the strategy's risk exposures or execution costs; return differences are descriptive, not estimated alpha.": {
+    "zh": "ETF 价格参考使用经哈希校验的 Moomoo 与 Massive 原始行情，并记录来源切换日期。其风险敞口与交易成本不同于策略，收益差仅作对照，不代表估计的超额收益。",
+    "ja": "ETF 価格参照はハッシュ検証済みの Moomoo・Massive 未調整価格と記録された切替日を使用します。戦略とリスクや取引費用が異なるため、リターン差は比較でありアルファの推計ではありません。"
+  },
+  "Single date": {
+    "zh": "任意单日",
+    "ja": "任意の1日"
+  },
+  "Random period": {
+    "zh": "随机时间段",
+    "ja": "ランダムな期間"
+  },
+  "Choose another random period": {
+    "zh": "重新随机",
+    "ja": "別の期間を抽選"
+  },
+  "Random period: {start} → {end}": {
+    "zh": "本次随机：{start} → {end}",
+    "ja": "抽選した期間：{start} → {end}"
+  },
+  "QQQ / SPY price references": {
+    "zh": "QQQ／SPY 价格参考",
+    "ja": "QQQ／SPY 価格比較"
+  },
+  "QQQ and SPY use the same selected dates and raw open-to-open price returns, excluding dividends. These market references do not establish risk-adjusted alpha.": {
+    "zh": "QQQ 与 SPY 使用相同所选日期的原始开盘价收益，不含分红；此市场参考不代表风险调整后超额收益。",
+    "ja": "QQQ と SPY は同じ選択日付の未調整始値間リターンを使用し、配当を含みません。この比較はリスク調整後アルファを示すものではありません。"
+  },
+  "Sample years: {years}": {
+    "zh": "样本年份：{years}",
+    "ja": "対象年：{years}"
+  },
+  "A2 + RX · Net": {
+    "zh": "A2 + RX · 费后",
+    "ja": "A2 + RX · 費用控除後"
+  },
+  "A2 / RX": {
+    "zh": "A2 / A2 + RX",
+    "ja": "A2 / A2 + RX"
+  },
+  "A2 + RX · Selection and execution": {
+    "zh": "A2 + RX · 入选与执行",
+    "ja": "A2 + RX · 選定と執行"
+  },
+  "RX OVERLAY": {
+    "zh": "RX 选股层",
+    "ja": "RX 選定レイヤー"
+  },
+  "RX selected names": {
+    "zh": "RX 入选股票",
+    "ja": "RX 選定銘柄"
+  },
+  "RX executed holdings": {
+    "zh": "RX 已执行持仓",
+    "ja": "RX 執行済み保有銘柄"
+  },
+  "Raw A2 rank": {
+    "zh": "原 A2 排名",
+    "ja": "元の A2 順位"
+  },
+  "RX selection score": {
+    "zh": "RX 选股分数",
+    "ja": "RX 選定スコア"
+  },
+  "Scheduled execution: {date}": {
+    "zh": "计划执行：{date}",
+    "ja": "執行予定：{date}"
+  },
+  "RX selection is recorded; its next-open execution is pending. These names are not an executed holding snapshot.": {
+    "zh": "RX 已完成选股，等待下一交易日开盘执行。此列表尚不代表已执行持仓。",
+    "ja": "RX 選定は記録済みで、翌取引日の寄付き執行を待っています。この一覧は執行済み保有銘柄ではありません。"
+  },
+  "RX execution is blocked by missing verified price inputs.": {
+    "zh": "RX 执行因已验证价格不足而暂不可用。",
+    "ja": "検証済み価格が不足しているため、RX の執行は保留中です。"
+  },
+  "No executed RX holdings for this signal.": {
+    "zh": "此信号尚无已执行 RX 持仓。",
+    "ja": "このシグナルには執行済み RX 保有銘柄がありません。"
+  },
+  "Why RX accepted or retained each replacement": {
+    "zh": "RX 为何接受替换或保留原股票",
+    "ja": "RX が入替を採用、または元の銘柄を維持した理由"
+  },
+  "Incumbent": {
+    "zh": "原入选股票",
+    "ja": "元の選定銘柄"
+  },
+  "Proposed entrant": {
+    "zh": "拟替换入选股票",
+    "ja": "入替候補銘柄"
+  },
+  "Score margin": {
+    "zh": "分数差",
+    "ja": "スコア差"
+  },
+  "Required margin": {
+    "zh": "要求分数差",
+    "ja": "必要スコア差"
+  },
+  "RX decision": {
+    "zh": "RX 决策",
+    "ja": "RX 判断"
+  },
+  "Replace": {
+    "zh": "接受替换",
+    "ja": "入替を採用"
+  },
+  "Retain": {
+    "zh": "保留原股票",
+    "ja": "元の銘柄を維持"
+  },
+  "No replacement pair was proposed for this signal.": {
+    "zh": "此信号没有提出替换配对。",
+    "ja": "このシグナルでは入替候補の組合せはありません。"
+  },
+  "A replacement is a selection decision. Only the engine's verified trades establish a buy or sale.": {
+    "zh": "替换是选股决策，实际买卖以执行引擎已验证的交易记录为准。",
+    "ja": "入替は銘柄選定上の判断です。実際の売買は執行エンジンの検証済み取引記録で確認します。"
+  },
+  "Frozen RX selection rules use the shared next-open execution and fee rules. This is an open-ended descriptive replay, not a reproduction of the old frozen RX ledger.": {
+    "zh": "冻结 RX 选股规则采用与 A2 相同的次日开盘执行和费用规则，查询结束不强制清仓；这是描述性回放，不等同于旧冻结 RX 账本。",
+    "ja": "凍結 RX 選定ルールに A2 と共通の翌日寄付き執行・費用ルールを適用します。表示期間末に強制決済せず、旧 RX 台帳の再現とは区別した記述的リプレイです。"
+  },
+  "A2 + RX is not available for this A2 update and selected signal. The original A2 and market references remain available.": {
+    "zh": "本次 A2 更新或所选信号尚无匹配的 A2 + RX 结果；原 A2 与市场对照仍可查看。",
+    "ja": "この A2 更新または選択シグナルに対応する A2 + RX 結果は未公開です。元の A2 と市場比較は引き続き表示します。"
+  },
+  "RX performance ends on {cutoff} and does not fully cover this window. The original A2 and market window is unchanged.": {
+    "zh": "RX 绩效截至 {cutoff}，未完整覆盖所选期间。原 A2 与市场对照的期间保持不变。",
+    "ja": "RX の成績は {cutoff} までで、選択期間全体をカバーしていません。元の A2 と市場比較の表示期間は変更しません。"
+  },
+  "Selected stocks: price paths and executions": {
+    "zh": "入选期间价格与实际交易",
+    "ja": "選定期間の価格と実際の取引"
+  },
+  "Strategy": {
+    "zh": "组合",
+    "ja": "ポートフォリオ"
+  },
+  "Stock": {
+    "zh": "股票",
+    "ja": "銘柄"
+  },
+  "Holding or pending selection interval": {
+    "zh": "持有或待执行入选区间",
+    "ja": "保有または執行待ちの選定期間"
+  },
+  "Holding · {start} → {end}": {
+    "zh": "持有 · {start} → {end}",
+    "ja": "保有 · {start} → {end}"
+  },
+  "Still held": {
+    "zh": "仍持有",
+    "ja": "保有中"
+  },
+  "Entry predates available ledger": {
+    "zh": "买入早于可用账本",
+    "ja": "購入日は台帳の開始日以前"
+  },
+  "Pending selection · {date}": {
+    "zh": "待执行入选 · {date}",
+    "ja": "執行待ちの選定 · {date}"
+  },
+  "Selected without a recorded holding": {
+    "zh": "已入选但无持仓记录",
+    "ja": "選定済み・保有記録なし"
+  },
+  "Open": {
+    "zh": "开盘",
+    "ja": "始値"
+  },
+  "Close": {
+    "zh": "收盘",
+    "ja": "終値"
+  },
+  "Price": {
+    "zh": "价格",
+    "ja": "価格"
+  },
+  "Source": {
+    "zh": "来源",
+    "ja": "出典"
+  },
+  "Shares": {
+    "zh": "股数",
+    "ja": "株数"
+  },
+  "Trade": {
+    "zh": "交易",
+    "ja": "取引"
+  },
+  "Execution price index": {
+    "zh": "执行口径价格指数",
+    "ja": "執行基準の価格指数"
+  },
+  "Selection signal date": {
+    "zh": "入选信号日",
+    "ja": "選定シグナル日"
+  },
+  "Corporate action date": {
+    "zh": "公司行动日期",
+    "ja": "企業アクション日"
+  },
+  "Executed buy": {
+    "zh": "实际买入",
+    "ja": "執行済み購入"
+  },
+  "Executed sell": {
+    "zh": "实际卖出",
+    "ja": "執行済み売却"
+  },
+  "Recorded fill price": {
+    "zh": "记录成交价",
+    "ja": "記録済み約定価格"
+  },
+  "Recorded executions": {
+    "zh": "实际交易记录",
+    "ja": "実際の取引記録"
+  },
+  "Corporate actions and price adjustments": {
+    "zh": "公司行动与价格调整",
+    "ja": "企業アクションと価格調整"
+  },
+  "Daily prices and overnight gaps": {
+    "zh": "每日价格与隔夜跳空",
+    "ja": "日次価格とオーバーナイト・ギャップ"
+  },
+  "Previous session": {
+    "zh": "前一交易日",
+    "ja": "前取引日"
+  },
+  "Previous close": {
+    "zh": "前收盘价",
+    "ja": "前日終値"
+  },
+  "Overnight gap (%)": {
+    "zh": "隔夜跳空（%）",
+    "ja": "オーバーナイト・ギャップ（%）"
+  },
+  "Holding before open": {
+    "zh": "开盘前持有状态",
+    "ja": "寄付き前の保有状態"
+  },
+  "Held before open": {
+    "zh": "开盘前已持有",
+    "ja": "寄付き前から保有"
+  },
+  "New buy at open: preceding gap excluded": {
+    "zh": "当日开盘新买：不享有此前跳空",
+    "ja": "寄付きで新規購入：直前のギャップは対象外"
+  },
+  "Not held before open": {
+    "zh": "开盘前未持有",
+    "ja": "寄付き前は未保有"
+  },
+  "Pre-open holding unavailable": {
+    "zh": "开盘前持有状态未知",
+    "ja": "寄付き前の保有状態は不明"
+  },
+  "No selection or executed holding evidence is available in this sample.": {
+    "zh": "本样本期间没有可用的入选或已执行持仓记录。",
+    "ja": "このサンプル期間には利用可能な選定・執行済み保有記録がありません。"
+  },
+  "No verified prices are available for this interval.": {
+    "zh": "此区间没有已验证价格。",
+    "ja": "この期間には検証済み価格がありません。"
+  },
+  "Verified stock price evidence is unavailable for this selection.": {
+    "zh": "所选股票的已验证价格暂不可用。",
+    "ja": "選択銘柄の検証済み価格は現在利用できません。"
+  },
+  "No dated corporate-action event is recorded for this stock in the displayed interval.": {
+    "zh": "所示区间没有记录此股票带日期的公司行动事件。",
+    "ja": "表示期間にはこの銘柄の日付付き企業アクション記録はありません。"
+  },
+  "No holding episode is recorded for this selection. The chart shows up to 20 recent observed price dates.": {
+    "zh": "本次入选没有持仓区间记录，图中展示最近最多 20 个实际价格日期。",
+    "ja": "この選定には保有期間の記録がありません。直近最大 20 日分の観測価格を表示します。"
+  },
+  "Pending selection: no position entry is implied. The chart shows up to 20 recent observed price dates.": {
+    "zh": "待执行入选尚不代表建仓。图中展示最近最多 20 个实际价格日期。",
+    "ja": "執行待ちの選定は保有開始を意味しません。直近最大 20 日分の観測価格を表示します。"
+  },
+  "Prices use the execution engine's point-in-time adjusted index, not raw market quotes. Trading fees are deducted separately.": {
+    "zh": "价格采用执行引擎的逐日复权指数口径，并非原始市场报价；交易费用另行扣除。",
+    "ja": "価格は執行エンジンの日付時点の調整済み指数であり、未調整の市場価格ではありません。取引費用は別途控除します。"
+  },
+  "Dashed lines mark selection signals; triangles mark recorded BUY/SELL executions. A selection alone does not establish a holding.": {
+    "zh": "虚线标记入选信号，三角形标记实际买卖。入选本身不等同于持有。",
+    "ja": "破線は選定シグナル、三角形は記録済みの売買を示します。選定だけでは保有を意味しません。"
+  },
+  "Overnight gap = open / previous session close − 1. Missing previous-session prices remain blank. Only shares held before the open are exposed; a new opening buy does not earn the preceding gap. This breakdown is descriptive and is not added again to portfolio returns.": {
+    "zh": "隔夜跳空 = 当开 / 前一交易日收盘 − 1。缺少前收时留空。开盘前已有持仓才承受该跳空，开盘新买不享有此前跳空；这里只作展示分解，不重复计入组合收益。",
+    "ja": "オーバーナイト・ギャップ = 当日始値 / 前取引日終値 − 1。前日価格がなければ空欄です。寄付き前からの保有分のみが影響を受け、新規の寄付き購入は直前のギャップを獲得しません。この表示上の分解を成績に重複加算しません。"
+  },
+  "13F institutional holdings · {ticker}": {
+    "zh": "13F 机构持仓 · {ticker}",
+    "ja": "13F 機関保有 · {ticker}"
+  },
+  "Effective disclosures at the selected signal": {
+    "zh": "所选信号当时有效披露",
+    "ja": "選択シグナル時点の有効な開示"
+  },
+  "Latest disclosed holdings": {
+    "zh": "最新披露持仓",
+    "ja": "最新の開示保有情報"
+  },
+  "13F disclosure scope": {
+    "zh": "13F 查询范围",
+    "ja": "13F 開示範囲"
+  },
+  "Latest holdings are a current disclosure query only. They do not change historical stock selection or performance.": {
+    "zh": "最新持仓仅用于当前披露查询，不改变历史选股或绩效。",
+    "ja": "最新保有情報は現在の開示照会専用で、過去の銘柄選定や成績には反映しません。"
+  },
+  "Verified 13F holdings are unavailable for this stock and disclosure scope.": {
+    "zh": "所选股票及披露范围暂无已验证 13F 持仓信息。",
+    "ja": "この銘柄・開示範囲には検証済みの 13F 保有情報がありません。"
+  },
+  "Reported quarter {quarter} · Effective {effective} · Filings through {asof}": {
+    "zh": "报告季度 {quarter} · 生效 {effective} · 申报截至 {asof}",
+    "ja": "報告四半期 {quarter} · 発効 {effective} · 申告日 {asof} まで"
+  },
+  "Reporting institution": {
+    "zh": "申报机构",
+    "ja": "申告機関"
+  },
+  "Registered associated person": {
+    "zh": "注册表关联人物",
+    "ja": "登録上の関連人物"
+  },
+  "Reported shares": {
+    "zh": "申报股数",
+    "ja": "申告株数"
+  },
+  "Reported value (USD)": {
+    "zh": "申报市值（美元）",
+    "ja": "申告時価（米ドル）"
+  },
+  "Filing date": {
+    "zh": "申报日期",
+    "ja": "申告日"
+  },
+  "Disclosure source": {
+    "zh": "披露来源",
+    "ja": "開示出典"
+  },
+  "No matching holding is recorded within this verified disclosure scope.": {
+    "zh": "此已验证披露范围内没有匹配持仓记录。",
+    "ja": "検証済みの開示範囲内に一致する保有記録はありません。"
+  },
+  "Associated people are registry labels for institutions, not evidence of personal-account holdings. Reported holdings describe the filing quarter, not a live portfolio.": {
+    "zh": "关联人物来自机构注册表，不代表其个人账户持仓。持仓反映申报季度，并非实时组合。",
+    "ja": "関連人物名は機関登録情報に基づくもので、個人口座の保有を示しません。保有情報は申告四半期の内容で、現在のポートフォリオではありません。"
+  },
+  "Covers the registered institutions, not all SEC filers. Associated people come from the registry; these are institution holdings, not personal accounts.": {
+    "zh": "范围仅包括注册机构，并非所有 SEC 申报人。关联人物来自注册表；这里展示机构持仓，不是个人账户。",
+    "ja": "対象は登録機関であり、SEC の全申告者ではありません。関連人物は登録情報に基づき、表示内容は機関保有であって個人口座ではありません。"
+  },
+  "Historical coverage contains the retained eligible Top100 per institution; an absent row does not prove no holding. Share counts are blank when unavailable.": {
+    "zh": "历史范围为每家机构保留的合格 Top100 持仓；没有记录不代表未持有。缺少股数时留空。",
+    "ja": "過去の対象は各機関で保持された適格上位100銘柄です。記録がないことは未保有を意味しません。株数が不明な場合は空欄です。"
+  },
+  "Market open (USD)": {
+    "zh": "实际开盘价（美元）",
+    "ja": "市場始値（米ドル）"
+  },
+  "Market close (USD)": {
+    "zh": "实际收盘价（美元）",
+    "ja": "市場終値（米ドル）"
+  },
+  "Market quotes for {date}. Hover over the chart or open daily details for other dates. USD quotes are unadjusted; the chart retains the execution index.": {
+    "zh": "报价日期：{date}。其他日期的具体股价可在图中悬停或展开逐日明细查看。美元报价未复权，曲线仍保留回测执行指数。",
+    "ja": "価格の日付：{date}。他の日付はグラフのツールチップまたは日次明細で確認できます。米ドル価格は未調整、曲線は執行指数です。"
+  },
+  "Verified unadjusted USD quotes are unavailable for this date; index values are not dollar prices.": {
+    "zh": "该日暂无可验证的未复权美元报价；指数数值不代表美元股价。",
+    "ja": "この日の検証済み未調整ドル価格はありません。指数値はドル価格ではありません。"
+  },
+  "Search stock history · All historical stocks": {
+    "zh": "自由股票历史查询 · 不限当前排名",
+    "ja": "Search stock history · All historical stocks"
+  },
+  "Search the complete verified historical pool, including stocks never selected in Top40. This query has its own date range and does not change the current signal or portfolio.": {
+    "zh": "可查询全部已验证的历史股票池，包括从未进入 Top40 的股票。此处日期独立选择，不改变当前信号与组合。",
+    "ja": "Search the complete verified historical pool, including stocks never selected in Top40. This query has its own date range and does not change the current signal or portfolio."
+  },
+  "Verified full-pool history is unavailable.": {
+    "zh": "暂无可验证的全池历史记录。",
+    "ja": "Verified full-pool history is unavailable."
+  },
+  "Search any stock": {
+    "zh": "查询股票（不限 Top20／Top40）",
+    "ja": "Search any stock"
+  },
+  "Type a ticker or company name": {
+    "zh": "输入股票代码或公司名称",
+    "ja": "Type a ticker or company name"
+  },
+  "Stock history date range": {
+    "zh": "股票历史查询区间",
+    "ja": "Stock history date range"
+  },
+  "Choose both dates.": {
+    "zh": "请选择开始和结束日期。",
+    "ja": "Choose both dates."
+  },
+  "Security identity (CUSIP)": {
+    "zh": "证券身份（CUSIP，不同身份分开查询）",
+    "ja": "Security identity (CUSIP)"
+  },
+  "This ticker has no verified record in this project. This does not mean it has never traded or never been held by an institution.": {
+    "zh": "本项目暂无此代码的已验证记录；不代表它从未交易或从未被机构持有。",
+    "ja": "This ticker has no verified record in this project. This does not mean it has never traded or never been held by an institution."
+  },
+  "Top20 days": {
+    "zh": "进入 Top20 的天数",
+    "ja": "Top20 days"
+  },
+  "Top20 selection periods": {
+    "zh": "Top20 连续入选段数",
+    "ja": "Top20 selection periods"
+  },
+  "Top40 days": {
+    "zh": "进入 Top40 的天数",
+    "ja": "Top40 days"
+  },
+  "Top40 selection periods": {
+    "zh": "Top40 连续入选段数",
+    "ja": "Top40 selection periods"
+  },
+  "Best recorded rank": {
+    "zh": "区间最佳排名",
+    "ja": "Best recorded rank"
+  },
+  "A2 + RX selected days": {
+    "zh": "A2＋RX 入选天数",
+    "ja": "A2 + RX selected days"
+  },
+  "Counts are selection trading days, not buys. A continuous period ends at any unselected or unverified trading day; a period already active at the range start counts once within this range.": {
+    "zh": "天数指入选交易日，不是买入次数。遇到未入选或缺少有效记录的交易日，连续段结束；区间起点已在入选的，按本区间内一段计数。",
+    "ja": "Counts are selection trading days, not buys. A continuous period ends at any unselected or unverified trading day; a period already active at the range start counts once within this range."
+  },
+  "In pool: {pool} days · Ranked: {ranked} · In-pool data gaps: {gaps} · Outside the effective pool: {outside}": {
+    "zh": "在当期股票池：{pool} 天 · 有效排名：{ranked} 天 · 池内数据缺口：{gaps} 天 · 不在当期池：{outside} 天",
+    "ja": "In pool: {pool} days · Ranked: {ranked} · In-pool data gaps: {gaps} · Outside the effective pool: {outside}"
+  },
+  "First Top20 in range: {first} · Last Top20 in range: {last}": {
+    "zh": "区间首次进入 Top20：{first} · 最近进入 Top20：{last}",
+    "ja": "First Top20 in range: {first} · Last Top20 in range: {last}"
+  },
+  "Full-pool rank": {
+    "zh": "全池排名（越小越靠前）",
+    "ja": "Full-pool rank"
+  },
+  "13F quarter": {
+    "zh": "13F 报告季度",
+    "ja": "13F quarter"
+  },
+  "No verified ranking in this interval; this is not a rank below 40.": {
+    "zh": "此区间没有可验证排名，不能据此认定排名在 40 名以后。",
+    "ja": "No verified ranking in this interval; this is not a rank below 40."
+  },
+  "Continuous selection periods": {
+    "zh": "连续入选区间",
+    "ja": "Continuous selection periods"
+  },
+  "Daily ranking and pool records": {
+    "zh": "逐日排名与股票池记录",
+    "ja": "Daily ranking and pool records"
+  },
+  "Selection": {
+    "zh": "入选范围",
+    "ja": "Selection"
+  },
+  "Trading days": {
+    "zh": "交易日数",
+    "ja": "Trading days"
+  },
+  "Ranked": {
+    "zh": "有有效排名",
+    "ja": "Ranked"
+  },
+  "In pool, no verified rank": {
+    "zh": "在池内，缺少有效排名",
+    "ja": "In pool, no verified rank"
+  },
+  "Outside effective pool": {
+    "zh": "不在当期有效股票池",
+    "ja": "Outside effective pool"
+  },
+  "Show market prices and institutional holdings": {
+    "zh": "查看美元股价与机构持仓",
+    "ja": "Show market prices and institutional holdings"
+  },
+  "Market price (USD)": {
+    "zh": "实际股价（美元）",
+    "ja": "Market price (USD)"
+  },
+  "Unadjusted observed USD quotes; splits can create discontinuities. This chart does not calculate strategy returns.": {
+    "zh": "展示已验证的未复权美元报价；拆合股可能造成价格跳变，此图不计算策略收益。",
+    "ja": "Unadjusted observed USD quotes; splits can create discontinuities. This chart does not calculate strategy returns."
+  },
+  "Verified unadjusted USD quotes are unavailable for this interval.": {
+    "zh": "此区间暂无可验证的未复权美元报价。",
+    "ja": "Verified unadjusted USD quotes are unavailable for this interval."
+  },
+  "13F reference date": {
+    "zh": "13F 查询参考日期",
+    "ja": "13F reference date"
+  },
+  "Annualized Sharpe": {
+    "zh": "年化夏普比率",
+    "ja": "年率換算シャープレシオ"
+  },
+  "Sharpe: daily mean / sample standard deviation × √252; risk-free rate = 0. Initial cash baseline excluded. Fewer than two returns or zero variance: unavailable. Descriptive, not evidence of statistical significance.": {
+    "zh": "夏普口径：日收益均值 ÷ 样本标准差 × √252，无风险利率设为 0。排除初始现金基线；少于两条收益或波动为零时留空。这是描述性指标，不代表统计显著性。",
+    "ja": "Sharpe: daily mean / sample standard deviation × √252; risk-free rate = 0. Initial cash baseline excluded. Fewer than two returns or zero variance: unavailable. Descriptive, not evidence of statistical significance."
+  },
+  "Sharpe is a descriptive annualized ratio. No alpha, confidence interval, DSR, PBO or probability of skill is inferred from these observations.": {
+    "zh": "夏普仅作描述性年化指标；不从这些记录推断超额收益能力、置信区间、DSR、PBO 或策略有效概率。",
+    "ja": "Sharpe is a descriptive annualized ratio. No alpha, confidence interval, DSR, PBO or probability of skill is inferred from these observations."
+  },
+  "3 fixed strategies · Compare together": {
+    "zh": "三项既定策略 · 同页对照"
+  },
+  "3 applied strategies": {
+    "zh": "三项已应用策略"
+  },
+  "Detail focus only. All three strategies remain in the main comparison.": {
+    "zh": "仅选择详情焦点，主页面始终保留三个策略的对照。"
+  },
+  "Replay through {end} · Signal snapshot {selected}. Later targets do not add returns.": {
+    "zh": "绩效截至 {end} · 信号快照 {selected}；后续目标不延长收益曲线。"
+  },
+  "Three frozen strategies use the same cash-start ledger, execution dates, price inputs and 5 bp one-way fee. No model is refitted and no missing return is extended.": {
+    "zh": "三个冻结策略采用同批空仓起始账本、执行日期、价格输入及单边 5 bp 费用；模型不重新训练，缺失收益不补齐。"
+  },
+  "Quantitative comparison": {
+    "zh": "量化指标对照"
+  },
+  "Portfolio growth": {
+    "zh": "组合净值"
+  },
+  "Drawdown comparison": {
+    "zh": "回撤对照"
+  },
+  "Annualized compound return": {
+    "zh": "年化复合收益率"
+  },
+  "Annualized volatility": {
+    "zh": "年化波动率"
+  },
+  "Sortino · Target return 0": {
+    "zh": "Sortino · 目标收益 0"
+  },
+  "Calmar · Selected window": {
+    "zh": "Calmar · 所选区间"
+  },
+  "Longest underwater period · Records": {
+    "zh": "最长未创新高 · 记录日数"
+  },
+  "Recovery date": {
+    "zh": "恢复日期"
+  },
+  "Positive return days": {
+    "zh": "正收益日占比"
+  },
+  "Positive return months": {
+    "zh": "正收益月占比"
+  },
+  "Best daily net return": {
+    "zh": "最佳单日净收益"
+  },
+  "Historical average exposure": {
+    "zh": "历史平均股票仓位"
+  },
+  "Average recorded securities": {
+    "zh": "平均持仓数量"
+  },
+  "Cumulative turnover · Times": {
+    "zh": "累计换手 · 倍数"
+  },
+  "Average daily turnover": {
+    "zh": "平均每日换手"
+  },
+  "Simulated fees / Window initial NAV": {
+    "zh": "回放费用 / 区间初始净值"
+  },
+  "Gross period return": {
+    "zh": "区间毛收益"
+  },
+  "Gross/net return difference · pp": {
+    "zh": "毛净收益差 · 百分点"
+  },
+  "HGB · Diagonal": {
+    "zh": "HGB · 对角风险"
+  },
+  "HGB · Factor": {
+    "zh": "HGB · 因子风险"
+  },
+  "Metric": {
+    "zh": "指标"
+  },
+  "Daily observations · 252 sessions/year · Sample standard deviation · Sharpe risk-free return 0 · Sortino target return 0. Annualized values below one year are estimates.": {
+    "zh": "按每日记录计算：每年 252 交易日，样本标准差，Sharpe 无风险收益为 0，Sortino 目标收益为 0；不足一年的年化值为推算值。"
+  },
+  "Fees and turnover use the selected daily ledger only. Missing execution fields remain unavailable; research NAV is not account P&L.": {
+    "zh": "费用与换手仅来自所选区间账本；缺失字段显示 —。研究净值与账户盈亏分别记录。"
+  },
+  "Monthly return comparison": {
+    "zh": "月度收益对照"
+  },
+  "* Archive-edge or selected-window month may be incomplete.": {
+    "zh": "* 档案边界或区间边界的月份可能不完整。"
+  },
+  "These are same-date signal plans. Verified absent names have zero weight; a missing plan remains unavailable. Recorded Raw execution holdings are shown in details.": {
+    "zh": "这里对照同日信号目标。完整目标中未出现的股票权重为 0，目标缺失显示 —；Raw 已执行持仓可在详情中查看。"
+  },
+  "Download weights": {
+    "zh": "下载权重"
+  },
+  "Unavailable strategies: {names}": {
+    "zh": "数据暂不可用：{names}"
+  },
+  "Both HGB policies share frozen Raw Top40 prediction scores. Portfolio weights are produced by their separate risk models; a model rank is not a weight rank.": {
+    "zh": "两套 HGB 共享冻结模型在 Raw Top40 范围内的预测评分；各自风险模型生成组合权重，评分排名与权重排序分别显示。"
+  },
+  "Daily rankings and allocations": {
+    "zh": "当日排名与组合"
+  },
+  "Observation date: {date}. The two HGB strategies share model scores and ranking; their risk models produce different allocations. Scores across different models are not directly comparable.": {
+    "zh": "观察日：{date}。两套 HGB 共享评分与排名，风险模型产生不同配置；不同模型的分数不能直接比较。"
+  },
+  "Show rows": {
+    "zh": "显示行数"
+  },
+  "Ticker or company": {
+    "zh": "代码或公司"
+  },
+  "Search all available rows": {
+    "zh": "搜索全部可用记录"
+  },
+  "Score ranking": {
+    "zh": "评分排名"
+  },
+  "Portfolio weight": {
+    "zh": "组合权重"
+  },
+  "Selected only": {
+    "zh": "仅看入选"
+  },
+  "Score date: {score} · Weight date: {weight}": {
+    "zh": "评分日：{score} · 权重日：{weight}"
+  },
+  "Verified full pool": {
+    "zh": "已验证全池"
+  },
+  "Raw Top40 scoring scope": {
+    "zh": "Raw Top40 评分范围"
+  },
+  "Recorded Top40 only": {
+    "zh": "仅有 Top40 记录"
+  },
+  "Recorded Top20 only": {
+    "zh": "仅有 Top20 记录"
+  },
+  "No verified rows match these filters.": {
+    "zh": "没有符合筛选条件的已验证记录。"
+  },
+  "No verified ranking is available for this date.": {
+    "zh": "这一天没有已验证排名。"
+  },
+  "Recorded model rank; 1 is best. Sorting by weight does not change this rank.": {
+    "zh": "记录中的模型排名，1 为最高；按权重排序不改变模型排名。"
+  },
+  "Selection status": {
+    "zh": "入选状态"
+  },
+  "Select one row to inspect the stock below. Search runs before the row limit; an unavailable target is not an unselected stock.": {
+    "zh": "勾选一条排名记录，即可在下方查看个股。搜索先于行数限制；目标缺失不等于未入选。"
+  },
+  "Recorded holding": {
+    "zh": "已记录持仓"
+  },
+  "Selected target": {
+    "zh": "目标入选"
+  },
+  "Outside allocation candidates": {
+    "zh": "不在配置候选范围"
+  },
+  "Not selected": {
+    "zh": "未入选"
+  },
+  "Recorded executed book": {
+    "zh": "已记录执行组合"
+  },
+  "Raw rule target": {
+    "zh": "Raw 规则目标"
+  },
+  "Empty-account target": {
+    "zh": "空仓账户目标"
+  },
+  "Historical signal target": {
+    "zh": "历史信号目标"
+  },
+  "Outside Raw Top40": {
+    "zh": "不在 Raw Top40"
+  },
+  "Score unavailable": {
+    "zh": "评分数据缺失"
+  },
+  "Verified target": {
+    "zh": "已验证目标"
+  },
+  "Target blocked": {
+    "zh": "目标生成受阻"
+  },
+  "No recorded target": {
+    "zh": "没有目标记录"
+  },
+  "Verified price and institutional sources are unavailable for this query.": {
+    "zh": "本次查询缺少已验证的价格与机构持仓来源。"
+  },
+  "Stock history across strategies": {
+    "zh": "个股跨策略历史"
+  },
+  "Search every verified stock, including names outside the current ranking or allocation. The query interval ends no later than {date} and leaves the workbench observation date unchanged.": {
+    "zh": "可搜索全部已验证股票，包括当前榜单或组合之外的个股。查询区间最晚到 {date}，不改变工作台观察日。"
+  },
+  "No verified stock history exists on or before the observation date.": {
+    "zh": "观察日及之前没有已验证个股历史。"
+  },
+  "Raw ranks cover the verified full pool; HGB ranks cover the recorded Raw Top40. Selection counts use only dates with verified weights. Missing targets are unknown, not unselected.": {
+    "zh": "Raw 排名覆盖已验证全池；HGB 排名限于记录中的 Raw Top40。入选统计仅以权重已验证的日期为分母；目标缺失表示未知。"
+  },
+  "Selected / verified weight dates": {
+    "zh": "入选天数 / 有效权重天数"
+  },
+  "Ranked days": {
+    "zh": "有排名天数"
+  },
+  "Stock snapshot date": {
+    "zh": "个股快照日期"
+  },
+  "Weight date": {
+    "zh": "权重日期"
+  },
+  "Weight record type": {
+    "zh": "权重记录类型"
+  },
+  "Rank history": {
+    "zh": "排名轨迹"
+  },
+  "Allocation history": {
+    "zh": "权重轨迹"
+  },
+  "Signal / record date": {
+    "zh": "信号／记录日期"
+  },
+  "Model rank": {
+    "zh": "模型排名"
+  },
+  "No verified weights in this interval.": {
+    "zh": "这个区间没有已验证权重。"
+  },
+  "Lines stop at missing observations. Target allocations and recorded holdings retain their own dates and record types.": {
+    "zh": "曲线在记录缺失处断开；目标配置与已记录持仓保留各自日期和记录类型。"
+  },
+  "Daily ranking and allocation records": {
+    "zh": "每日排名与权重记录"
+  },
+  "In verified pool": {
+    "zh": "在已验证股票池"
+  },
+  "Score coverage": {
+    "zh": "评分覆盖状态"
+  },
+  "Weight coverage": {
+    "zh": "权重覆盖状态"
+  },
+  "All": {
+    "zh": "全部"
+  },
+  "Sort by": {
+    "zh": "排序依据"
+  },
+  "Start": {
+    "zh": "开始"
+  },
+  "End": {
+    "zh": "结束"
+  },
+  "Raw score coverage: {scored} / {mapped} mapped securities · {excluded} without a verified score.": {
+    "zh": "Raw 评分覆盖：已映射 {mapped} 只中 {scored} 只有评分 · {excluded} 只缺少已验证评分。"
+  },
+  "Drawdown peak date": {
+    "zh": "回撤峰值日期"
+  },
+  "Drawdown trough date": {
+    "zh": "回撤谷值日期"
+  },
+  "Peak-to-recovery · Records": {
+    "zh": "峰值至恢复 · 记录日数"
+  },
+  "Best recorded month": {
+    "zh": "最佳记录月份收益"
+  },
+  "Worst recorded month": {
+    "zh": "最差记录月份收益"
+  },
+  "Skipped buy observations": {
+    "zh": "跳过买入记录数"
+  },
+  "Blocked sell observations": {
+    "zh": "阻止卖出记录数"
+  },
+  "Stale mark observations": {
+    "zh": "陈旧估值记录数"
+  },
+  "Benchmark beta": {
+    "zh": "基准 Beta"
+  },
+  "Tracking error": {
+    "zh": "跟踪误差"
+  },
+  "Information ratio": {
+    "zh": "信息比率"
+  },
+  "Account trade win rate": {
+    "zh": "账户交易胜率"
+  },
+  "Closed trade profit/loss ratio": {
+    "zh": "闭合交易盈亏比"
+  },
+  "Historical cash comparison": {
+    "zh": "历史现金仓位对照"
+  },
+  "21-record rolling net return": {
+    "zh": "21 个记录日滚动净收益"
+  },
+  "This interval has fewer than 21 return records.": {
+    "zh": "这个区间少于 21 个收益记录。"
+  },
+  "Daily return correlation": {
+    "zh": "每日收益相关性"
+  },
+  "Price reference": {
+    "zh": "价格参考"
+  },
+  "None": {
+    "zh": "无"
+  },
+  "Price reference is unavailable for the complete interval.": {
+    "zh": "完整区间的价格参考暂不可用。"
+  },
+  "Benchmark beta, tracking error and information ratio require a matching return basis. Account trade ratios require a connected account and closed trades; unavailable values remain —.": {
+    "zh": "Beta、跟踪误差、信息比率需要口径匹配的基准。账户胜率与盈亏比需要账户及闭合交易记录；当前缺失项显示 —。"
+  },
+  "* Archive-edge or selected-window month may be incomplete. Positive-month statistics include these partial periods.": {
+    "zh": "* 档案或所选区间边界的月份可能不完整；正收益月比例包含这些记录月度段。"
+  },
+  "Gross returns compound gross daily returns on the recorded holdings path; the gross/net difference includes compounding and is not the cumulative fee amount.": {
+    "zh": "毛收益按原持仓路径的毛日收益复利计算；毛净差包含复利影响，不等于累计费用金额。"
+  },
+  "{label}: {return_value} over these dates · RAW open-price reference, excluding dividends and fees. QFQ replay remains a separate return basis.": {
+    "zh": "{label}：同期 {return_value} · RAW 开盘价参考，不含股息和费用，与 QFQ 回放分别保留口径。"
+  },
+  "Maximum security weight": {
+    "zh": "最大单票权重"
+  },
+  "Top 5 concentration": {
+    "zh": "前五集中度"
+  },
+  "Planned execution date": {
+    "zh": "计划执行日期"
+  },
+  "Loading verified records…": {
+    "zh": "正在核对并载入记录…",
+    "ja": "検証済み記録を読み込み中…"
   }
 }

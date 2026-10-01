@@ -65,6 +65,18 @@ class LearningProfile:
 
 
 @dataclass(frozen=True)
+class ResearchCoverage:
+    status: str | None = None
+    quarter: str | None = None
+    effective_date: str | None = None
+    institution_count: int | None = None
+    universe_member_count: int | None = None
+    mapped_count: int | None = None
+    eligible_count: int | None = None
+    excluded_count: int | None = None
+
+
+@dataclass(frozen=True)
 class DecisionOverview:
     decision_date: str | None = None
     available_dates: tuple[str, ...] = ()
@@ -86,6 +98,16 @@ class DecisionOverview:
     debug_error: str | None = None
     previous_decision_date: str | None = None
     learning: LearningProfile = field(default_factory=LearningProfile)
+    source_id: str = "frozen"
+    source_manifest_path: str | None = None
+    source_manifest_sha256: str | None = None
+    performance_cutoff_date: str | None = None
+    sample_start_date: str | None = None
+    sample_end_date: str | None = None
+    scheduled_execution_date: str | None = None
+    execution_status: str | None = None
+    ranking_limit: int = 20
+    coverage: ResearchCoverage = field(default_factory=ResearchCoverage)
 
 
 @dataclass(frozen=True)
@@ -119,6 +141,7 @@ class PerformanceHistory:
     archive_end: str | None = None
     requested_end_date: str | None = None
     effective_end_date: str | None = None
+    baseline_date: str | None = None
     initial_nav: float = 1.0
     model_identity: str = "A2_HGB"
     reference_identity: str | None = None

@@ -1,7 +1,6 @@
 """Exercise replay callbacks and missing observations using synthetic sources only."""
 from dataclasses import asdict, replace
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -15,7 +14,7 @@ from apps.demo_console.adapters.decision_reader import (
 from apps.demo_console.components.strategy_profile import strategy_html
 from apps.demo_console.components.portfolio_summary import snapshot_brief_html
 from apps.demo_console.models import DecisionOverview, HoldingRow, Provenance
-from apps.demo_console.tests.test_terminal_interactions import _workspace_action, _assert_healthy, _content, _tables, _tickers
+from apps.demo_console.tests.test_terminal_interactions import _workspace_action, _assert_healthy, _content, _tables, _tickers, _synthetic_terminal
 
 
 _DATES = ("2025-12-01", "2025-12-02")
@@ -25,7 +24,6 @@ _DEBUG = "SYNTHETIC_PRIVATE_HISTORY_DEBUG"
 @pytest.fixture
 def history_app(make_overview_config, monkeypatch, landing_without_performance):
     pytest.importorskip("streamlit")
-    from streamlit.testing.v1 import AppTest
     from apps.demo_console.adapters import decision_reader
 
     config = make_overview_config()
@@ -41,7 +39,9 @@ def history_app(make_overview_config, monkeypatch, landing_without_performance):
 
     monkeypatch.setattr(decision_reader, "load_overview", lambda date=None: models[date or _DATES[-1]])
     monkeypatch.setattr(decision_reader, "load_history", synthetic_history)
-    state.app = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=20).run()
+    state.app = _synthetic_terminal(monkeypatch)
+    state.app.session_state["workspace_strategy"] = "RAW_A2"
+    state.app.run()
     _assert_healthy(state.app)
     yield state
     assert {date: asdict(model) for date, model in models.items()} == before

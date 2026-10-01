@@ -56,6 +56,19 @@ def test_other_root_overrides_keep_their_precedence(relocated, monkeypatch, tmp_
     assert module.resolve(repo, cache_root=tmp_path / "argument-cache").cache_root == tmp_path / "argument-cache"
 
 
+def test_official_raw_archive_is_an_explicit_allowed_source_root(relocated, monkeypatch, tmp_path):
+    _, _, module = relocated
+    cache = tmp_path / "cache"
+    archive = tmp_path / "cold archive"
+    outside = tmp_path / "unrelated"
+    for root in (cache, archive, outside):
+        root.mkdir()
+    monkeypatch.setenv("USTQ_OFFICIAL_RAW_ARCHIVE_ROOT", str(archive))
+    assert module.is_authorized_official_raw_path(cache / "source.zip", cache)
+    assert module.is_authorized_official_raw_path(archive / "source.zip", cache)
+    assert not module.is_authorized_official_raw_path(outside / "source.zip", cache)
+
+
 def test_selected_root_is_used_for_nesting_validation(relocated):
     repo, cfg, module = relocated
     with pytest.raises(ValueError, match="must not nest repo_root"):

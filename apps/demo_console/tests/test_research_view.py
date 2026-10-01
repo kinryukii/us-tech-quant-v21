@@ -350,7 +350,7 @@ def test_research_cutoff_language_and_controls_preserve_serialized_returns(resea
         assert table[_label("Net return", language)].tolist() == returns
         content = _content(app)
         assert _label(_INDEPENDENCE_NOTE, language) in content
-        assert _label("No Sharpe ratio, alpha, confidence interval, DSR, PBO or probability of skill is inferred from these observations.", language) in content
+        assert _label("Sharpe is a descriptive annualized ratio. No alpha, confidence interval, DSR, PBO or probability of skill is inferred from these observations.", language) in content
         assert all(secret not in content for secret in (_PATH, _HASH, _DEBUG))
 
     app.selectbox(key="research_range").select("63 execution days").run()
@@ -606,3 +606,47 @@ def test_custom_range_cutoff_clips_visible_end_and_empty_interval_clears_results
     assert app.session_state["decision_date"] == "2025-12-01"
     app.button(key="research_dates_reset").click().run()
     _assert_cutoff(state, "2025-12-01")
+
+
+def _four_series_sharpe_app():
+    from dataclasses import replace
+    from unittest.mock import patch
+    import streamlit as st
+    from apps.demo_console.tests.test_research_view import _synthetic_archive
+    from apps.demo_console.adapters.benchmarks_reader import BenchmarkHistory,BenchmarkSeries,BenchmarkPoint
+    from apps.demo_console.components.performance_stats import summarize_performance
+    from apps.demo_console.pages import research
+    from apps.demo_console.i18n import language_scope
+    mode=st.selectbox('Window',('All','Custom','Single'),key='sharpe_window')
+    archive=_synthetic_archive()
+    points=tuple(replace(p,reference_nav=None,reference_net_return=None,reference_gross_return=None,reference_transaction_cost=None) for p in archive.points[:3])
+    points=(replace(points[0],net_return=0.,gross_return=0.,transaction_cost=0.,holding_count=0,nav=1.),*points[1:])
+    baseline=None
+    if mode!='All':
+        baseline=points[0].execution_date;points=points[1:] if mode=='Custom' else points[1:2]
+    summary=summarize_performance(points,full_history_dates=archive.available_dates)
+    series=[]
+    for symbol in ('QQQ','SPY'):
+        values=tuple(BenchmarkPoint(p.execution_date,100.,p.net_return,1+p.net_return,0.) for p in points)
+        series.append(BenchmarkSeries(symbol,symbol,points=values,total_return=0.,max_drawdown=0.))
+    markets=BenchmarkHistory(series=tuple(series),baseline_date=baseline)
+    with language_scope('en'),patch.object(research,'_historical_comparisons',lambda *a,**k:None):
+        research._performance(summary,False,False,points=points,full_history_dates=archive.available_dates,
+            initial_nav=1.,markets=markets,presentation=True,updated=True,rx_summary=summary)
+
+
+def test_page_four_series_sharpe_and_window_baselines(benchmark_stub):
+    from streamlit.testing.v1 import AppTest
+    from apps.demo_console.components.performance_stats import annualized_sharpe
+    app=AppTest.from_function(_four_series_sharpe_app,default_timeout=30).run()
+    expected=annualized_sharpe([p.net_return for p in _synthetic_archive().points[1:3]])
+    for mode in ('All','Custom','Single'):
+        app.selectbox(key='sharpe_window').select(mode).run()
+        assert not app.exception
+        table=next(frame.value for frame in app.dataframe if 'annualized_sharpe' in frame.value.columns)
+        assert len(table)==4
+        assert {'Raw A2','A2 + RX'}<=set(table['series'])
+        assert any(value.startswith('QQQ') for value in table['series'])
+        assert any(value.startswith('SPY') for value in table['series'])
+        if mode=='Single':assert table.annualized_sharpe.isna().all()
+        else:assert all(value==pytest.approx(expected) for value in table.annualized_sharpe)

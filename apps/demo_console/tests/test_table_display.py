@@ -4,7 +4,7 @@ from html.parser import HTMLParser
 import re
 import unittest
 
-from apps.demo_console.components.top20_table import table_html, table_records
+from apps.demo_console.components.top20_table import table_html, table_records, applied_ranking_rows, _focus_applied_ranking
 from apps.demo_console.models import HoldingRow
 
 
@@ -94,6 +94,58 @@ class TableDisplayTests(unittest.TestCase):
         self.assertNotIn("uq-score-fill", markup)
         self.assertNotIn(">ΔRank</th>", markup)
         self.assertIn("source order preserved", markup)
+
+
+class AppliedRankingTests(unittest.TestCase):
+    def setUp(self):
+        self.rows = [
+            dict(ticker='HIGH_WEIGHT', company='Holding', model_rank=3, target_weight=.7, selected=True),
+            dict(ticker='BEST_SCORE', company='First', model_rank=1, target_weight=.1, selected=True),
+            dict(ticker='NEVER', company='Outside Top40 company', model_rank=55, target_weight=0., selected=False),
+            dict(ticker='UNKNOWN', company='Missing target', model_rank=2, target_weight=None, selected=None)]
+
+    def test_search_precedes_top_n_and_includes_company_outside_top40(self):
+        result = applied_ranking_rows(self.rows, query='outside top40', top_n=1)
+        self.assertEqual([row['ticker'] for row in result], ['NEVER'])
+        self.assertIs(result[0]['selected'], False)
+
+    def test_model_rank_and_weight_orders_are_distinct_without_fabricated_ranks(self):
+        ranked = applied_ranking_rows(self.rows, top_n=None)
+        weighted = applied_ranking_rows(self.rows, order='Portfolio weight', top_n=None)
+        self.assertEqual([row['ticker'] for row in ranked], ['BEST_SCORE', 'UNKNOWN', 'HIGH_WEIGHT', 'NEVER'])
+        self.assertEqual([row['ticker'] for row in weighted], ['HIGH_WEIGHT', 'BEST_SCORE', 'NEVER', 'UNKNOWN'])
+        self.assertIsNone(weighted[-1]['target_weight'])
+        self.assertEqual(weighted[0]['model_rank'], 3)
+        self.assertEqual(self.rows[0]['ticker'], 'HIGH_WEIGHT')
+
+    def test_selected_filter_excludes_both_false_and_unknown(self):
+        result = applied_ranking_rows(self.rows, selected_only=True, top_n=None)
+        self.assertEqual([row['ticker'] for row in result], ['BEST_SCORE', 'HIGH_WEIGHT'])
+
+    def test_only_valid_current_single_row_updates_inline_focus(self):
+        from unittest.mock import patch
+        import streamlit as st
+
+        state = {'_applied_ranking_keys': ('live',), '_applied_ranking_date': '2026-01-07',
+            'decision_date': '2026-01-07', 'workspace': 'Overview', 'applied_stock_ticker': 'KEEP'}
+        with patch.object(st, 'session_state', state):
+            for event in ({}, {'selection': None}, {'selection': {'rows': None}},
+                          {'selection': {'rows': []}}, {'selection': {'rows': [True]}},
+                          {'selection': {'rows': [2]}}, {'selection': {'rows': [-1]}},
+                          {'selection': {'rows': [0, 1]}}):
+                state['live'] = event
+                _focus_applied_ranking('live', ('A', 'B'))
+                self.assertEqual(state['applied_stock_ticker'], 'KEEP')
+            state['live'] = {'selection': {'rows': [1]}}
+            _focus_applied_ranking('old', ('A', 'B'))
+            self.assertEqual(state['applied_stock_ticker'], 'KEEP')
+            _focus_applied_ranking('live', ('A', 'B'))
+            self.assertEqual(state['applied_stock_ticker'], 'B')
+            self.assertEqual(state['workspace'], 'Overview')
+            self.assertEqual(state['decision_date'], '2026-01-07')
+            state.update(decision_date='2026-01-06', applied_stock_ticker='KEEP')
+            _focus_applied_ranking('live', ('A', 'B'))
+            self.assertEqual(state['applied_stock_ticker'], 'KEEP')
 
 
 if __name__ == "__main__":

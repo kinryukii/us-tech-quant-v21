@@ -1,0 +1,3 @@
+# Optional: core and offline demo use only Python's standard library.
+moomoo-api==10.11.7108
+tzdata>=2025.2

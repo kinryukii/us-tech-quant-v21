@@ -31,7 +31,10 @@ def _control(app, key):
 @pytest.fixture
 def learning_app(monkeypatch, benchmark_stub):
     from streamlit.testing.v1 import AppTest
-    from apps.demo_console.adapters import decision_reader, performance_reader
+    from apps.demo_console import app as console
+    from apps.demo_console.adapters import (
+        decision_reader, performance_reader, selected_strategies_reader, updated_research_reader,
+    )
     from apps.demo_console.components import system_overview
     from apps.demo_console.pages import research
 
@@ -102,7 +105,19 @@ def learning_app(monkeypatch, benchmark_stub):
     monkeypatch.setattr(research, "read_performance", performance)
     monkeypatch.setattr(system_overview, "read_performance", landing_performance)
     monkeypatch.setattr(performance_reader, "read_performance", forbidden)
-    state.app = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=20).run()
+    # Exercise the current entry point with injected in-memory component records.
+    # This fixture does not cover production source routing or published packages.
+    monkeypatch.setattr(console, "_load_workspace_model",
+        lambda: overview(console.st.session_state.get("decision_date")))
+    for name in ("binding", "bundle", "load_overview", "read_performance"):
+        monkeypatch.setattr(updated_research_reader, name, forbidden)
+    monkeypatch.setattr(selected_strategies_reader, "load_package", forbidden)
+    state.app = AppTest.from_string("from apps.demo_console import app as console\nconsole.main()",
+                                    default_timeout=20)
+    state.app.session_state["workspace_sample"] = "historical"
+    state.app.session_state["workspace_strategy"] = "RAW_A2"
+    state.app.session_state["language"] = "en"
+    state.app.run()
     assert not state.app.exception and not state.app.error
     assert state.app.radio(key="workspace").value == "Overview"
     assert not state.history_calls and not state.performance_calls

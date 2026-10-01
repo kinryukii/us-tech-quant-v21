@@ -2,7 +2,7 @@
 
 美股量化研究系统，涵盖 PIT 数据、股票排名、组合模拟、风险分析和前瞻观察。仓库保存代码、配置、测试与文档；数据、结果、缓存和运行状态保存在外部目录。
 
-**常用入口：** [程序与模块地图](docs/PROJECT_MAP.md) · [研究复用表](docs/research/README.md) · [文档目录](docs/README.md) · [演示界面](apps/demo_console/README.md)
+**常用入口：** [程序与模块地图](docs/PROJECT_MAP.md) · [研究复用表](docs/research/README.md) · [存储目录说明](docs/STORAGE_LAYOUT.md) · [文档目录](docs/README.md) · [演示界面](apps/demo_console/README.md)
 
 ## 运行入口
 
@@ -42,7 +42,7 @@
 | --- | --- |
 | `apps/` | 展示界面 |
 | `scripts/storage/`、`scripts/common/` | 数据目录、统一读取与路径工具 |
-| `scripts/maintenance/` | 研究注册表、生命周期、维护、检查及 Harness |
+| `scripts/maintenance/` | 研究注册表、生命周期、维护与检查 |
 | `scripts/research/` | 按研究类别组织的实现 |
 | `scripts/v21/`、`scripts/v22/` | 当前运行入口、仍被依赖的组件与保留的研究实现 |
 | `fast3/` | FAST3 研究系列及其既有契约 |

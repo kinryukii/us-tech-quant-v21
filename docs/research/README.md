@@ -1,12 +1,12 @@
 # 研究复用索引
 
-这是既有注册表的派生导航视图，不是新的身份、研究结论或授权依据。旧表字段原样保留；空白表示元数据未登记。
-本次读取的 accepted registry head：`65af5778307750e26e3d287ed47d33ad93e7513ba4d2f3d3f6988fc9290756da`。
+这是既有注册表的派生导航视图，不是新的身份、研究结论或授权依据。旧表的历史结果位置仅作导航，不代表已验真；完成凭证仅以哈希引用登记，详细结果仍保存在外部凭证中。空白表示元数据未登记。
+本次读取的 accepted registry head：`87517fe737fc57c9f1780bbb0b1024bece40c8f9f4b24e8cba40db7fb6389ca7`。
 
 开始新工作前：先按机制关键词及旧别名 query，并核对未登记的本地源码；再运行既有注册表的 preflight-proposal。
 查询覆盖全部注册状态，包括关闭和 tombstone。NOT_FOUND_REQUIRES_REVIEW 不代表允许新建；直接脚本可能未登记，后续研究仍须原有契约。
 归档位置只作导航，不改写原冻结引用。状态口径或历史结论不一致会显式提示，不能据此重开研究。
-已移除的历史源码仍可通过 [Git 恢复与查重索引](retired_sources.json) 查找；文件退出当前程序不代表其研究结论失效或允许重复开发。
+已移除的历史源码仍可通过 [Git 恢复与查重索引](retired_sources.json) 查找；注册表目录中的 retired_artifacts.json 记录清理过的研究尝试和派生文件，并参与 query 查重。删除不代表研究结论失效或允许重复开发。
 
 ```powershell
 python -B scripts/maintenance/research_inventory.py query --repo-root . --text "机制关键词"
@@ -83,10 +83,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_2024_CNMS_SHORT_SALE_PARTICIPATION_INCREMENT</summary>
 
 <p><strong>机制 / 假设：</strong>Additional information in reported off-exchange short-sale fraction and its deviation from recent values, conditional on candle state and transaction frequency</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/c1e245f10f012abfb86548fbedcafaee8c54fbbd00e0a92c85a48933f58b8570</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>UNCOMMITTED_TASK_FILES;strategy_research.py:sha256:e1f7ec7c9d44afe94a07e3b1021e2a6d57c36872e690514323caff4f4895c732;policy_features.py:sha256:38168adafbe2be6bf72c38d93c4cb71f8c0f6b79114122680797ca35e50b0895; C:\Users\Lenovo\Documents\CODING开发\strategy-research-20260914T140537Z\finra_input_contract.json</p>
 <p><strong>登记引用：</strong>UNCOMMITTED_TASK_FILES;strategy_research.py:sha256:e1f7ec7c9d44afe94a07e3b1021e2a6d57c36872e690514323caff4f4895c732;policy_features.py:sha256:38168adafbe2be6bf72c38d93c4cb71f8c0f6b79114122680797ca35e50b0895; C:\Users\Lenovo\Documents\CODING开发\strategy-research-20260914T140537Z\finra_input_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/c1e245f10f012abfb86548fbedcafaee8c54fbbd00e0a92c85a48933f58b8570</p>
+<p><strong>结论凭证：</strong>receipt://sha256/c1e245f10f012abfb86548fbedcafaee8c54fbbd00e0a92c85a48933f58b8570</p>
 <p><strong>旧别名：</strong>A2_2024_CNMS_SHORT_SALE_PARTICIPATION_INCREMENT</p>
 <p><strong>登记别名：</strong>A2_2024_CNMS_SHORT_SALE_PARTICIPATION_INCREMENT</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/c1e245f10f012abfb86548fbedcafaee8c54fbbd00e0a92c85a48933f58b8570</p>
@@ -97,10 +100,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_2024_TRANSACTION_COUNT_INCREMENT</summary>
 
 <p><strong>机制 / 假设：</strong>Aggregate transaction frequency deviation and candle body interaction beyond conditional price information</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/c983d1ede69f350ee219c1060478a98be6063180c1bf7a126c81a221e69aa0e5</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>UNCOMMITTED_TASK_FILES;strategy_research.py:sha256:e1f7ec7c9d44afe94a07e3b1021e2a6d57c36872e690514323caff4f4895c732;policy_features.py:sha256:38168adafbe2be6bf72c38d93c4cb71f8c0f6b79114122680797ca35e50b0895; C:\Users\Lenovo\Documents\CODING开发\strategy-research-20260914T140537Z\input_contract.json</p>
 <p><strong>登记引用：</strong>UNCOMMITTED_TASK_FILES;strategy_research.py:sha256:e1f7ec7c9d44afe94a07e3b1021e2a6d57c36872e690514323caff4f4895c732;policy_features.py:sha256:38168adafbe2be6bf72c38d93c4cb71f8c0f6b79114122680797ca35e50b0895; C:\Users\Lenovo\Documents\CODING开发\strategy-research-20260914T140537Z\input_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/c983d1ede69f350ee219c1060478a98be6063180c1bf7a126c81a221e69aa0e5</p>
+<p><strong>结论凭证：</strong>receipt://sha256/c983d1ede69f350ee219c1060478a98be6063180c1bf7a126c81a221e69aa0e5</p>
 <p><strong>旧别名：</strong>A2_2024_TRANSACTION_COUNT_INCREMENT</p>
 <p><strong>登记别名：</strong>A2_2024_TRANSACTION_COUNT_INCREMENT</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/c983d1ede69f350ee219c1060478a98be6063180c1bf7a126c81a221e69aa0e5</p>
@@ -111,10 +117,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_BIS_POLICY_DIRECTION_BREADTH</summary>
 
 <p><strong>机制 / 假设：</strong>Commonshorttermpolicyratedirectionandlaterdomesticadjustment</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/bc6df2bb6aa56627f3ccb92f069ceaeddea89bb9fd3b17a7c595528decc4bf53</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>UNKNOWN; C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\input_contract.json</p>
 <p><strong>登记引用：</strong>UNKNOWN; C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\input_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/bc6df2bb6aa56627f3ccb92f069ceaeddea89bb9fd3b17a7c595528decc4bf53</p>
+<p><strong>结论凭证：</strong>receipt://sha256/bc6df2bb6aa56627f3ccb92f069ceaeddea89bb9fd3b17a7c595528decc4bf53</p>
 <p><strong>旧别名：</strong>A2_BIS_POLICY_DIRECTION_BREADTH</p>
 <p><strong>登记别名：</strong>A2_BIS_POLICY_DIRECTION_BREADTH</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/bc6df2bb6aa56627f3ccb92f069ceaeddea89bb9fd3b17a7c595528decc4bf53</p>
@@ -125,10 +134,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_CFTC_REPORTABLE_PARTICIPATION</summary>
 
 <p><strong>机制 / 假设：</strong>Reported entity participation breadth conditional on open-interest scale</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/6d47ec15fb8a132e52e133bb68834b5c495f317a81acd7a34a0a935ad3563134</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>UNKNOWN; C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\cftc_count_input_contract.json</p>
 <p><strong>登记引用：</strong>UNKNOWN; C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\cftc_count_input_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/6d47ec15fb8a132e52e133bb68834b5c495f317a81acd7a34a0a935ad3563134</p>
+<p><strong>结论凭证：</strong>receipt://sha256/6d47ec15fb8a132e52e133bb68834b5c495f317a81acd7a34a0a935ad3563134</p>
 <p><strong>旧别名：</strong>A2_CFTC_REPORTABLE_PARTICIPATION</p>
 <p><strong>登记别名：</strong>A2_CFTC_REPORTABLE_PARTICIPATION</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/6d47ec15fb8a132e52e133bb68834b5c495f317a81acd7a34a0a935ad3563134</p>
@@ -140,11 +152,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Construct self-financing next-open A2 portfolio economics</p>
 <p><strong>旧结论：</strong>Canonical cost and NAV machinery is already shared by later studies</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/portfolio_daily.parquet</p>
 <p><strong>旧状态：</strong>INFRASTRUCTURE_COMPLETE</p>
 <p><strong>登记生命周期决策：</strong>KEEP_CORE</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
 <p><strong>原始引用：</strong>D:/us-tech-quant/scripts/v22/abcde_a2_r4_portfolio_translation_using_hgb_incumbent.py</p>
-<p><strong>登记引用：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/portfolio_daily.parquet; D:/us-tech-quant/scripts/v22/abcde_a2_r4_portfolio_translation_using_hgb_incumbent.py</p>
+<p><strong>登记引用：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/portfolio_daily.parquet; D:/us-tech-quant/scripts/v22/abcde_a2_r4_portfolio_translation_using_hgb_incumbent.py; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/EXPERIMENT_INDEX.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REUSE_COMPONENTS.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REPEAT_GUARD.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TRAINING_LESSONS_NOTES.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/DEVELOPMENT_HANDOFF_NOTES.md</p>
+<p><strong>研究结果凭证：</strong>C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md</p>
 <p><strong>旧别名：</strong>R4_PORTFOLIO_TRANSLATION|FAST_A2_R0F1_REPLAY</p>
 <p><strong>登记别名：</strong>A2_COST_NAV_REPLAY_ENGINE; FAST_A2_R0F1_REPLAY; R4_PORTFOLIO_TRANSLATION</p>
 
@@ -154,10 +168,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_FISCAL_BILL_MATURITY_INFORMATION</summary>
 
 <p><strong>机制 / 假设：</strong>Previously issued Treasury bill allocation schedules as partial advance information about gross administrative outflows</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/cc4399c08a2fb8bad8f486792b8c4b600f3a45586e283f7335bac59dd2957a3b</p>
 <p><strong>登记完成状态：</strong>COMPLETED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>UNKNOWN; C:/Users/Lenovo/Documents/CODING开发/factor-research-20260914T173135Z/auction_input_contract.json</p>
 <p><strong>登记引用：</strong>UNKNOWN; C:/Users/Lenovo/Documents/CODING开发/factor-research-20260914T173135Z/auction_input_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/cc4399c08a2fb8bad8f486792b8c4b600f3a45586e283f7335bac59dd2957a3b</p>
+<p><strong>结论凭证：</strong>receipt://sha256/cc4399c08a2fb8bad8f486792b8c4b600f3a45586e283f7335bac59dd2957a3b</p>
 <p><strong>旧别名：</strong>A2_FISCAL_BILL_MATURITY_INFORMATION</p>
 <p><strong>登记别名：</strong>A2_FISCAL_BILL_MATURITY_INFORMATION</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/cc4399c08a2fb8bad8f486792b8c4b600f3a45586e283f7335bac59dd2957a3b</p>
@@ -168,10 +185,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_FISCAL_GROSS_WITHDRAWAL_ADAPTATION</summary>
 
 <p><strong>机制 / 假设：</strong>Recent gross administrative withdrawal level adaptation</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/ceb89c1a70cb3f8acd3977b5f3d80a06d4b555ec6e3cdc41279fe1da86c83783</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>UNKNOWN; C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\fiscal_mechanism_v2_input_refs.json</p>
 <p><strong>登记引用：</strong>UNKNOWN; C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\fiscal_mechanism_v2_input_refs.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/ceb89c1a70cb3f8acd3977b5f3d80a06d4b555ec6e3cdc41279fe1da86c83783</p>
+<p><strong>结论凭证：</strong>receipt://sha256/ceb89c1a70cb3f8acd3977b5f3d80a06d4b555ec6e3cdc41279fe1da86c83783</p>
 <p><strong>旧别名：</strong>A2_FISCAL_GROSS_WITHDRAWAL_ADAPTATION</p>
 <p><strong>登记别名：</strong>A2_FISCAL_GROSS_WITHDRAWAL_ADAPTATION</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/ceb89c1a70cb3f8acd3977b5f3d80a06d4b555ec6e3cdc41279fe1da86c83783</p>
@@ -182,10 +202,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_FISCAL_LIQUIDITY_TO_PUBLIC_BILL_ALLOCATION</summary>
 
 <p><strong>机制 / 假设：</strong>Treasury published liquidity coverage and subsequent primary Bill financing after known maturity commitments and recent issued allocations</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/646401a0e77d2de896d57bf30beaee097acbe1ab90e1df51d830c19c026e11ee</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>UNKNOWN; C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\auction_input_contract.json;C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\input_contract.json</p>
 <p><strong>登记引用：</strong>UNKNOWN; C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\auction_input_contract.json;C:\Users\Lenovo\Documents\CODING开发\factor-research-20260914T173135Z\input_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/646401a0e77d2de896d57bf30beaee097acbe1ab90e1df51d830c19c026e11ee</p>
+<p><strong>结论凭证：</strong>receipt://sha256/646401a0e77d2de896d57bf30beaee097acbe1ab90e1df51d830c19c026e11ee</p>
 <p><strong>旧别名：</strong>A2_FISCAL_LIQUIDITY_TO_PUBLIC_BILL_ALLOCATION</p>
 <p><strong>登记别名：</strong>A2_FISCAL_LIQUIDITY_TO_PUBLIC_BILL_ALLOCATION</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/646401a0e77d2de896d57bf30beaee097acbe1ab90e1df51d830c19c026e11ee</p>
@@ -196,10 +219,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_FIXED_BRACKET_OHLC_IDENTIFICATION_20260914</summary>
 
 <p><strong>机制 / 假设：</strong>PRECOMMITTED_DOWNSIDE_UPSIDE_EXIT_FIRST_PASSAGE_WITH_UNOBSERVED_ORDER</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/280590542db450c2d42ad3b72372dd95902d0994e00065d4c4c792fd01aa3261</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>source-sha256:88a0d26bac996638d9bd645962d82386c83bbab3e9a45c783a9d0fd4ffe933e7; C:\Users\Lenovo\Documents\CODING开发\rolling-research-20260914T072731Z\barrier_policy_data_contract.json</p>
 <p><strong>登记引用：</strong>source-sha256:88a0d26bac996638d9bd645962d82386c83bbab3e9a45c783a9d0fd4ffe933e7; C:\Users\Lenovo\Documents\CODING开发\rolling-research-20260914T072731Z\barrier_policy_data_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/280590542db450c2d42ad3b72372dd95902d0994e00065d4c4c792fd01aa3261</p>
+<p><strong>结论凭证：</strong>receipt://sha256/280590542db450c2d42ad3b72372dd95902d0994e00065d4c4c792fd01aa3261</p>
 <p><strong>旧别名：</strong>A2_FIXED_BRACKET_OHLC_IDENTIFICATION_20260914</p>
 <p><strong>登记别名：</strong>A2_FIXED_BRACKET_OHLC_IDENTIFICATION_20260914</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/280590542db450c2d42ad3b72372dd95902d0994e00065d4c4c792fd01aa3261</p>
@@ -210,10 +236,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_INTRADAY_CONTINUATION_20260913</summary>
 
 <p><strong>机制 / 假设：</strong>PERSISTENT_SAME_SESSION_INVESTOR_PARTICIPATION_PRIOR_COMPLETED_MONTH_INTRADAY_CONTINUATION</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/47a98dfcda566b14ea8da647cecfd5838aa8dc57d3823fc4c3fe921633e50ba0</p>
 <p><strong>登记完成状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>sha256:cebd00cad05e32c3fed9afb583ee223c2441bdb95b7fd4fda871029862c7124d; C:\Users\Lenovo\Documents\CODING开发\strategy-lab-20260913\audits\intraday_data_execution_evidence.md</p>
 <p><strong>登记引用：</strong>sha256:cebd00cad05e32c3fed9afb583ee223c2441bdb95b7fd4fda871029862c7124d; C:\Users\Lenovo\Documents\CODING开发\strategy-lab-20260913\audits\intraday_data_execution_evidence.md</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/47a98dfcda566b14ea8da647cecfd5838aa8dc57d3823fc4c3fe921633e50ba0</p>
+<p><strong>结论凭证：</strong>receipt://sha256/47a98dfcda566b14ea8da647cecfd5838aa8dc57d3823fc4c3fe921633e50ba0</p>
 <p><strong>旧别名：</strong>A2_INTRADAY_CONTINUATION_20260913</p>
 <p><strong>登记别名：</strong>A2_INTRADAY_CONTINUATION_20260913</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/47a98dfcda566b14ea8da647cecfd5838aa8dc57d3823fc4c3fe921633e50ba0</p>
@@ -224,10 +253,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_INTRADAY_SALIENCE_20260914</summary>
 
 <p><strong>机制 / 假设：</strong>MONTHLY_INTRADAY_STATE_PROMINENCE_RELATIVE_TO_MARKET_CONTEXT</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/b34dae5f6601a87fb59dd8bc1237dfbb2abdbd07125cd4151fe2763ed5dc1aae</p>
 <p><strong>登记完成状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>source-sha256:14061a561b1d90c7ef36321d60b2bce77e6038259e4234b87f0391bdb3e9eb99; D:\us-tech-quant-results\A2_INTRADAY_CONTINUATION_20260913\data_contract.json</p>
 <p><strong>登记引用：</strong>source-sha256:14061a561b1d90c7ef36321d60b2bce77e6038259e4234b87f0391bdb3e9eb99; D:\us-tech-quant-results\A2_INTRADAY_CONTINUATION_20260913\data_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/b34dae5f6601a87fb59dd8bc1237dfbb2abdbd07125cd4151fe2763ed5dc1aae</p>
+<p><strong>结论凭证：</strong>receipt://sha256/b34dae5f6601a87fb59dd8bc1237dfbb2abdbd07125cd4151fe2763ed5dc1aae</p>
 <p><strong>旧别名：</strong>A2_INTRADAY_SALIENCE_20260914</p>
 <p><strong>登记别名：</strong>A2_INTRADAY_SALIENCE_20260914</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/b34dae5f6601a87fb59dd8bc1237dfbb2abdbd07125cd4151fe2763ed5dc1aae</p>
@@ -238,10 +270,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_PAIRWISE_BREADTH_IDENTIFICATION_20260914</summary>
 
 <p><strong>机制 / 假设：</strong>HIGHER_ORDER_JOINT_BREADTH_MASS_UNDETERMINED_BY_FIXED_PAIRWISE_LAWS</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/9e0972830c6787a25127af5dc97abc6643ae7de5e9b94ff05ac3f8ce4aae2690</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>source-sha256:c5e9acbb1ddf634593f12921096a4d1a2a5e1c156f63cf07522b4e788a8a1b6c; C:\Users\Lenovo\Documents\CODING开发\rolling-research-20260914T072731Z\pairwise_breadth_data_contract.json</p>
 <p><strong>登记引用：</strong>source-sha256:c5e9acbb1ddf634593f12921096a4d1a2a5e1c156f63cf07522b4e788a8a1b6c; C:\Users\Lenovo\Documents\CODING开发\rolling-research-20260914T072731Z\pairwise_breadth_data_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/9e0972830c6787a25127af5dc97abc6643ae7de5e9b94ff05ac3f8ce4aae2690</p>
+<p><strong>结论凭证：</strong>receipt://sha256/9e0972830c6787a25127af5dc97abc6643ae7de5e9b94ff05ac3f8ce4aae2690</p>
 <p><strong>旧别名：</strong>A2_PAIRWISE_BREADTH_IDENTIFICATION_20260914</p>
 <p><strong>登记别名：</strong>A2_PAIRWISE_BREADTH_IDENTIFICATION_20260914</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/9e0972830c6787a25127af5dc97abc6643ae7de5e9b94ff05ac3f8ce4aae2690</p>
@@ -266,10 +301,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_SESSION_CLOCK_SECOND_MOMENT_20260914</summary>
 
 <p><strong>机制 / 假设：</strong>PREANNOUNCED_TRADING_DURATION_AND_INTRADAY_INNOVATION_ACCUMULATION</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/8dfc67577d5ce7a26d4dcf4056964e9aed8fe039ee78a8cb47027e8630db4a76</p>
 <p><strong>登记完成状态：</strong>PARKED</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>source-sha256:52be821fff89f4270a6a4547d9f9968c608ab99ded6e684d406a7e842f90abec; C:\Users\Lenovo\Documents\CODING开发\rolling-research-20260914T072731Z\session_clock_data_contract.json</p>
 <p><strong>登记引用：</strong>source-sha256:52be821fff89f4270a6a4547d9f9968c608ab99ded6e684d406a7e842f90abec; C:\Users\Lenovo\Documents\CODING开发\rolling-research-20260914T072731Z\session_clock_data_contract.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/8dfc67577d5ce7a26d4dcf4056964e9aed8fe039ee78a8cb47027e8630db4a76</p>
+<p><strong>结论凭证：</strong>receipt://sha256/8dfc67577d5ce7a26d4dcf4056964e9aed8fe039ee78a8cb47027e8630db4a76</p>
 <p><strong>旧别名：</strong>A2_SESSION_CLOCK_SECOND_MOMENT_20260914</p>
 <p><strong>登记别名：</strong>A2_SESSION_CLOCK_SECOND_MOMENT_20260914</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/8dfc67577d5ce7a26d4dcf4056964e9aed8fe039ee78a8cb47027e8630db4a76</p>
@@ -292,6 +330,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Repackage the same frozen A2 fit for a complete 613-name successor universe</p>
 <p><strong>旧结论：</strong>Same fitted artifact but materially different frozen universe and deployment lineage; not a new alpha mechanism</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_SUCCESSOR_FORWARD_SHADOW_S1/registry/control_identity.json|D:/us-tech-quant/config/a2_successor_s1/control_contract.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -306,10 +345,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>A2_SYSTEMATIC_TAIL_DEPENDENCE_20260913</summary>
 
 <p><strong>机制 / 假设：</strong>JOINT_STOCK_MARKET_SIGN_AND_THIRD_MOMENT_EXPOSURES_INCREMENTAL_TO_OWN_VOLATILITY_AND_LINEAR_MARKET_EXPOSURE</p>
+<p><strong>历史结果位置：</strong>receipt://sha256/73444e9efb43a515303cd072b68a0c74063ced8da5bc51858adf44331ca66429</p>
 <p><strong>登记完成状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>sha256:a9a0171f2f5c7b2c2714b12b20600afce683a4cd360adcdaff2041d064bfcd80; D:/us-tech-quant-results/A2_PRE2026_RAW_MOOMOO_REHAB_BUILDER_R2/surface_manifest.json</p>
 <p><strong>登记引用：</strong>sha256:a9a0171f2f5c7b2c2714b12b20600afce683a4cd360adcdaff2041d064bfcd80; D:/us-tech-quant-results/A2_PRE2026_RAW_MOOMOO_REHAB_BUILDER_R2/surface_manifest.json</p>
+<p><strong>研究结果凭证：</strong>receipt://sha256/73444e9efb43a515303cd072b68a0c74063ced8da5bc51858adf44331ca66429</p>
+<p><strong>结论凭证：</strong>receipt://sha256/73444e9efb43a515303cd072b68a0c74063ced8da5bc51858adf44331ca66429</p>
 <p><strong>旧别名：</strong>A2_SYSTEMATIC_TAIL_DEPENDENCE_20260913</p>
 <p><strong>登记别名：</strong>A2_SYSTEMATIC_TAIL_DEPENDENCE_20260913</p>
 <p><strong>重开条件引用：</strong>receipt://sha256/73444e9efb43a515303cd072b68a0c74063ced8da5bc51858adf44331ca66429</p>
@@ -321,11 +363,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Freeze feature availability and temporal OOS folds</p>
 <p><strong>旧结论：</strong>Authoritative folds and PIT features already exist; competing frameworks are duplicate infrastructure</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_MODEL_FAMILY_R1A_DATA_COMPLETE/fold_manifest.csv|D:/us-tech-quant-results/A2_PIT_DATA_COVERAGE_R1/pit_feature_rows.parquet</p>
 <p><strong>旧状态：</strong>INFRASTRUCTURE_COMPLETE</p>
 <p><strong>登记生命周期决策：</strong>KEEP_CORE</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
 <p><strong>原始引用：</strong>D:/us-tech-quant-results/A2_MODEL_FAMILY_R1A_DATA_COMPLETE/incumbent_model_contract.json</p>
-<p><strong>登记引用：</strong>D:/us-tech-quant-results/A2_MODEL_FAMILY_R1A_DATA_COMPLETE/fold_manifest.csv; D:/us-tech-quant-results/A2_MODEL_FAMILY_R1A_DATA_COMPLETE/incumbent_model_contract.json; D:/us-tech-quant-results/A2_PIT_DATA_COVERAGE_R1/pit_feature_rows.parquet</p>
+<p><strong>登记引用：</strong>D:/us-tech-quant-results/A2_MODEL_FAMILY_R1A_DATA_COMPLETE/fold_manifest.csv; D:/us-tech-quant-results/A2_MODEL_FAMILY_R1A_DATA_COMPLETE/incumbent_model_contract.json; D:/us-tech-quant-results/A2_PIT_DATA_COVERAGE_R1/pit_feature_rows.parquet; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/EXPERIMENT_INDEX.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REUSE_COMPONENTS.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REPEAT_GUARD.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TRAINING_LESSONS_NOTES.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/DEVELOPMENT_HANDOFF_NOTES.md</p>
+<p><strong>研究结果凭证：</strong>C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md</p>
 <p><strong>旧别名：</strong>MODEL_FAMILY_R1A_FOLDS|PIT_DATA_COVERAGE_R1</p>
 <p><strong>登记别名：</strong>A2_TEMPORAL_PIT_FEATURE_CONTRACT; MODEL_FAMILY_R1A_FOLDS; PIT_DATA_COVERAGE_R1</p>
 
@@ -336,6 +380,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Learn BUY ADD HOLD REDUCE EXIT and replacement or sizing actions</p>
 <p><strong>旧结论：</strong>Security-level Action ML and sizing were already tested with corrected labels and no robust edge</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_CLEAN_LABEL_LINEAGE_AND_AUTONOMOUS_POLICY_R2/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -351,6 +396,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Observe previously tested alpha-model variants without retuning</p>
 <p><strong>旧结论：</strong>Model-family challenger work is complete and represented only as frozen forward comparison</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_MODEL_FAMILY_R1A_DATA_COMPLETE/freeze_manifest.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -366,6 +412,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Measure whether A2 economics are explained by market and technology exposure</p>
 <p><strong>旧结论：</strong>Ex-post exposure evidence is authoritative as a diagnostic but cannot define an ex-ante beta policy</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_BETA_MATCHED_BENCHMARK_AND_RESIDUAL_VALUE_R1/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_MECHANISM_UNRESOLVED</p>
 <p><strong>登记生命周期决策：</strong>PARK_MECHANISM_UNRESOLVED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -381,6 +428,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Reduce boundary churn without changing intended Raw A2 Top20</p>
 <p><strong>旧结论：</strong>Turnover and one-session persistence are already represented by a frozen execution overlay</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_EXECUTION_R3_FORWARD_SHADOW/execution_forward_shadow_contract.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -396,6 +444,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Normalize unchanged Raw A2 to ex-ante QQQ beta 1.00</p>
 <p><strong>旧结论：</strong>No economic test occurred; Risk OS SPY beta 1.50 is materially different</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_FIXED_EXANTE_QQQ_BETA_NORMALIZATION_R1/hash_manifest.json</p>
 <p><strong>旧状态：</strong>PARKED_BLOCKED</p>
 <p><strong>登记生命周期决策：</strong>UNTESTABLE_MISSING_AUTHORITATIVE_SPECIFICATION</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -411,6 +460,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Select less-crowded names from the existing broad Raw A2 pool</p>
 <p><strong>旧结论：</strong>Candidate-level sector deconcentration was tested and incurred excessive alpha loss</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_PRETOP20_CANDIDATE_RECOVERY_AND_MEMBERSHIP_DECONCENTRATION_R1/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -426,6 +476,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Reduce gross based on observed or predicted risk state</p>
 <p><strong>旧结论：</strong>VIX trend volatility and gross-scaling variants are saturated; new thresholds are parameter search</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_TREND_REGIME_OVERLAY_R1/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -441,6 +492,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Determine fixed winner-label recall by existing Raw A2 ranks beyond 40</p>
 <p><strong>旧结论：</strong>GT40 winner mass and existing Q90 lift were materially present beyond Top40, but the signal was strongly confounded by existing PIT volatility and candidate augmentation was not justified.</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_GT40_CANDIDATE_GENERATOR_RECALL_DIAGNOSTIC_R1</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>UNTESTABLE_MISSING_AUTHORITATIVE_EVIDENCE</p>
 <p><strong>状态核对：</strong>CONFLICT_LEGACY_CLOSED_CURRENT_NONTERMINAL_REVIEW_REQUIRED</p>
@@ -456,6 +508,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Use clustered insider purchases as a distinct filing alpha</p>
 <p><strong>旧结论：</strong>Binary term drove replacements but did not coherently explain the observed effect; another insider model would be a model variant</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/H22_CLUSTERED_INSIDER_ACTIVITY/trial_ledger.json</p>
 <p><strong>旧状态：</strong>CLOSED_MECHANISM_UNRESOLVED</p>
 <p><strong>登记生命周期决策：</strong>PARK_MECHANISM_UNRESOLVED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -471,6 +524,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Test learnability of the R6 label without reconstructing Raw A2</p>
 <p><strong>旧结论：</strong>Label and folds reuse R6 but prediction values cannot be certified identical and the model intentionally differs</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_CANONICAL_ATTRIBUTION_AND_WINNER_LOSER_LEARNABILITY_R1/winner_loser_learnability_recall.csv</p>
 <p><strong>旧状态：</strong>CLOSED_MECHANISM_UNRESOLVED</p>
 <p><strong>登记生命周期决策：</strong>PARK_MECHANISM_UNRESOLVED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -485,10 +539,12 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <details><summary>MINIMUM_JUSTIFIED_SYSTEM_MANIFEST_R1</summary>
 
 <p><strong>旧结论：</strong>Query anchor for the validated minimum-system manifest; not a tradable component.</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/etc2/EFFECTIVE_RESEARCH_TRIAL_LEDGER_CLOSURE_R3/effective_trial_ledger.json</p>
 <p><strong>登记生命周期决策：</strong>KEEP_CORE</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
 <p><strong>原始引用：</strong>D:\us-tech-quant-results\A2_MINIMUM_JUSTIFIED_SYSTEM_AND_COMPONENT_INCREMENTALITY_AUDIT_R1\minimum_justified_system.json; D:\us-tech-quant-results\A2_MINIMUM_JUSTIFIED_SYSTEM_AND_COMPONENT_INCREMENTALITY_AUDIT_R1\component_decisions.json; D:/us-tech-quant-results/etc2/EFFECTIVE_RESEARCH_TRIAL_LEDGER_CLOSURE_R3/effective_trial_ledger.json</p>
 <p><strong>登记引用：</strong>D:\us-tech-quant-results\A2_MINIMUM_JUSTIFIED_SYSTEM_AND_COMPONENT_INCREMENTALITY_AUDIT_R1\minimum_justified_system.json; D:\us-tech-quant-results\A2_MINIMUM_JUSTIFIED_SYSTEM_AND_COMPONENT_INCREMENTALITY_AUDIT_R1\component_decisions.json; D:/us-tech-quant-results/etc2/EFFECTIVE_RESEARCH_TRIAL_LEDGER_CLOSURE_R3/effective_trial_ledger.json</p>
+<p><strong>研究结果凭证：</strong>D:/us-tech-quant-results/etc2/EFFECTIVE_RESEARCH_TRIAL_LEDGER_CLOSURE_R3/effective_trial_ledger.json</p>
 <p><strong>旧别名：</strong>A2_MINIMUM_SYSTEM_R1; MINIMUM_JUSTIFIED_SYSTEM; MINIMUM_JUSTIFIED_SYSTEM_MANIFEST_R1</p>
 <p><strong>登记别名：</strong>A2_MINIMUM_SYSTEM_R1; MINIMUM_JUSTIFIED_SYSTEM; MINIMUM_JUSTIFIED_SYSTEM_MANIFEST_R1</p>
 
@@ -499,6 +555,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Recover winners by reranking Raw A2 Top60 into Top20</p>
 <p><strong>旧结论：</strong>Top60-to-Top20 reranking has already been historically tested and frozen for forward observation</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_NG8_RISK_R2_TRUE_PROSPECTIVE_FORWARD_CHAIN_R1/forward_contract.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -537,6 +594,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Time portfolio-wide systemic de-risking</p>
 <p><strong>旧结论：</strong>Portfolio timing branch failed its pre-2026 predictive and economic gate</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_RISK_OS_R2/risk_os_r2_final_summary.json</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -552,6 +610,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Alter weights without new independent information</p>
 <p><strong>旧结论：</strong>Weighting and sizing actions were tested; coefficients or bounds are parameter variants</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_CLEAN_LABEL_LINEAGE_AND_AUTONOMOUS_POLICY_R2/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -600,6 +659,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Change attenuation strength redistribution or tiers around the same R6 signal</p>
 <p><strong>旧结论：</strong>Multiplier threshold and capital-destination variants do not create a new mechanism</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_RISK_CONTROL_R5_CONSTANT_GROSS_R6/A2_RISK_CONTROL_R5_CONTRACT.json</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -615,6 +675,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Predict adverse five-session MAE without compensating MFE</p>
 <p><strong>旧结论：</strong>R6 is the frozen authoritative loser-risk reference</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_STOCK_RISK_R6/r6_oof_predictions.parquet|D:/us-tech-quant-results/A2_STOCK_RISK_R11_PROSPECTIVE/r11_preregistered_evaluation_contract.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -630,6 +691,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Reduce only high-risk Top20 stock weights</p>
 <p><strong>旧结论：</strong>The canonical fixed attenuation policy is already tested and prospectively represented</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_INDIVIDUAL_STOCK_TAIL_RISK_R2/frozen_risk_signal_identity.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -645,11 +707,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Provide historical Raw A2 ranks beyond Top40 from an existing fitted lineage</p>
 <p><strong>旧结论：</strong>Existing broad source is sufficient for rank-greater-than-40 provenance; do not rebuild a prediction warehouse</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/oof_predictions.parquet</p>
 <p><strong>旧状态：</strong>INFRASTRUCTURE_COMPLETE</p>
 <p><strong>登记生命周期决策：</strong>KEEP_CORE</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
 <p><strong>原始引用：</strong>D:/us-tech-quant/scripts/v22/a2_pretop20_candidate_recovery_and_membership_deconcentration_r1.py</p>
-<p><strong>登记引用：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/oof_predictions.parquet; D:/us-tech-quant/scripts/v22/a2_pretop20_candidate_recovery_and_membership_deconcentration_r1.py</p>
+<p><strong>登记引用：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2/oof_predictions.parquet; D:/us-tech-quant/scripts/v22/a2_pretop20_candidate_recovery_and_membership_deconcentration_r1.py; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/EXPERIMENT_INDEX.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REUSE_COMPONENTS.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REPEAT_GUARD.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TRAINING_LESSONS_NOTES.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/DEVELOPMENT_HANDOFF_NOTES.md</p>
+<p><strong>研究结果凭证：</strong>C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md</p>
 <p><strong>旧别名：</strong>A_VS_A2_OOF_FULL_RANKING|PRETOP20_AUTHORITATIVE_POOL</p>
 <p><strong>登记别名：</strong>A_VS_A2_OOF_FULL_RANKING; PRETOP20_AUTHORITATIVE_POOL; RAW_A2_BROAD_OOF_PREDICTIONS</p>
 
@@ -660,11 +724,13 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Frozen Raw A2 control ranking</p>
 <p><strong>旧结论：</strong>One frozen model hash and portfolio lineage anchor all later A2 work</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2</p>
 <p><strong>旧状态：</strong>INFRASTRUCTURE_COMPLETE</p>
 <p><strong>登记生命周期决策：</strong>KEEP_CORE</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
 <p><strong>原始引用：</strong>D:/us-tech-quant/scripts/v22/abcde_a2_r1_nonlinear_cross_sectional_modeling.py</p>
-<p><strong>登记引用：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2; D:/us-tech-quant/scripts/v22/abcde_a2_r1_nonlinear_cross_sectional_modeling.py; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/counterfactual_identification_contract.json; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/stock_selection_evidence_matrix.csv; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/raw_a2_identity_verdict.json; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/final_report.md; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/final_validation.json; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/final_independent_review.md</p>
+<p><strong>登记引用：</strong>D:/us-tech-quant-results/A_VS_A2_QUARTERLY_13F_R1/A2; D:/us-tech-quant/scripts/v22/abcde_a2_r1_nonlinear_cross_sectional_modeling.py; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/counterfactual_identification_contract.json; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/stock_selection_evidence_matrix.csv; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/raw_a2_identity_verdict.json; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/final_report.md; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/final_validation.json; D:/us-tech-quant-results/RAW_A2_STRICT_COUNTERFACTUAL_STOCK_SELECTION_IDENTIFICATION_R1/final_independent_review.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/EXPERIMENT_INDEX.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REUSE_COMPONENTS.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REPEAT_GUARD.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TRAINING_LESSONS_NOTES.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/DEVELOPMENT_HANDOFF_NOTES.md</p>
+<p><strong>研究结果凭证：</strong>C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md</p>
 <p><strong>旧别名：</strong>A2_HGB|A_A2_QUARTERLY_13F_CLEAN_BASELINE_R1|AUTHORITATIVE_LEGACY_A2_HGB</p>
 <p><strong>登记别名：</strong>A2_HGB; AUTHORITATIVE_LEGACY_A2_HGB; A_A2_QUARTERLY_13F_CLEAN_BASELINE_R1; RAW_A2_HGB_BASELINE</p>
 
@@ -675,6 +741,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Persist canonical Raw A2 ranks 1 through 40 without a research refit</p>
 <p><strong>旧结论：</strong>Canonical fixed-depth membership asset; legacy copies must not replace it</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_AUTHORITATIVE_RAW_TOP40_MEMBERSHIP_CHECKPOINT_R1/raw_a2_top40_membership_checkpoint.parquet</p>
 <p><strong>旧状态：</strong>INFRASTRUCTURE_COMPLETE</p>
 <p><strong>登记生命周期决策：</strong>KEEP_CORE</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -690,6 +757,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Preserve A2 active deviation only when Raw score predicts right-tail probability</p>
 <p><strong>旧结论：</strong>Fixed attenuation is already tested and has its own no-backfill shadow</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_RAW_SCORE_ACTIVE_DEVIATION_ATTENUATION_R1/final_report.md|D:/us-tech-quant-results/A2_THREE_ARM_POSTFREEZE_FORWARD_R1/forward_contract.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -717,6 +785,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Reduce FF12 concentration while preserving Raw Top20 membership</p>
 <p><strong>旧结论：</strong>S1 is the canonical tested sector-reweighting mechanism</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_THREE_ARM_POSTFREEZE_FORWARD_R1/forward_contract.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -732,6 +801,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Use sector-relative targets and PIT taxonomy inside an alpha model</p>
 <p><strong>旧结论：</strong>Statistically different model but same sector-aware action locus; historical testing is complete</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_SECTOR_AWARE_ML_AND_FACTOR_OVERNIGHT_R1/final_report.md|D:/us-tech-quant-results/A2_SECTOR_AWARE_ML_AND_FACTOR_OVERNIGHT_R1/finalist_freeze.json</p>
 <p><strong>旧状态：</strong>FROZEN_RESEARCH_CANDIDATE</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -747,6 +817,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Change cash or gross using the same frozen sector concentration state</p>
 <p><strong>旧结论：</strong>Alternative cap levels or gross floors are policy-parameter variants; existing fixed forms are already represented</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_THREE_ARM_POSTFREEZE_FORWARD_R1/forward_contract.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -762,6 +833,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Use PIT financial-statement changes as orthogonal alpha</p>
 <p><strong>旧结论：</strong>Recovered-coverage research completed once and ended weak or unstable with no promotion</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_SEC_FUNDAMENTAL_CHANGE_ALPHA_POST_COVERAGE_RECOVERY_R1/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -777,6 +849,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Resume the already-completed post-coverage SEC branch</p>
 <p><strong>旧结论：</strong>Exact task-level duplicate evidence was found; no rerun occurred</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_EARNINGS_FUNDAMENTAL_CHANGE_ALPHA_R2/hash_manifest.json</p>
 <p><strong>旧状态：</strong>CLOSED_DUPLICATE</p>
 <p><strong>登记生命周期决策：</strong>TOMBSTONE_EXACT_DUPLICATE</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -792,6 +865,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Test whether signal value decays or benefits from holding longer and trading less</p>
 <p><strong>旧结论：</strong>Signal persistence and multiple horizons were studied; no pre-existing untouched horizon policy remains</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_EXECUTION_EFFICIENCY_R2_PREREGISTERED_HYSTERESIS/execution_r2_preregistered_contract.json</p>
 <p><strong>旧状态：</strong>CLOSED_MECHANISM_UNRESOLVED</p>
 <p><strong>登记生命周期决策：</strong>PARK_MECHANISM_UNRESOLVED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -807,6 +881,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Improve prediction of the same stock downside or asymmetry mechanism</p>
 <p><strong>旧结论：</strong>R10 explicitly stops new pre-2026 risk-model discovery and freezes R6 as best current signal</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_STOCK_RISK_R10_CLOSEOUT/r10_freeze_manifest.json</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -822,6 +897,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Use institutional holding changes not present in A2 score</p>
 <p><strong>旧结论：</strong>Information was present but standalone and score-blend economics were weak</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_13F_INSTITUTIONAL_CHANGE_ALPHA_R1/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -837,6 +913,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Diversify Raw A2 with the same 13F change ranking</p>
 <p><strong>旧结论：</strong>The fixed sleeve was tested and looked diversifying but was not frozen or admitted; new blend weights are parameter variants</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_13F_DUAL_SLEEVE_DIVERSIFICATION_R1/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_MECHANISM_UNRESOLVED</p>
 <p><strong>登记生命周期决策：</strong>UNTESTABLE_TEMPORAL_SOURCE</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -854,8 +931,10 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 <p><strong>旧结论：</strong>Safe authoritative evidence is insufficient; the component remains unresolved without a negative inference.</p>
 <p><strong>登记生命周期决策：</strong>UNTESTABLE_MISSING_AUTHORITATIVE_EVIDENCE</p>
 <p><strong>状态核对：</strong>NO_LEGACY_STATUS</p>
+<p><strong>登记引用：</strong>C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TASK_RESEARCH_REPORT.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/EXPERIMENT_INDEX.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REUSE_COMPONENTS.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/REPEAT_GUARD.json; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/TRAINING_LESSONS_NOTES.md; C:/Users/Lenovo/Documents/CODING开发/a2_task_training_handoff_registry_20260928_r1/DEVELOPMENT_HANDOFF_NOTES.md</p>
+<p><strong>研究结果凭证：</strong>C:\Users\Lenovo\Documents\CODING开发\a2_contextual_stacking_r1_retrospective_registry_20260928\REPORT.md</p>
 <p><strong>旧别名：</strong>13F_LEVEL; 13F_LIFECYCLE; THIRTEEN_F_LEVEL_AND_LIFECYCLE_LINEAGE</p>
-<p><strong>登记别名：</strong>13F_LEVEL; 13F_LIFECYCLE; THIRTEEN_F_LEVEL_AND_LIFECYCLE_LINEAGE</p>
+<p><strong>登记别名：</strong>13F_LEVEL; 13F_LIFECYCLE; A2_CONTEXTUAL_STACKING_R1; A2_CONTEXTUAL_STACKING_R1_20260928; A2_MULTIMODEL_JOINT_20260928; A2_MULTIMODEL_JOINT_REVIEW_20260928; THIRTEEN_F_LEVEL_AND_LIFECYCLE_LINEAGE</p>
 
 </details>
 
@@ -864,6 +943,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Improve Raw A2 by substituting near-boundary candidates</p>
 <p><strong>旧结论：</strong>Same information and action locus already covered by Top60 rerank plus the canonical boundary diagnostic</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_NEXTGEN_TOPK_ENSEMBLE_RERANK_R1/final_report.md</p>
 <p><strong>旧状态：</strong>CLOSED_DUPLICATE</p>
 <p><strong>登记生命周期决策：</strong>TOMBSTONE_FUNCTIONAL_REDUNDANCY</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -879,6 +959,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Change concentration by selecting a different number of ranked names</p>
 <p><strong>旧结论：</strong>TopK has already been tested; another K is a parameter search rather than a new mechanism</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/ABCDE_A2_R4_PORTFOLIO_TRANSLATION_USING_HGB_INCUMBENT</p>
 <p><strong>旧状态：</strong>CLOSED_NEGATIVE</p>
 <p><strong>登记生命周期决策：</strong>CLOSED_PRIOR_UNCHANGED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -894,6 +975,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Run frozen Alpha Risk and Execution identities without feedback</p>
 <p><strong>旧结论：</strong>One authoritative append-only control plane exists; do not build another ledger or registry</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant/config/research_governance/a2_forward_shadow_production_binding_r1.json</p>
 <p><strong>旧状态：</strong>INFRASTRUCTURE_COMPLETE</p>
 <p><strong>登记生命周期决策：</strong>KEEP_CORE</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -909,6 +991,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Ask whether non-A2 PIT features learn the frozen winner label</p>
 <p><strong>旧结论：</strong>Same label and information domain but a distinct fixed diagnostic model; no new policy authorization</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_CANONICAL_ATTRIBUTION_AND_WINNER_LOSER_LEARNABILITY_R1/winner_loser_learnability_recall.csv</p>
 <p><strong>旧状态：</strong>CLOSED_MECHANISM_UNRESOLVED</p>
 <p><strong>登记生命周期决策：</strong>PARK_MECHANISM_UNRESOLVED</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>
@@ -924,6 +1007,7 @@ python -B -m scripts.maintenance.research_registry preflight-proposal --proposal
 
 <p><strong>机制 / 假设：</strong>Predict the frozen upper tail of multi-horizon QQQ-relative return</p>
 <p><strong>旧结论：</strong>Winner-tail hypothesis has been modeled repeatedly and is now represented prospectively</p>
+<p><strong>历史结果位置：</strong>D:/us-tech-quant-results/A2_NG8_RISK_R2_TRUE_PROSPECTIVE_FORWARD_CHAIN_R1/forward_contract.json</p>
 <p><strong>旧状态：</strong>FORWARD_ACTIVE_WAIT</p>
 <p><strong>登记生命周期决策：</strong>WAIT_FORWARD</p>
 <p><strong>状态核对：</strong>DIFFERENT_STATUS_VOCABULARY_REVIEW_REQUIRED</p>

@@ -12,7 +12,7 @@ BENCHMARK_COLORS = {"QQQ": "#087f71", "SPY": "#884ac7"}
 def render_curve_focus(key, *, available):
     """Choose visible paths without changing the period or comparison table."""
     choices = {"All curves": None}
-    for symbol in ("A", "QQQ", "SPY"):
+    for symbol in ("RX", "A", "QQQ", "SPY"):
         if symbol in available:
             choices[f"A2 / {symbol}"] = ("A2", symbol)
     selected = st.session_state.get(key, "All curves")
@@ -41,14 +41,17 @@ def available_benchmarks(history, symbols=("QQQ", "SPY")):
 
 def render_benchmark_notes(history, *, presentation, symbols=("QQQ", "SPY")):
     available = available_benchmarks(history, symbols)
+    raw = any(series.basis == "OPEN_TO_OPEN_PRICE_RETURN" for series in history.series)
     missing = [symbol for symbol in symbols if symbol not in {row.symbol for row in available}]
     if missing:
         st.caption(tr("Market reference unavailable: {symbols}. The strategy window is retained in full.",
                       symbols=" / ".join(missing)))
     if available:
-        st.caption(tr("QQQ and SPY are ETF references. SPY represents the S&P 500; it is not the cash index. Market paths use the same displayed dates and adjusted open-to-open prices, with no benchmark transaction fees."))
+        st.caption(tr("QQQ and SPY use the same displayed dates and raw open-to-open price returns, excluding cash dividends and benchmark fees. These are price references, not total-return indices." if raw else
+            "QQQ and SPY are ETF references. SPY represents the S&P 500; it is not the cash index. Market paths use the same displayed dates and adjusted open-to-open prices, with no benchmark transaction fees."))
     with st.expander(tr("Market comparison sources & basis"), expanded=False):
-        st.caption(tr("ETF references are buy-and-hold price paths from a frozen Moomoo QFQ snapshot. They do not match the strategy's risk exposures or execution costs; return differences are descriptive, not estimated alpha."))
+        st.caption(tr("ETF price references use hash-bound Moomoo and Massive raw prices with recorded source boundaries. They do not match the strategy's risk exposures or execution costs; return differences are descriptive, not estimated alpha." if raw else
+            "ETF references are buy-and-hold price paths from a frozen Moomoo QFQ snapshot. They do not match the strategy's risk exposures or execution costs; return differences are descriptive, not estimated alpha."))
         st.caption(tr("The first archive date is an ETF baseline with zero return. For a shorter selected window, the preceding execution date anchors the first included return. No missing price is filled."))
         for series in history.series:
             if series.symbol not in symbols:

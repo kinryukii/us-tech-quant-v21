@@ -9,6 +9,7 @@ from apps.demo_console.components.ml_story import FEATURES, render_feature_atlas
 from apps.demo_console.components.ml_comparison import comparison_rows, render_model_comparison
 from apps.demo_console.components.decision_trace import (
     carry_case, remember_case, render_decision_trace, resolve_case_ticker, trace_facts,
+    performance_available, pending_execution,
 )
 from apps.demo_console.components.chart_display import render_chart
 from apps.demo_console.components.score_profile import chart_records, score_chart
@@ -16,6 +17,7 @@ from apps.demo_console.components.top20_table import score_label
 from apps.demo_console.components.visuals import section_header, text
 from apps.demo_console.components.replay import pause_replay
 from apps.demo_console.i18n import option_labeler, tr
+from apps.demo_console.adapters import workspace_reader
 
 
 SECTIONS = ("Model engine", "Compare outputs", "Training lineage", "Decision trace", "Validation map")
@@ -133,7 +135,9 @@ def case_explanation(facts):
     """State the observed connection, without treating a score as a position."""
     if facts is None:
         return None
-    if facts["held_after"] is True:
+    if pending_execution(facts):
+        source = "{ticker}'s signal is awaiting the next session open."
+    elif facts["held_after"] is True:
         source = "{ticker} appears in both the recorded ranking and the linked post-execution portfolio."
     elif facts["held_after"] is False:
         source = "{ticker} appears in the recorded ranking and is absent from the linked post-execution portfolio."
@@ -143,12 +147,15 @@ def case_explanation(facts):
 
 
 def _render_engine(model):
-    rows = comparison_rows(model)
+    display_model = workspace_reader.rank_band(model, st.session_state.get("workspace_rank_band", "Top20"))
+    rows = comparison_rows(display_model)
     tickers = tuple(row.ticker for row in rows)
-    st.session_state["ml_engine_ticker"] = resolve_case_ticker(model)
+    focused = resolve_case_ticker(model)
+    if focused not in tickers:
+        focused = tickers[0] if tickers else None
+    st.session_state["ml_engine_ticker"] = focused
     selected = st.session_state.get("ml_engine_ticker")
     brief = learning_brief(model)
-    _render_learning_brief(brief)
     with st.container(key="ml_engine_workspace"):
         chart_column, inspector_column = st.columns([2.1, 1], gap="medium")
         with inspector_column:
@@ -176,7 +183,7 @@ def _render_engine(model):
                               icon=":material/account_tree:", on_click=visit_section, args=(SECTIONS[2],))
                     st.button(tr("Inspect portfolio setbacks & recovery"), key="ml_case_recovery", width="stretch",
                               on_click=_visit_recovery, icon=":material/monitoring:",
-                              disabled=not facts or not facts["execution_date"])
+                              disabled=not facts or not performance_available(model))
                     st.button(tr("Inspect source provenance"), key="ml_case_evidence", width="stretch",
                               on_click=visit_section, args=("Evidence",), icon=":material/fact_check:", disabled=not facts)
                     st.caption(tr("Recorded output and membership only. Attribution and RX approval are not available here."))
@@ -196,10 +203,11 @@ def _render_engine(model):
                 else:
                     st.session_state["_ml_engine_chart_key"] = None
                     st.info(tr("No recorded rank and score pairs are available for this snapshot."))
-                st.caption(tr("Recorded Top20 only · Select a bar to focus the case."))
+                st.caption(tr("Selected ranking range · Select a bar to focus the case." if model.source_id == "A2_UPDATED_RESEARCH" else "Recorded Top20 only · Select a bar to focus the case."))
     profile = model.learning
     identity = model.provenance.config_identity
     with st.expander(tr("Model mechanism and objective"), expanded=False):
+        _render_learning_brief(brief)
         st.html('<div class="uq-ml-method-inline"><span>' + text(tr("Source-defined inputs"))
                 + '</span><b aria-hidden="true">→</b><span>' + text(tr("Tree ensemble"))
                 + '</span><b aria-hidden="true">→</b><span>' + text(tr("Recorded model score")) + '</span></div>')
@@ -218,15 +226,16 @@ def _render_engine(model):
 def validation_rows(model):
     """Evidence coverage, never a scientific score or universal health status."""
     usable = not model.error
+    updated = model.source_id == "A2_UPDATED_RESEARCH"
     return (
         ("Model identity", "Verified metadata" if usable and model.provenance.config_identity else "Not exposed",
          "The consumed freeze binds the model family, configuration and source identity."),
         ("Training chronology", "Recorded" if usable and model.learning.vintages else "Not exposed",
          "Annual training and label-maturity dates are recorded; this page does not rerun the complete training audit."),
         ("Historical model outputs", "Recorded" if usable and model.ranking else "Not exposed",
-         "Scores and ranks are original Top20 records. The rest of the eligible universe is not loaded."),
+         "Updated daily Top40 rankings; simulated holdings still follow the original Top20 rule." if updated else "Scores and ranks are original Top20 records. The rest of the eligible universe is not loaded."),
         ("Single-stock attribution", "Not exposed",
-         "Historical stage models were not persisted. Exact feature snapshots and a matching model are needed for local explanations."),
+         "Annual models were rebuilt and saved under fixed rules. Local feature contributions are not calculated here." if updated else "Historical stage models were not persisted. Exact feature snapshots and a matching model are needed for local explanations."),
         ("Predictive quality", "Not evaluated here",
          "Rank correlation and score-bucket tests need full-universe predictions, matured labels and evaluation lineage. Portfolio returns alone do not answer this question."),
         ("Historical holdings", "Recorded" if usable and model.holdings else "Not exposed",
@@ -299,7 +308,7 @@ def render_machine_learning(model, *, presentation=True):
                       disabled=trace_facts(model, st.session_state.get("ml_trace_ticker")) is None)
             st.button(tr("Inspect portfolio setbacks & recovery"), key="ml_trace_recovery",
                       on_click=_visit_recovery, icon=":material/monitoring:", type="primary",
-                      disabled=not facts or not facts["execution_date"])
+                      disabled=not facts or not performance_available(model))
             with st.popover(tr("Case evidence"), icon=":material/more_horiz:"):
                 st.button(tr("Explore training lineage"), key="ml_trace_lineage", width="stretch",
                           on_click=visit_section, args=("Training lineage",), icon=":material/account_tree:")

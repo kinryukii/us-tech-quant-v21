@@ -28,13 +28,14 @@ is not permission to read its contents; use task-authorized non-result metadata.
 | Domain | Evidence-backed status | Start here |
 | --- | --- | --- |
 | Research identity and anti-duplication | `ACTIVE` implementation; accepted registry head controls identity | `scripts/maintenance/research_registry.py`, `config/research_registry.json`, `tests/governance/test_research_registry.py`; external metadata-only registry, aliases and accepted manifests |
-| Research lifecycle and trials | `ACTIVE` Harness integration; per-task contracts remain scoped | `scripts/maintenance/prospective_research_lifecycle.py`, `tests/governance/test_prospective_research_lifecycle.py`; existing receipts/trial records, no second registry |
+| Research lifecycle and trials | `ACTIVE` helpers; per-task contracts remain scoped | `scripts/maintenance/prospective_research_lifecycle.py`, `tests/governance/test_prospective_research_lifecycle.py`; existing receipts/trial records, no second registry |
 | Storage routing and canonical data | `ACTIVE`; canonical data read-only | `config/storage_paths.json`, `scripts/common/storage_paths.py`, `scripts/common/storage_paths.ps1`, `docs/STORAGE_LAYOUT.md` |
 | 13F PIT engineering | `ACTIVE` PIT utilities; individual experiments otherwise `UNKNOWN` | `scripts/v22/pit_13f_reconstruction_r1.py`, its callers/tests, and external lineage manifests |
 | Shared PIT foundation | Retained source dependency of FAST3 inputs | `scripts/research/a2/data/a2_free_pit_foundation_r1.py`; source bytes retained and loaded by the existing FAST3 PIT input adapter |
 | A / A2 alpha research | `ACTIVE` and `EXPERIMENTAL`; frozen identities only where a hash/contract says so | `scripts/v22/abcde_a2_*`, paired `test_*.py`, and, when present, `config/research_governance/alpha_registry.json` |
 | A2 risk research | `ACTIVE`; R6 is a frozen prospective reference in current evidence | `scripts/v22/a2_stock_risk_r6.py`, `scripts/v22/a2_stock_risk_r10_r11_fast_track.py`, paired tests, and the risk registry when present |
 | Execution / portfolio policy | `ACTIVE` research; adopted identities may be `FROZEN` | `scripts/v22/abcde_a2_r1c_execution_contract_freeze_r1.py`, `scripts/v22/abcde_a2_r4_portfolio_translation_using_hgb_incumbent.py`, and the execution registry when present |
+| DEMO daily performance synchronization | `ACTIVE` descriptive presentation adapters; no fitting or new research selection | `scripts/daily_recommendation.py`, `scripts/research/a2/evaluation/demo_performance.py`, `three_strategy_extension.py`, `selected_performance_update.py`; frozen policy/engine reuse, verified ledgers under external `daily_root/A2_selected_hgb/research_runs/`, paired evaluation and DEMO reader tests |
 | 2026 holdout | `EVALUATION_ONLY` and already exposed for A2 | `D:\us-tech-quant-results\A2_ALGORITHM_R2_2026_FROZEN_HOLDOUT\status.json`; protected content, not an ordinary-development read target; prior exposure blocks pristine-holdout reuse/optimization |
 | Forward / prospective evaluation | `EVALUATION_ONLY`; no training/search/selection | `scripts/v22/forward_shadow/`, `config/research_governance/a2_forward_shadow_unified_r1.json`, and `docs/research_governance/` when present |
 | FAST3 | `ACTIVE` implementation, currently synthetic-only; frozen confirmation remains unread | `fast3/state/FAST3_STATE.json`, `fast3/manifests/registries/FAST3_STAGE_REGISTRY.json`, `fast3/FAST3_STATUS.md` |
@@ -42,9 +43,19 @@ is not permission to read its contents; use task-authorized non-result metadata.
 | FAST legacy/supersession | Mixed; use registries, not version names | `fast3/manifests/registries/`, `fast3/scripts/audit/build_fast3_inventory.py`, and compatibility/legacy mappings |
 | Tests | `ACTIVE` existing pytest system | Paired `scripts/v*/test_*.py`, `fast3/tests/`, `tests/`, and `pytest.ini` |
 | Anti-Bloat | `ACTIVE`; policy and thresholds are authoritative | `docs/governance/ANTI_BLOAT_POLICY.md`, `configs/anti_bloat_policy.toml`, `fast3/scripts/audit/run_fast3_guard.py` |
-| Harness | `ACTIVE` repository guards and one-task control plane | `scripts/maintenance/harness_preflight.py`, `scripts/maintenance/harness_task.py`, paired tests, and root `AGENTS.md` |
 | V21 daily/history | Mixed; do not assume obsolete | `docs/V21_ACTIVE_SYSTEM_REGISTRY.md`, `config/v21/active_chain_manifest.json`, and the V22 active/deprecated output manifest implementation |
 | Results and evidence | Protected external evidence | `D:\us-tech-quant-results`, `D:\us-tech-quant-backtests`, `D:\us-tech-quant-daily`; never rewrite for ordinary development |
+
+13F manager completeness is scoped to a declared cohort, not a universal fixed
+24/25 count. The original Raw A2 authoritative 24-manager configuration excludes
+Situational Awareness and remains its frozen historical identity. Current cohort
+consumers reuse `scripts/storage/refresh_13f_quarter.py::active_managers` and
+`manager_roster_identity` with quarter-effective registry intervals; an institution
+before its applicable start is not a missing filer. A finite observed filing
+history does not imply an end date. Keep task-specific `ALL_APPLICABLE` versus
+explicitly authorized `DISCLOSED_ONLY` coverage separate; a disclosed subset is
+not evidence that a stricter whole-qualified-snapshot contract passed. Preserve
+old frozen bindings and use an explicit quarter roster binding for new cohorts.
 
 Broad `scripts/v22` contents are not collectively authoritative. Multiple versions
 and experiments coexist. Locate a candidate with `rg`, inspect paired tests and
@@ -82,7 +93,9 @@ registry, permanent task budget or automatic permission to reopen research.
   failed/closed/parked/tombstoned conclusions and reusable artifacts first.
   Reopening needs new legal information, a materially distinct falsifiable
   mechanism, or repair of a defect that made the prior test invalid. Explain the
-  change under the existing identity; governance updates reopen nothing.
+  change with preserved canonical lineage and the original conclusions, using
+  the existing lifecycle's required new research_id rather than overwriting or
+  reopening the old record in place; governance updates reopen nothing.
 - PIT is an information-chain contract: distinguish report period from actual
   financial/13F disclosure, database vintage/revision from event time, and raw
   versus adjusted prices from their authoritative PIT lineage. Carry availability
@@ -99,8 +112,26 @@ registry, permanent task budget or automatic permission to reopen research.
 
 Temporal authorities and limitations:
 
-- Training and label maturity must be `< 2026-01-01` unless a future contract is
-  explicitly human-authorized to change the boundary.
+- HARD TIME SPLIT (human requirement, 2026-10-01): training inputs/labels and
+  development-validation content must be `< 2026-01-01`; test observations and
+  target periods are only `2026-01-01 <= t < 2027-01-01`. All learned
+  preprocessing/calibration fitting, selection and early stopping use pre-2026
+  content. Authorized PIT evaluation may transform/predict 2026 inputs using
+  frozen state; it may not fit, adapt or select that state on test content.
+  Labels must mature before their own fit/fold cutoff, also strictly pre-2026.
+  Validation is carved from the pre-2026 development period, not the 2026 test.
+- Define these roles by actual content, availability and label intervals, not
+  folder names. A 2026 decision may use a legitimate pre-2026 history buffer;
+  that buffer is an input context, not 2026 test outcomes or a refitting license.
+  Test targets crossing into 2027 are excluded from this 2026 test contract.
+  Evaluate only the 2026 observations whose inputs/outcomes have actually become
+  available by the declared as_of time. Mark partial-year coverage explicitly;
+  do not synthesize remaining dates or claim full-year performance prematurely.
+  2027+ observations belong to a separately scoped prospective evaluation.
+- Changing this calendar split requires a later explicit human task instruction;
+  directory/config edits and successful tests do not authorize a change. Earlier
+  component/fold/Confirmation freezes and access restrictions remain in force;
+  frozen historical records retain their original bytes and interpretation.
 - Existing tracked guards include strict cutoff, target-maturity/purge, filing
   availability, and lookahead checks in the A2/13F modules listed above.
 - 2026 A2 outcome evidence predates a later attempted pristine holdout contract.
@@ -110,6 +141,85 @@ Temporal authorities and limitations:
   `fast3/state/FAST3_STATE.json`; its Confirmation data is frozen and unread.
 - Backtest success, synthetic validation, or prospective support does not grant
   broker action, official adoption, or production authorization.
+
+
+### Actionable research checks (2026-10-01)
+
+These are project research constraints, not a new permission layer or a new
+registry. Put required facts in the existing proposal/contract, run configuration,
+trial record and final report. An ordinary typo/UI/document edit does not require
+a research experiment or reading outcomes.
+
+1. **Before fitting or selection:** resolve canonical identity and prior work
+   using authorized registry/source metadata; explain reuse or the distinct
+   increment. Record hypothesis, baseline, primary metric, train/validation/
+   locked-test roles and exact intervals, decision/availability/label-maturity
+   cutoffs, purge/embargo rationale, search scope/budget and stopping rule.
+   Use the applicable task budget; do not introduce a universal trial allowance.
+   Do not inspect locked outcomes to decide this design.
+
+2. **During development:** use chronological rolling/walk-forward validation;
+   never randomly split dependent financial observations for an independent
+   generalization claim. Remove overlapping label windows across folds and
+   document any embargo from the actual information/label horizon. Fit all
+   learned transformations on that fold's training data only. Feature discovery,
+   asset-pool selection, seed/model/hyperparameter search, early stopping,
+   calibration, portfolio/risk/cost/execution choices and metric/baseline/window
+   selection are part of the same selection process. Record failed, abandoned
+   and manual trials as well as winners; report unknown counts as UNKNOWN.
+   Repeated validation inspection can overfit validation too: bound search and
+   retain a separate locked evaluation of the complete selected pipeline.
+
+3. **Ensembles and evidence:** train stacking/calibration/learned weights on
+   chronological out-of-fold predictions (OOF: each row predicted by a model
+   whose fit and selection did not use that row's label or future information).
+   Include source model/fold/time lineage; in-sample predictions are not OOF.
+   Compare to the frozen baseline under the same sample, information, capital,
+   cost and execution assumptions. Report selection history, relevant subperiod
+   stability, uncertainty and multiple-comparison limitations; preserve serial
+   dependence in uncertainty estimation. A best seed, peak Sharpe, one interval
+   or synthetic PASS alone cannot establish incremental value or generalization.
+
+4. **Before confirmation:** freeze source/config/model identities and the entire
+   declared evaluation design before first outcome access. Confirmation executes
+   that design, not a winner search. Preserve every exposure and any defect/
+   correction/retest lineage. An infrastructure fix may justify a corrected run;
+   it does not authorize tuning, changing frozen expectations, resetting trials
+   or calling the already exposed window untouched. Separately authorized
+   descriptive/forward evaluation remains clearly labeled. Without valid inputs
+   or independent evidence, report BLOCKED_DATA/UNTESTABLE or the applicable
+   existing contract status; never fabricate a substitute PASS.
+
+5. **PIT across the pipeline:** for each signal enforce
+   `available_at <= decision_at < execution_at` with explicit timezone/session
+   semantics; the execution time must allow realistic computation/order latency.
+   Event/report dates alone are insufficient. A completed bar/closing price is
+   unavailable earlier within that bar/session; its closing fill cannot be assumed
+   executable after using that close. Fit rows require labels matured before
+   their own fold's fit cutoff as well as the project cutoff. Use as-of joins and
+   historical revisions, ticker/security identity, universe/sector membership,
+   delisting and corporate-action lineage; do not backfill from today's snapshot.
+   Cached/derived features, preprocessing, OOF and model selection inherit the
+   same information limits. Missing availability evidence blocks that dependency.
+
+Current web descriptions, today's company narratives/classifications and an
+LLM's current knowledge are not authoritative historical PIT features or labels.
+A prompt asking the LLM to "use only pre-2026 knowledge" does not isolate its
+information set. Historical use needs archived, time-stamped source evidence
+and a declared construction/selection process; otherwise label it retrospective
+and do not claim an independent historical information set. Human/agent review,
+summaries, images, logs, caches, tool results and sub-agent handoffs must obey the
+same authorized read scope. Research lookup never authorizes reading protected
+results. Establish a content-level isolated reader before real restricted access;
+metadata/date checks and reading a whole file then filtering are insufficient.
+
+For code changes that affect time/data boundaries, reuse paired synthetic tests
+to check exact-cutoff and late-publication/revision rejection, fold label overlap,
+OOF lineage, and **future append/truncation invariance**: adding records unavailable
+at decision time must not change earlier eligible features, decisions or fitted
+objects. Inspect test imports/subprocesses and input/output scope first; a legal
+property test does not make a mixed real-data suite safe. Do not add mirror tests
+for documentation edits or launch real research to validate governance text.
 
 ## Frozen-asset lookup
 
@@ -125,18 +235,14 @@ present. Preserve unknown or inaccessible evidence; do not repair by overwriting
   project configuration; permission profiles are not research authorizations.
   No relevant local AGENTS.override.md or configured fallback instruction file
   was found. Local task rules cannot weaken the root or platform hierarchy.
-- Harness reads its planner, worker and reviewer templates from
-  `scripts/maintenance/harness_task.py`. These are active generated prompts, not
-  separate authority to change the human goal or global hard boundaries. Edit
-  the source when writable; do not patch old generated task records.
 - Within FAST3, `fast3/docs/governance/FAST3_ANTI_BLOAT_POLICY.md` explicitly names
   `FAST3_CURRENT_STAGE_DIRECTIVE.md` as the sole current stage directive and
   `FAST3_GOVERNANCE.md` as its governance view. Stage applicability must still be
   checked against state and registry; an old stage title is not current approval.
 - `fast3/docs/governance/FAST3_AUTONOMOUS_MASTER_DIRECTIVE.md` and
   `FAST3_AUTORESEARCH_AGENT_SPEC.md` are retained historical task specifications,
-  not active project-wide authorization. They are not in the discovered Codex or
-  Harness loading chain. Their old branch/path/full-chain instructions must not
+  not active project-wide authorization. They are not in the discovered Codex
+  loading chain. Their old branch/path/full-chain instructions must not
   launch research, Confirmation access or promotion. Preserve original bytes and
   FAST3 inventory records; a generic inventory canonical flag is not acceptance
   of every historical task instruction. This map retires their execution role.
@@ -146,33 +252,6 @@ present. Preserve unknown or inaccessible evidence; do not repair by overwriting
 - `docs/research_governance/` contains domain contracts and historical task views.
   Read only the applicable authorized contract, not the whole directory. These
   domain views do not supersede accepted research identities or global gates.
-
-## Harness entry and verification limits
-
-Use `scripts/maintenance/harness_task.py` for one bounded human-authorized task.
-Start with `start --goal "<bounded task>"`; observe with `status`, `inspect` or
-`timeline`; control with `pause`, `resume`, `steer "<instruction>"`, `review`,
-`stop`. Use the canonical Python runtime from root AGENTS.md. State is under the
-resolved daily_root / `harness_r2`; worktrees use the configured external root.
-No automatic merge, worktree deletion, research promotion or second task.
-Pause/stop are cooperative; preserve active turns and independently legal work.
-
-The existing `scripts/maintenance/harness_preflight.py` applies scope before
-content reads. `--task-scope independent-code` covers documentation, maintenance
-and independent code: Git/control metadata, source identities and repository
-budget only. It skips research contracts, model artifacts, holdout outcomes and
-the arbitrary changed-data temporal scan. Research checks are NOT_CHECKED for
-that scope, not passed; research scope selection grants no content-read rights.
-Use its `--json` option for a read-only check without starting a Harness task.
-The paired preflight suite exercises real file-access interception, the Harness
-caller and a negative control that detects removal of the scope boundary.
-
-The cutoff/PIT helpers and source-literal scanner are limited checks, not a
-universal data-access firewall. No accepted non-frozen shared A2 training/split
-entrypoint currently covers every fit/selection step. The canonical registry and
-lifecycle enforce identity/receipt rules at their own entrypoints; direct scripts
-may bypass them. Validate affected readers and model pipelines under their own
-authorization; do not infer repository-wide enforcement from synthetic PASS.
 
 
 ## Maintenance consolidation (2026-09-14)
@@ -212,6 +291,7 @@ Its recorded acceptance is not a fresh health check or permission to fetch data.
 | Current daily research | `scripts/v22/run_v22_044_daily_single_entrypoint_freeze_and_guard_r1.ps1` -> V22.040 -> current V21 components | `-Execute` runs the real daily chain. V21.256 remains an internal governance component, not another primary entrypoint. |
 | A2 research development | `scripts/research/a2/<category>/`, `scripts/maintenance/research_registry.py` and `scripts/maintenance/prospective_research_lifecycle.py` | Locate the accepted identity and contract first. There is no single universally safe command for all research. Historical frozen references remain unchanged and may resolve through the Git recovery catalog. |
 | Read-only research presentation | `apps/demo_console/start.ps1` | Uses `envs_root/demo-console`; reads existing artifacts through its adapters. See that app's README for the authorized presentation scope. |
+| Local strategy simulation | `apps/moomoo_trading_component/start.ps1` | Existing three paper books and the original MOOMOO SIMULATE identity; state under `daily_root/moomoo_trading_component`. Explicit activation only; opening delay defaults to zero and records actual quote/order/fill times. REAL execution remains unavailable. See the component README. |
 | R1E service and Dashboard V2 | `scripts/v22/start_v22_047_r1e_service.ps1`, `start_v22_047_r1e_ui.ps1`, `status_v22_047_r1e_service.ps1` | These and `install_v22_047_r1e_tasks.ps1` reuse `Get-UstqStoragePaths -RepoRoot`; task actions use external Python. A service start is not a unit test. |
 
 Run the default core regressions **from the repository root with no test path**:
@@ -221,8 +301,10 @@ Set-Location D:\us-tech-quant
 & D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe -B -m pytest -q
 ```
 
-`pytest.ini` lists individually reviewed synthetic storage/maintenance, preflight
-read-boundary and R1D/R1E service test files.
+`pytest.ini` lists individually reviewed synthetic storage/maintenance and
+R1D/R1E service test files. Its collection-isolation test checks that unselected
+research modules are not imported. The removed Harness/preflight suite is not
+part of current default acceptance; do not recreate it from an old staged copy.
 It excludes unreviewed legacy modules before import/collection. An isolated
 subprocess regression proves that default discovery does not import unselected
 research scripts, while explicitly selected tests remain available. This is a
@@ -235,8 +317,7 @@ scripts and read/write historical results even when their names look like tests.
 R1E focused synthetic regression also remains explicitly selectable:
 `python -B -m pytest -q scripts/v22/test_v22_047_r1e_windows_service_hardening.py`.
 Use an authorized external cache/temp location when the configured cache is
-unwritable. Full `test_harness_task.py` is not a default entry: review its broader
-task/process/worktree operations before selecting it. No historical research
+unwritable. No historical research
 script becomes safe merely by passing an explicit path to pytest.
 
 The paired R1D/R1E suites run the real lock, Engine, service manager and Windows
@@ -333,3 +414,47 @@ the canonical registry CLI. Old scientific conclusions remain separate from
 current identity status; discrepancies and missing registrations require review.
 Deletion does not reopen research. Accepted registry state, external frozen
 records, data and live state are unchanged by this repository cleanup.
+
+## Maintaining agent guidance and official references (2026-10-01)
+
+Keep root AGENTS.md as the short project entrypoint; retain detailed research
+checks here, storage detail in STORAGE_LAYOUT.md and Anti-Bloat detail in its
+existing policy. Global instructions apply general preferences. The C: chat
+workspace entry routes this project's work to the D: authority; historical staged
+copies and task plans do not become current policy. Only load references required
+by the task. Complex multi-step work may use the existing external task record
+with outcome, scope, milestones, decisions, validation and recovery steps; routine
+edits do not require new permanent plans or contracts.
+
+When changing guidance, check current callers, configured testpaths, actual
+instruction discovery/override files, combined instruction size and destination
+routing. Preserve unrelated working-tree edits and frozen bytes. Classify changes
+under Anti-Bloat change control; weakening still needs explicit authorization.
+Separate document consistency, actual instruction loading, executable interception,
+research validity and live readiness in the report. A link is not automatically
+loaded, and instruction text is not an operating-system or runtime enforcement
+mechanism. Existing sessions may need a new run/chat to rebuild their instruction
+chain; do not claim restart/loading validation from text search or model self-report.
+
+Official OpenAI documentation consulted on 2026-10-01:
+
+- [Custom instructions with AGENTS.md](https://learn.chatgpt.com/docs/agent-configuration/agents-md):
+  global/project discovery, override precedence and the default 32 KiB combined
+  instruction limit. Use the recognized AGENTS.md filename.
+- [Codex best practices](https://learn.chatgpt.com/guides/best-practices):
+  practical repository instructions, explicit completion criteria and verification.
+- [Rethinking skills and prompts](https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra):
+  concise routing and task-specific reference loading rather than mandatory
+  full-repository reading.
+- [Using PLANS.md](https://developers.openai.com/cookbook/articles/codex_exec_plans):
+  persistent, verifiable milestones for complex work; adapted to existing task
+  records without introducing a second planning authority.
+- [Optimizing LLM accuracy](https://developers.openai.com/api/docs/guides/optimizing-llm-accuracy)
+  and [Evaluation best practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices):
+  representative evaluation, retained holdout, scoped comparisons and logging.
+
+These sources guide agent/document structure and general evaluation practice.
+The `< 2026-01-01` boundary, 2026-only test set, A2 exposure, PIT/OOF/trial
+controls and D: storage architecture are this project's existing or tightened
+research constraints, not OpenAI-prescribed trading rules. No OpenAI Evals
+service/API dependency is introduced by this documentation update.

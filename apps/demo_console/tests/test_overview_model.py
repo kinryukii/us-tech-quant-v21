@@ -245,6 +245,7 @@ def test_streamlit_overview_and_presentation_toggle(make_overview_config, monkey
 
     monkeypatch.setattr(decision_reader, "load_overview", synthetic_overview)
     app = AppTest.from_file(str(Path(__file__).parents[1] / "app.py"), default_timeout=20)
+    app.session_state["console_mode"] = "历史研究"
     app.run()
     assert not app.exception and not app.error
     assert app.radio(key="workspace").value == "Overview"

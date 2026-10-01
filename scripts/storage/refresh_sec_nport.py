@@ -24,7 +24,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 
-from scripts.common.storage_paths import resolve
+from scripts.common.storage_paths import resolve, is_authorized_official_raw_path
 from scripts.storage.refresh_13f_quarter import configured_user_agent
 from scripts.storage.refresh_official_research_data import save_json, json_bytes, VINTAGE
 from scripts.storage.restore_sec_data import file_identity, sha256_file
@@ -230,7 +230,7 @@ def attach_context(frame, context, index):
 
 def normalize(paths, run_id, quarter, raw, as_of):
     path = Path(raw['path']).resolve()
-    if raw.get('status') != 'DOWNLOADED' or not path.is_relative_to(paths.cache_root) or raw['url'] != source_url(quarter) or sha256_file(path) != raw['sha256']:
+    if raw.get('status') != 'DOWNLOADED' or not is_authorized_official_raw_path(path, paths.cache_root) or raw['url'] != source_url(quarter) or sha256_file(path) != raw['sha256']:
         raise ValueError('RAW_SOURCE_IDENTITY_INVALID')
     observed = pd.Timestamp(raw['observed_at_utc'])
     if observed.tzinfo is None or pd.isna(observed):

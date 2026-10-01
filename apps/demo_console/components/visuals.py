@@ -1,4 +1,4 @@
-"""Shared, escaped display primitives for the research terminal."""
+"""Escaped presentation primitives shared by the research observatory."""
 from html import escape
 from pathlib import Path
 
@@ -15,7 +15,8 @@ def styles() -> str:
 
 
 def apply_style(*, presentation: bool) -> None:
-    sizing = "--uq-text:16px;--uq-small:14px;--uq-row:43px" if presentation else "--uq-text:14px;--uq-small:12px;--uq-row:38px"
+    sizing = ("--uq-text:15px;--uq-small:13px;--uq-row:43px" if presentation
+              else "--uq-text:14px;--uq-small:12px;--uq-row:40px")
     st.html(f'<style>{styles()}\n:root{{{sizing}}}</style>')
 
 
@@ -26,14 +27,20 @@ def section_header(title: str, eyebrow: str = "", aside: str = "") -> str:
 
 
 def header_html(model, view: str = "Overview") -> str:
-    titles = {"Machine learning": "Machine learning studio", "Overview": "System research overview", "Portfolio": "Decisions & portfolio",
-              "History": "Decisions & portfolio", "Research": "Performance & risk",
-              "Evidence": "Research evidence"}
+    titles = {"Machine learning": "Machine learning studio", "Overview": "System research overview",
+              "Portfolio": "Decisions & portfolio", "History": "Decisions & portfolio",
+              "Research": "Performance & risk", "Evidence": "Research evidence"}
     title = titles.get(view, titles["Overview"])
     view_key = view.lower().replace(" ", "-") if view in titles else "overview"
+    state = ("Historical to latest · Read only" if getattr(model, "source_id", "frozen") != "frozen"
+             else "Historical · Read only")
     return (f'<header class="uq-page-header uq-view-{view_key}" data-view="{text(view)}" '
-            f'data-decision-date="{text(model.decision_date)}"><h1>{text(tr(title))}</h1>'
-            f'<span class="uq-header-state">{text(tr("Historical · Read only"))}</span></header>')
+            f'data-decision-date="{text(model.decision_date)}">'
+            f'<div class="uq-page-title"><div class="uq-header-kicker">QUANT RESEARCH / U.S. TECH</div>'
+            f'<h1>{text(tr(title))}</h1></div><div class="uq-header-context">'
+            f'<span class="uq-header-state">{text(tr(state))}</span>'
+            f'<span class="uq-header-date">{text(tr("Observation date"))} / '
+            f'{text(model.decision_date)}</span></div></header>')
 
 
 def sidebar_brand() -> None:

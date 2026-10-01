@@ -1,12 +1,14 @@
 """Stage one SEC 13F quarter and a new combined universe without changing history.
 
 Reuses the package's XML parser and accepted v17b equity selection functions.
-The incomplete-quarter path writes metadata and explicit gaps only.
+Qualification requires every initial filing disclosed as of the snapshot to parse.
+Undisclosed managers are excluded, without substituting older-quarter holdings.
 """
 from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import importlib.util
 import json
 import os
@@ -55,19 +57,83 @@ def configured_user_agent(source: Path) -> str:
     raise ValueError("No existing configured SEC User-Agent available")
 
 
+def _roster_quarter(value: str, field: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"20\d{2}Q[1-4]", value.strip()):
+        raise ValueError(f"Invalid manager registry quarter: {field} must be YYYYQn")
+    return value.strip()
+
+
+def _roster_text(value) -> str:
+    return "" if pd.isna(value) else str(value).strip()
+
+
+def _roster_truth(value, field: str) -> bool:
+    text = _roster_text(value).lower()
+    if text not in {"true", "1", "yes", "false", "0", "no", ""}:
+        raise ValueError(f"Invalid manager registry boolean: {field}")
+    return text in {"true", "1", "yes"}
+
+
 def active_managers(registry: pd.DataFrame, quarter: str) -> pd.DataFrame:
-    truth = lambda value: str(value).strip().lower() in {"true", "1", "yes"}
-    mask = registry.enabled.map(truth) & registry.active_from_quarter.le(quarter)
-    mask &= registry.active_to_quarter.eq("") | registry.active_to_quarter.ge(quarter)
-    active = registry.loc[mask].copy()
-    if active.manager_id.duplicated().any():
-        raise ValueError("Duplicate active manager registry identity")
+    """Resolve the complete applicable cohort from registry intervals, without an inferred expiry."""
+    quarter = _roster_quarter(quarter, "quarter")
+    required = {"manager_id", "cik", "enabled", "active_from_quarter", "active_to_quarter",
+                "top_n", "protected_top_n", "manager_weight", "required_for_gate"}
+    missing = sorted(required - set(registry.columns))
+    if missing:
+        raise ValueError(f"Missing manager registry columns: {missing}")
+    if registry.empty:
+        raise ValueError(f"No applicable managers in registry for {quarter}")
+    roster = registry.copy()
+    roster["manager_id"] = roster.manager_id.map(_roster_text)
+    if roster.manager_id.eq("").any() or roster.manager_id.duplicated().any():
+        raise ValueError("Empty or duplicate manager registry identity")
+    cik = roster.cik.map(_roster_text)
+    if not cik.str.fullmatch(r"[0-9]{1,10}").all() or cik.eq("").any():
+        raise ValueError("Manager registry CIK must be a positive integer SEC identity")
+    cik = cik.map(int)
+    if cik.le(0).any() or cik.duplicated().any():
+        raise ValueError("Invalid or duplicate manager registry CIK identity")
+    roster["cik"] = cik.map(str)
+    roster["active_from_quarter"] = roster.active_from_quarter.map(
+        lambda value: _roster_quarter(value, "active_from_quarter"))
+    roster["active_to_quarter"] = roster.active_to_quarter.map(_roster_text)
+    for value in roster.active_to_quarter.loc[roster.active_to_quarter.ne("")]:
+        _roster_quarter(value, "active_to_quarter")
+    if (roster.active_to_quarter.ne("") & roster.active_to_quarter.lt(roster.active_from_quarter)).any():
+        raise ValueError("Manager registry active_to_quarter precedes active_from_quarter")
+    enabled = roster.enabled.map(lambda value: _roster_truth(value, "enabled"))
+    mask = enabled & roster.active_from_quarter.le(quarter)
+    mask &= roster.active_to_quarter.eq("") | roster.active_to_quarter.ge(quarter)
+    active = roster.loc[mask].copy()
+    if active.empty:
+        raise ValueError(f"No applicable managers in registry for {quarter}")
     for column in ("top_n", "protected_top_n", "manager_weight"):
         active[column] = pd.to_numeric(active[column], errors="raise")
     if not (active.top_n.eq(100) & active.protected_top_n.eq(20)).all():
         raise ValueError("v17b selection supports this existing cohort's Top100/protected Top20 contract only")
-    active["required_for_gate"] = active.required_for_gate.map(truth)
+    if not np.isfinite(active.manager_weight).all():
+        raise ValueError("Manager registry weights must be finite")
+    active["required_for_gate"] = active.required_for_gate.map(
+        lambda value: _roster_truth(value, "required_for_gate"))
     return active
+
+
+def manager_roster_identity(registry: pd.DataFrame, quarter: str) -> dict:
+    """Hash the applicable identities and selection/gate parameters in stable order."""
+    quarter = _roster_quarter(quarter, "quarter")
+    active = active_managers(registry, quarter).sort_values("manager_id")
+    rows = [{"manager_id": row["manager_id"], "cik": int(row["cik"]),
+             "active_from_quarter": row["active_from_quarter"],
+             "active_to_quarter": row["active_to_quarter"],
+             "top_n": int(row["top_n"]), "protected_top_n": int(row["protected_top_n"]),
+             "manager_weight": float(row["manager_weight"]),
+             "required_for_gate": bool(row["required_for_gate"])}
+            for row in active.to_dict("records")]
+    payload = json.dumps({"quarter": quarter, "managers": rows}, sort_keys=True,
+                         separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+    return {"quarter": quarter, "applicable_manager_ids": active.manager_id.tolist(),
+            "applicable_manager_count": len(active), "roster_sha256": hashlib.sha256(payload).hexdigest()}
 
 
 def filing_plan(submissions_zip: Path, managers: pd.DataFrame, quarter: str, as_of: str) -> pd.DataFrame:
@@ -139,7 +205,8 @@ def parse_sec_txt(payload: bytes, filing: dict, parser) -> list[dict]:
         total = parser.text_at(root, "tableEntryTotal")
         if total:
             declared_total = int(total)
-    if not holdings or (declared_total is not None and declared_total != len(holdings)):
+    # A valid declared zero is a complete disclosure, not a missing manager.
+    if (not holdings and declared_total != 0) or (declared_total is not None and declared_total != len(holdings)):
         raise ValueError(f"13F holdings count mismatch: declared={declared_total}, parsed={len(holdings)}")
     return holdings
 
@@ -168,13 +235,23 @@ def download(url: str, path: Path, user_agent: str) -> None:
 
 
 def build_quarter(raw: pd.DataFrame, filings: pd.DataFrame, source, xml_parser) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if "status" in filings:
+        filings = filings.loc[filings.status.eq("INITIAL_FILING_IDENTIFIED")].copy()
+    if filings.empty:
+        raise ValueError("No disclosed initial filings for quarter activation")
+    quarter = str(filings.quarter.iloc[0])
+    if raw.empty or not raw.quarter.eq(quarter).all():
+        raise ValueError("Raw holdings must belong only to the disclosed current quarter")
+    if "manager_id" in filings and not set(raw.manager_id).issubset(set(filings.manager_id)):
+        raise ValueError("Raw holdings do not match the disclosed manager cohort")
     classified = raw.apply(lambda row: source.classify_equity(row.issuer_name, row.title_of_class,
                                                              row.ssh_prnamt_type, row.put_call), axis=1)
     raw = raw.copy()
     raw["eligible"] = classified.map(lambda value: value[0])
     selected = source.select_top100(source.aggregate_eligible_for_ranking(raw))
-    quarter = str(filings.quarter.iloc[0])
-    effective = xml_parser.add_five_nyse_sessions(str(filings.loc[filings.required_for_gate, "filed_date"].max()))
+    if selected.empty:
+        return selected, pd.DataFrame()
+    effective = xml_parser.add_five_nyse_sessions(str(filings["filed_date"].max()))
     timing = pd.DataFrame([{"quarter": quarter, "report_date": filings.report_date.iloc[0],
                             "effective_date": effective, "expiry_date": ""}])
     if selected.loc[selected.protected_core, "cusip"].nunique() > source.HARD_CAP:
@@ -280,11 +357,16 @@ def run(args):
     xml_parser = import_source(xml_source, "quarter_xml_parser")
     selection = import_source(selection_source, "quarter_v17b_selection")
     user_agent = configured_user_agent(args.user_agent_source) if args.fetch else ""
-    raw, raw_manifest, gaps = [], [], []
+    disclosed = plan.loc[plan.status.eq("INITIAL_FILING_IDENTIFIED")].copy()
+    raw, raw_manifest, gaps, ignored_managers = [], [], [], []
     network_denied = False
     for filing in plan.to_dict("records"):
         if filing["status"] != "INITIAL_FILING_IDENTIFIED":
-            gaps.append({"manager_id": filing["manager_id"], "reason": filing["status"]})
+            coverage = {"manager_id": filing["manager_id"], "reason": filing["status"]}
+            if filing["status"] in {"MISSING_INITIAL_FILING", "MISSING_SUBMISSION_MEMBER"}:
+                ignored_managers.append(coverage)
+            else:
+                gaps.append(coverage)
             continue
         path = output / "raw" / f"{filing['cik']}_{filing['accession']}.txt"
         if args.fetch and not network_denied:
@@ -313,34 +395,46 @@ def run(args):
     raw_frame = pd.DataFrame(raw)
     status = "INCOMPLETE_NO_UNIVERSE_ACTIVATION"
     unit_metadata = None
-    if not gaps and len(raw_manifest) == len(managers):
+    if not disclosed.empty and not gaps and len(raw_manifest) == len(disclosed):
         files["raw_holdings"] = write_frame(output / "raw_holdings.parquet", raw_frame)
-        selected, universe = build_quarter(raw_frame, plan, selection, xml_parser)
-        historical, repaired, unit_metadata = normalize_historical_units(package, args.cache_root, pd.read_parquet(args.historical_universe), selection)
-        current = universe.copy()
-        current["legacy_aggregate_value_usd"] = np.nan
-        current["legacy_to_usd_factor"] = 1.0
-        current["unit_status"] = "VERIFIED_SEC_XML_USD"
-        current["unit_rule_url"] = SEC_UNIT_RULE
-        merged = merge_history(historical, current)
-        for name, frame in (("selected_top100", selected), ("quarter_universe", universe)):
-            files[name] = write_frame(output / f"{name}.parquet", frame)
-        for name, frame in (("historical_selected_top100_units", repaired), ("dynamic_universe", merged)):
-            files[name] = replace_owned_frame(output / f"{name}.parquet", frame, prior)
-        status = "QUARTER_AND_HISTORY_STAGED"
+        if raw_frame.empty:
+            status = "EMPTY_DISCLOSED_HOLDINGS_NO_UNIVERSE_ACTIVATION"
+        else:
+            selected, universe = build_quarter(raw_frame, disclosed, selection, xml_parser)
+            if selected.empty or universe.empty:
+                status = "NO_ELIGIBLE_HOLDINGS_NO_UNIVERSE_ACTIVATION"
+            else:
+                historical, repaired, unit_metadata = normalize_historical_units(package, args.cache_root, pd.read_parquet(args.historical_universe), selection)
+                current = universe.copy()
+                current["legacy_aggregate_value_usd"] = np.nan
+                current["legacy_to_usd_factor"] = 1.0
+                current["unit_status"] = "VERIFIED_SEC_XML_USD"
+                current["unit_rule_url"] = SEC_UNIT_RULE
+                merged = merge_history(historical, current)
+                for name, frame in (("selected_top100", selected), ("quarter_universe", universe)):
+                    files[name] = write_frame(output / f"{name}.parquet", frame)
+                for name, frame in (("historical_selected_top100_units", repaired), ("dynamic_universe", merged)):
+                    files[name] = replace_owned_frame(output / f"{name}.parquet", frame, prior)
+                status = "QUARTER_AND_HISTORY_STAGED"
     manifest = {"schema_version": 1, "dataset_id": "13f_universe_external25", "status": status, "quarter": args.quarter, "as_of": args.as_of,
                 "sources": {"registry": file_identity(registry_path), "submissions": file_identity(args.submissions_zip),
                             "historical_universe": file_identity(args.historical_universe),
                             "xml_parser": file_identity(xml_source), "selection": file_identity(selection_source)},
-                "manager_count": len(managers), "identified_initial_filings": int(plan.status.eq("INITIAL_FILING_IDENTIFIED").sum()),
+                "manager_count": len(managers), "identified_initial_filings": len(disclosed),
+                "registered_manager_count": len(managers), "disclosed_manager_count": len(disclosed),
+                "parsed_manager_count": len(raw_manifest), "excluded_undisclosed_manager_count": len(ignored_managers),
+                "snapshot_scope": "CURRENT_QUARTER_DISCLOSED_INITIAL_FILINGS_ASOF",
+                "qualification_rule": "NONEMPTY_DISCLOSED_COHORT_ALL_IDENTIFIED_RAW_FILINGS_PARSED",
+                "missing_manager_policy": "EXCLUDE_UNDISCLOSED_NO_WAIT_NO_PREVIOUS_QUARTER_FILL",
+                "previous_quarter_manager_holdings_fill": False,
                 "identity_alias": PERSHING_ALIAS if args.quarter >= "2026Q2" else None,
                 "unit_normalization": unit_metadata,
                 "previous_dynamic_universe_sha256": prior.get("files", {}).get("dynamic_universe", {}).get("sha256"),
-                "raw_filings": raw_manifest, "files": files, "gaps": gaps,
+                "raw_filings": raw_manifest, "files": files, "gaps": gaps, "ignored_managers": ignored_managers,
                 "limitations": ["The old package and its frozen records are unchanged.",
-                                "This preserves the external package's 25-manager cohort; it does not replace the separate A2 frozen 24-manager universe.",
+                                "Registered managers define the cohort ceiling; only their current-quarter initial filings disclosed as of the snapshot are included. The separate A2 frozen 24-manager universe is unchanged.",
                                 "CUSIP is canonical; no guessed ticker mapping is produced.",
-                                "Only a complete quarter produces an activation and combined universe."]}
+                                "Activation requires a nonempty disclosed cohort with every identified filing staged and parsed; undisclosed managers do not delay activation and receive no older-quarter fill."]}
     temporary = output / "quarter_manifest.json.tmp"
     temporary.write_text(json.dumps(manifest, indent=2, default=str) + "\n", encoding="utf-8")
     os.replace(temporary, output / "quarter_manifest.json")

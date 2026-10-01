@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>模拟盘 · 三策略</title>
+  <link rel="stylesheet" href="/static/applied.css">
+  <script src="/static/applied.js" defer></script>
+</head>
+<body>
+<main>
+  <header class="top"><div><span class="eyebrow">PAPER · MOOMOO 行情</span><h1>三策略模拟盘</h1><p id="execution-policy">独立账户各 $10,000 · 正在读取执行规则</p></div><div class="controls"><button id="refresh">刷新</button><button id="start" class="primary">启动三策略</button><button id="stop">暂停</button><button id="halt" class="danger">停止买卖</button></div></header>
+  <div id="error" class="error" role="alert" hidden></div>
+  <section class="clock" aria-label="执行时钟"><div><span>运行状态</span><strong id="status">连接中</strong></div><div><span>完整信号日</span><strong id="signal-date">—</strong></div><div><span>本期计划 · 纽约</span><strong id="next-open">—</strong><span id="execution-jst"></span><span id="next-window"></span></div><div><span>行情来源</span><strong id="quote-source">MOOMOO · 待核验</strong></div></section>
+  <p class="status-note" id="reason">正在读取三个独立账户。</p>
+  <section class="panel"><div class="panel-head"><h2>账户对比</h2><span id="asof" class="muted">—</span></div><div class="table-wrap"><table><thead><tr><th>策略 / 账户</th><th>状态</th><th>净值 · USD</th><th>累计净收益</th><th>最大回撤</th><th>现金 · USD</th><th>持仓数</th><th>累计费用</th><th>成交笔数</th></tr></thead><tbody id="books"><tr><td colspan="9" class="empty">读取中</td></tr></tbody></table></div><p class="note">净值按实际持仓和可核验行情计价。买入按卖一价、卖出按买一价纸面撮合，单边成本 5bp；整数股取整后的现金保留在各账户。</p></section>
+  <section class="panel"><div class="panel-head"><h2>净值路径</h2><span class="muted">共同起点 1.0000 · 本次启动后的记录</span></div><div id="nav-chart" class="nav-chart"><span class="muted">成交后开始记录净值路径</span></div><div class="legend"><span class="raw">● Raw A2</span><span class="diag">● HGB＋对角风险</span><span class="factor">● HGB＋因子／收缩风险</span></div></section>
+  <section id="positions" class="three-books" aria-label="三个账户持仓与动作"></section>
+  <section class="panel"><div class="panel-head"><div><h2>买卖记录</h2><p class="muted">MOOMOO 行情驱动的本地纸面成交</p></div><div class="filters"><label>策略<select id="trade-strategy"><option value="">全部策略</option><option value="RAW_A2">Raw A2</option><option value="HGB_DIAG_5">HGB＋对角风险</option><option value="HGB_FACTOR_5">HGB＋因子／收缩风险</option></select></label><label>股票<input id="trade-symbol" placeholder="代码，如 AAPL" autocomplete="off"></label><a class="download" href="/api/applied/trades.csv" download="three-strategy-paper-trades.csv">导出全部 CSV</a></div></div><div class="table-wrap"><table><thead><tr><th>实际记录时间 · 纽约</th><th>策略</th><th>信号日</th><th>股票</th><th>动作</th><th>成交股数</th><th>成交价</th><th>费用</th><th>状态</th></tr></thead><tbody id="trades"><tr><td colspan="9" class="empty">尚无成交记录</td></tr></tbody></table></div><p class="note" id="trade-note">最近记录；CSV 包含全部历史成交。</p></section>
+  <footer>三套本地纸面账本 · 虚拟资金 · 实际行情时间保留在成交记录中 <a href="/manual">手动模拟工作台 ↗</a></footer>
+</main>
+</body></html>

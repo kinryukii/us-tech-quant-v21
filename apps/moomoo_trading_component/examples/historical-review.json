@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "strategy_id": "historical-review",
+  "name": "历史审阅样例 · 已过期，禁止执行",
+  "revision": "1",
+  "asof": "2020-01-02T14:30:00Z",
+  "expires_at": "2020-01-02T15:30:00Z",
+  "provenance": "historical",
+  "targets": [
+    {"code": "US.AAPL", "target_qty": 2}
+  ],
+  "source": "仅用于策略结构、导入与安全拒绝检查。此记录明确为历史且已过期，不代表交易建议；不得修改时间或来源标志来绕过执行限制。"
+}

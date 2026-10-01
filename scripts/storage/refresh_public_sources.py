@@ -147,12 +147,30 @@ def parse_cboe_index(raw, symbol, target):
     return frame, source_max
 
 
+def cboe_history_urls(symbol):
+    """Only the two official CDN hosts used by Cboe's own history directory."""
+    if symbol not in CBOE_INDICES:
+        raise ValueError('UNSUPPORTED_CBOE_INDEX')
+    return tuple(f'https://{host}/api/global/us_indices/daily_prices/{symbol}_History.csv'
+                 for host in ('cdn-api.cboe.com', 'cdn.cboe.com'))
+
+
+def select_cboe_history_url(symbol, official_links):
+    for url in cboe_history_urls(symbol):
+        if url in official_links:
+            return url
+    raise ValueError('CBOE_HISTORY_NOT_EXPLICITLY_LINKED:' + symbol)
+
+
 def validate_cboe_acquisition(acquisition, capture, raw_root, target):
     if acquisition['target'] != target or [i['symbol'] for i in acquisition['items']] != list(CBOE_INDICES):
         raise ValueError('CBOE_ACQUISITION_SCOPE_CHANGED')
-    expected = [(acquisition['page'], CBOE_HISTORY_PAGE)] + [(item['raw'],
-        f'https://cdn.cboe.com/api/global/us_indices/daily_prices/{item["symbol"]}_History.csv')
-        for item in acquisition['items']]
+    expected = [(acquisition['page'], CBOE_HISTORY_PAGE)]
+    for item in acquisition['items']:
+        url = item['raw']['source_reference']
+        if url not in cboe_history_urls(item['symbol']):
+            raise ValueError('CBOE_RAW_IDENTITY_INVALID')
+        expected.append((item['raw'], url))
     for raw, url in expected:
         path = raw_root / 'cboe_indices' / (capture.cache_key(url) + '.source')
         if (Path(raw['local_path']).resolve() != path.resolve() or raw['source_reference'] != url
@@ -206,9 +224,7 @@ def acquire_cboe_indices(repo, root, target):
         links = {url for url, label in parser.links}
         items = []
         for symbol in CBOE_INDICES:
-            url = f'https://cdn.cboe.com/api/global/us_indices/daily_prices/{symbol}_History.csv'
-            if url not in links:
-                raise ValueError('CBOE_HISTORY_NOT_EXPLICITLY_LINKED:' + symbol)
+            url = select_cboe_history_url(symbol, links)
             raw, _ = get(url, 'DAILY_INDEX_HISTORY'); items.append({'symbol': symbol, 'raw': raw})
             time.sleep(.25)
         acquisition = {'target': target, 'page': page, 'items': items}

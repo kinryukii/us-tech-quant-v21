@@ -352,3 +352,57 @@ class PerformanceStatsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SharpeTests(unittest.TestCase):
+    def test_sample_standard_deviation_and_zero_risk_free(self):
+        from math import sqrt
+        from apps.demo_console.components.performance_stats import annualized_sharpe
+        self.assertAlmostEqual(annualized_sharpe([.01,.03]),sqrt(252)*.02/sqrt(.0002))
+        self.assertIsNone(annualized_sharpe([.01]))
+        self.assertIsNone(annualized_sharpe([.01,.01]))
+        self.assertIsNone(annualized_sharpe([]))
+
+    def test_cash_baseline_excluded_but_real_first_cost_retained(self):
+        from apps.demo_console.components.performance_stats import annualized_sharpe
+        summary=summarize_performance([point('2026-01-02',0),point('2026-01-05',.01),point('2026-01-06',.03)])
+        self.assertAlmostEqual(matched_risk_comparison(summary,skip_initial_cash_baseline=True)[0].annualized_sharpe,
+                               annualized_sharpe([.01,.03]))
+        actual=summarize_performance([point('2026-01-05',-.001),point('2026-01-06',.02)])
+        self.assertAlmostEqual(matched_risk_comparison(actual)[0].annualized_sharpe,annualized_sharpe([-.001,.02]))
+
+
+def test_recorded_window_metrics_include_first_real_return_and_source_fee_units():
+    from math import sqrt
+    import pytest
+    from apps.demo_console.components.performance_stats import summarize_nav_window
+    daily = [dict(date=day, nav=nav, cash_weight=.2, net_return=ret, gross_return=ret+.001,
+                  transaction_cost_amount=fee, turnover=turnover, holding_count=10)
+        for day,nav,ret,fee,turnover in (("2026-01-05",1.1,.1,.001,.4),
+            ("2026-01-06",.99,-.1,.002,.3),("2026-01-07",1.188,.2,.003,.2))]
+    result = summarize_nav_window(daily,"2026-01-06","2026-01-07")
+    assert result["cumulative_return"] == pytest.approx(.08)
+    assert [r["net_return"] for r in result["rows"]] == pytest.approx([-.1,.2])
+    assert result["max_drawdown"] == pytest.approx(-.1)
+    assert result["annualized_volatility"] == pytest.approx(sqrt(.045)*sqrt(252))
+    assert result["sharpe"] == pytest.approx(.05/sqrt(.045)*sqrt(252))
+    assert result["cost_fraction"] == pytest.approx(.005/1.1)
+    assert result["turnover"] == pytest.approx(.5)
+    assert result["gross_return"] == pytest.approx(.901*1.201-1)
+    assert result["mean_holding_count"] == 10
+    assert result["recovery_date"] == "2026-01-07"
+    assert result["months"][0]["partial"] is True
+    assert result["months"][0]["return"] == pytest.approx(.08)
+
+
+def test_recorded_window_unknown_execution_fields_never_become_zero():
+    import pytest
+    from apps.demo_console.components.performance_stats import summarize_nav_window
+    daily = [{"date":"2026-01-05","nav":.9,"cash_weight":1.}]
+    result = summarize_nav_window(daily,"2026-01-05","2026-01-05")
+    assert result["max_drawdown"] == pytest.approx(-.1)
+    assert result["annualized_volatility"] is None and result["sharpe"] is None
+    for field in ("gross_return","cost_fraction","turnover","mean_holding_count"):
+        assert result[field] is None
+    with pytest.raises(ValueError,match="does not match NAV"):
+        summarize_nav_window([{**daily[0],"net_return":.5}],"2026-01-05","2026-01-05")

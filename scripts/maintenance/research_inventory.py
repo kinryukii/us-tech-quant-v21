@@ -24,10 +24,12 @@ from urllib.parse import quote, urlsplit
 DERIVED_FIELDS = (
     "registry_entity_id", "registry_status", "registry_head_sha256",
     "registry_row_hash", "registry_aliases", "registry_lifecycle_decision",
-    "registry_final_status", "registry_source_refs", "registry_reopen_condition_ref",
+    "registry_final_status", "registry_source_refs", "registry_knowledge_ref",
+    "registry_conclusion_ref", "registry_reopen_condition_ref",
     "inventory_status_comparison", "inventory_relocated_source_refs", "inventory_role",
 )
 SOURCE_ROOTS = ("scripts", "fast3", "fast6")
+RETIREMENT_RECORD = "retired_artifacts.json"
 
 
 def load_registry(repo_root: Path):
@@ -228,6 +230,8 @@ def build_inventory(
             "registry_lifecycle_decision": _text(metadata.get("lifecycle_decision")),
             "registry_final_status": _text(metadata.get("final_status")),
             "registry_source_refs": "; ".join(_references(entity)),
+            "registry_knowledge_ref": _text(metadata.get("research_knowledge_ref")),
+            "registry_conclusion_ref": _text(metadata.get("final_conclusion_ref")),
             "registry_reopen_condition_ref": _text(metadata.get("reopen_condition_ref")),
             "inventory_status_comparison": _comparison(row.get("branch_status", ""), entity["status"]),
             "inventory_relocated_source_refs": _relocated([*legacy_source_refs, *_references(entity)], path_map or {}, repo_root),
@@ -243,12 +247,12 @@ def markdown_inventory(rows: Sequence[Mapping[str, str]], head: str) -> str:
     ordered = sorted(rows, key=lambda r: r.get("registry_entity_id") or r.get("canonical_branch_id", ""))
     lines = [
         "# 研究复用索引", "",
-        "这是既有注册表的派生导航视图，不是新的身份、研究结论或授权依据。旧表字段原样保留；空白表示元数据未登记。",
+        "这是既有注册表的派生导航视图，不是新的身份、研究结论或授权依据。旧表的历史结果位置仅作导航，不代表已验真；完成凭证仅以哈希引用登记，详细结果仍保存在外部凭证中。空白表示元数据未登记。",
         f"本次读取的 accepted registry head：`{head}`。", "",
         "开始新工作前：先按机制关键词及旧别名 query，并核对未登记的本地源码；再运行既有注册表的 preflight-proposal。",
         "查询覆盖全部注册状态，包括关闭和 tombstone。NOT_FOUND_REQUIRES_REVIEW 不代表允许新建；直接脚本可能未登记，后续研究仍须原有契约。",
         "归档位置只作导航，不改写原冻结引用。状态口径或历史结论不一致会显式提示，不能据此重开研究。",
-        "已移除的历史源码仍可通过 [Git 恢复与查重索引](retired_sources.json) 查找；文件退出当前程序不代表其研究结论失效或允许重复开发。", "",
+        "已移除的历史源码仍可通过 [Git 恢复与查重索引](retired_sources.json) 查找；注册表目录中的 retired_artifacts.json 记录清理过的研究尝试和派生文件，并参与 query 查重。删除不代表研究结论失效或允许重复开发。", "",
         "```powershell",
         "python -B scripts/maintenance/research_inventory.py query --repo-root . --text \"机制关键词\"",
         "python -B scripts/maintenance/research_inventory.py query --repo-root . --alias \"旧别名\"",
@@ -270,12 +274,15 @@ def markdown_inventory(rows: Sequence[Mapping[str, str]], head: str) -> str:
         details = [
             ("机制 / 假设", row.get("primary_hypothesis") or row.get("branch_cluster")),
             ("旧结论", row.get("reason")),
+            ("历史结果位置", row.get("primary_result_path")),
             ("旧状态", row.get("branch_status")),
             ("登记完成状态", row.get("registry_final_status")),
             ("登记生命周期决策", row.get("registry_lifecycle_decision")),
             ("状态核对", row.get("inventory_status_comparison")),
             ("原始引用", row.get("primary_source_path")),
             ("登记引用", row.get("registry_source_refs")),
+            ("研究结果凭证", row.get("registry_knowledge_ref")),
+            ("结论凭证", row.get("registry_conclusion_ref")),
             ("迁移位置", row.get("inventory_relocated_source_refs")),
             ("旧别名", row.get("known_aliases")),
             ("登记别名", row.get("registry_aliases")),
@@ -415,6 +422,39 @@ def retired_source_matches(repo: Path, needle: str) -> list[dict[str, str]]:
     return sorted(matches, key=lambda entry: entry["path"])
 
 
+def retired_artifact_matches(registry_root: Path, needle: str) -> list[dict[str, Any]]:
+    """Search the registry's cleanup record without reading deleted outcomes."""
+    path = registry_root / RETIREMENT_RECORD
+    if not path.is_file():
+        return []
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(record, dict) or record.get("schema_version") != 1 or not isinstance(record.get("entries"), list):
+        raise ValueError("RETIREMENT_RECORD_SCHEMA_INVALID")
+    matches = []
+    for entry in record["entries"]:
+        if (not isinstance(entry, dict) or not isinstance(entry.get("path"), str)
+                or not isinstance(entry.get("study_terms"), list)
+                or any(not isinstance(term, str) for term in entry["study_terms"])):
+            raise ValueError("RETIREMENT_RECORD_ENTRY_INVALID")
+        searchable = " ".join([entry["path"], *entry["study_terms"]])
+        source_hits = [source for source in entry.get("source_index", [])
+                       if isinstance(source, dict) and _matches(
+                           " ".join(str(source.get(key, "")) for key in ("file", "source_url", "sha256")), needle)]
+        if _matches(searchable, needle) or source_hits:
+            match = {
+                "path": entry["path"],
+                "study_terms": entry["study_terms"],
+                "research_status": entry.get("research_status", "REVIEW_REQUIRED"),
+                "registry_entity_id": entry.get("registry_entity_id", ""),
+                "record": RETIREMENT_RECORD,
+            }
+            if source_hits:
+                match["source_match_count"] = len(source_hits)
+                match["source_matches"] = source_hits[:10]
+            matches.append(match)
+    return sorted(matches, key=lambda entry: entry["path"])
+
+
 def query(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repo_root.resolve()
     registry, root = load_registry(repo)
@@ -432,11 +472,13 @@ def query(args: argparse.Namespace) -> dict[str, Any]:
         entities = [entity for entity in entities if _matches(json.dumps(entity, ensure_ascii=False), args.text)]
     sources = source_matches(repo, needle)
     retired = retired_source_matches(repo, needle)
+    retired_artifacts = retired_artifact_matches(root, needle)
     return {
-        "status": "FOUND_REVIEW_REQUIRED" if entities or sources or retired else "NOT_FOUND_REQUIRES_REVIEW",
+        "status": "FOUND_REVIEW_REQUIRED" if entities or sources or retired or retired_artifacts else "NOT_FOUND_REQUIRES_REVIEW",
         "registry_head_sha256": result["head_sha256"], "entities": entities,
         "source_name_matches": sources, "source_search_roots": list(SOURCE_ROOTS),
         "retired_source_matches": retired,
+        "retired_artifact_matches": retired_artifacts,
         "repo_root_file_names_searched": True,
         "new_research_authorized": False,
         "next_step": "Review prior aliases, closed branches and unregistered source; run python -B -m scripts.maintenance.research_registry preflight-proposal with the applicable contract.",

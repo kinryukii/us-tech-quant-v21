@@ -32,17 +32,17 @@ def context():
         "registry_head_sha256": "a" * 64,
         "entities": [
             {"entity_id": "EXISTING", "canonical_name": "Existing", "status": "OPEN", "row_hash": "b" * 64, "metadata": {"authoritative_artifact_refs": ["scripts/v22/old.py"]}},
-            {"entity_id": "NEW_CLOSED", "canonical_name": "New Closed", "status": "CLOSED", "row_hash": "c" * 64, "metadata": {"final_status": "PARKED", "research_family": "synthetic-mechanism"}},
+            {"entity_id": "NEW_CLOSED", "canonical_name": "New Closed", "status": "CLOSED", "row_hash": "c" * 64, "metadata": {"final_status": "PARKED", "research_family": "synthetic-mechanism", "research_knowledge_ref": "receipt://sha256/" + "d" * 64, "final_conclusion_ref": "receipt://sha256/" + "d" * 64}},
         ],
         "aliases": [{"entity_id": "EXISTING", "alias": "Old Alias", "alias_normalized": "old alias"}],
     }
 
 
 def test_preserves_every_legacy_cell_and_exposes_conflicts_and_missing_ids(workspace):
-    fields = ["canonical_branch_id", "branch_status", "reason", "known_aliases", "custom_old_field"]
+    fields = ["canonical_branch_id", "branch_status", "reason", "known_aliases", "primary_result_path", "custom_old_field"]
     legacy = [
-        dict(zip(fields, ["Old Alias", "CLOSED_NEGATIVE", "Prior conclusion retained", "old labels", "must survive"])),
-        dict(zip(fields, ["UNREGISTERED", "CLOSED_NEGATIVE", "do not lose failed work", "", ""])),
+        dict(zip(fields, ["Old Alias", "CLOSED_NEGATIVE", "Prior conclusion retained", "old labels", "results/old.json", "must survive"])),
+        dict(zip(fields, ["UNREGISTERED", "CLOSED_NEGATIVE", "do not lose failed work", "", "", ""])),
     ]
     columns, rows = inventory.build_inventory(fields, legacy, context(), normalize, repo_root=workspace,
         path_map={"scripts/v22/old.py": "archive/research/old.py"})
@@ -57,6 +57,11 @@ def test_preserves_every_legacy_cell_and_exposes_conflicts_and_missing_ids(works
     assert rows[2]["registry_status"] == "CLOSED"
     assert rows[2]["branch_status"] == ""
     assert rows[2]["registry_final_status"] == "PARKED"
+    assert rows[2]["registry_knowledge_ref"] == "receipt://sha256/" + "d" * 64
+    assert rows[2]["registry_conclusion_ref"] == rows[2]["registry_knowledge_ref"]
+    assert "研究结果凭证" in inventory.markdown_inventory(rows, "a" * 64)
+    assert "历史结果位置" in inventory.markdown_inventory(rows, "a" * 64)
+    assert "results/old.json" in inventory.markdown_inventory(rows, "a" * 64)
     assert "NOT_FOUND_REQUIRES_REVIEW" in inventory.markdown_inventory(rows, "a" * 64)
 
 
@@ -259,6 +264,26 @@ def test_retired_unregistered_source_remains_a_reuse_match_without_restoring_cod
     }]
     assert not (workspace / "archive/research/legacy_mechanism.py").exists()
     assert "(retired_sources.json)" in inventory.markdown_inventory([], "a" * 64)
+
+
+def test_retired_artifact_in_existing_registry_root_blocks_false_not_found(workspace, monkeypatch):
+    registry_root = workspace / "registry"
+    registry_root.mkdir()
+    (registry_root / "retired_artifacts.json").write_text(json.dumps({
+        "schema_version": 1,
+        "entries": [{"path": "D:/cache/study-attempt", "study_terms": ["sector alpha"],
+                     "research_status": "REVIEW_REQUIRED", "registry_entity_id": "",
+                     "source_index": [{"file": "source.zip", "source_url": "https://example.test/0001234567-26-000001.txt",
+                                       "sha256": "abc123"}]}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(inventory, "load_registry", lambda path: (FakeRegistry(), registry_root))
+    result = inventory.query(argparse.Namespace(repo_root=workspace, text="sector alpha", entity_id=None, alias=None))
+    assert result["status"] == "FOUND_REVIEW_REQUIRED"
+    assert result["retired_artifact_matches"][0]["record"] == "retired_artifacts.json"
+    assert result["new_research_authorized"] is False
+    source_result = inventory.query(argparse.Namespace(repo_root=workspace, text="0001234567-26-000001", entity_id=None, alias=None))
+    assert source_result["status"] == "FOUND_REVIEW_REQUIRED"
+    assert source_result["retired_artifact_matches"][0]["source_matches"][0]["file"] == "source.zip"
 
 
 def test_registry_loader_works_in_new_layout_without_a_root_compatibility_file(workspace):

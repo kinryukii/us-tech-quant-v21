@@ -19,11 +19,17 @@ def test_display_typography_preserves_chart_configuration_data_and_native_return
     for presentation, size in ((True, 15), (False, 13)):
         display = chart_for_display(chart, presentation=presentation).to_dict(validate=True)
         expected = deepcopy(original)
-        expected["background"] = "#ffffff"
+        expected["background"] = "#fffef9"
         for section in ("axis", "legend"):
             expected["config"][section].update(labelFontSize=size, titleFontSize=size,
-                                                labelColor="#536278", titleColor="#314158")
-        expected["config"]["axis"]["gridColor"] = "#e7ecf2"
+                labelFont="Segoe UI, Microsoft YaHei UI, Yu Gothic UI, sans-serif",
+                titleFont="Segoe UI, Microsoft YaHei UI, Yu Gothic UI, sans-serif",
+                labelColor="#5e6871", titleColor="#141a22")
+        expected["config"]["axis"].update(gridColor="#d6d8d2", gridWidth=.55, domain=False,
+            ticks=False, labelPadding=10, titlePadding=16, titleFontWeight="normal")
+        expected["config"]["axisX"] = {"grid": False}
+        expected["config"]["legend"].update(symbolStrokeWidth=3, labelOffset=6, rowPadding=8, padding=10)
+        expected["config"]["view"]["stroke"] = None
         assert display == expected
         assert chart.to_dict(validate=True) == original
     # A callback and the native selection result must pass through unchanged.

@@ -211,3 +211,55 @@ def test_local_launcher_is_valid_powershell_without_executing_it():
     result = subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", command],
                             capture_output=True, text=True, timeout=20, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("existing_page", ["streamlit", "unhealthy", "other_app"])
+def test_launcher_handles_an_occupied_port_without_stopping_its_server(existing_page):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    import threading
+    from urllib.request import urlopen
+
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        pytest.skip("PowerShell unavailable on this platform")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/_stcore/health":
+                body = b"not ready" if existing_page == "unhealthy" else b"ok"
+            else:
+                body = (b"<html><title>Other app</title></html>" if existing_page == "other_app"
+                        else b"<html><title>Streamlit</title></html>")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    port = server.server_address[1]
+    script = (Path(__file__).parents[1] / "start.ps1").resolve()
+    try:
+        result = subprocess.run(
+            [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(script), "-Port", str(port), "-NoBrowser"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        if existing_page == "streamlit":
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert "already available" in result.stdout
+        else:
+            assert result.returncode != 0
+            assert "no healthy Streamlit page was verified" in result.stderr
+        # The launcher's reuse/rejection must leave the existing server alive.
+        with urlopen(f"http://127.0.0.1:{port}/", timeout=3) as response:
+            assert response.status == 200
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=3)

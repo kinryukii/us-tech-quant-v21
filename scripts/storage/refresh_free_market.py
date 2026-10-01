@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -146,10 +147,37 @@ class RequestGate:
             self.last = time.monotonic()
 
 
-def acquire_one(ticker, symbol, start, end, root, data_root, gate, retry_transient=False, identity_source=None):
+def event_request_end(end, events_through):
+    """Extend raw action evidence only; the accepted price window stays at end."""
+    if events_through is None:
+        return int((datetime.fromisoformat(end) + timedelta(days=1)).replace(tzinfo=timezone.utc).timestamp())
+    event_date = datetime.strptime(events_through, '%Y-%m-%d').date()
+    price_end = datetime.strptime(end, '%Y-%m-%d').date()
+    if not price_end <= event_date <= datetime.now(ZoneInfo('America/New_York')).date():
+        raise ValueError('events_through must be between price end and current New York date')
+    # The entire NY observation date must be covered even after 20:00 EDT,
+    # when the following UTC midnight would already be in the past.
+    midnight = datetime.combine(event_date + timedelta(days=1), datetime.min.time(), ZoneInfo('America/New_York'))
+    return int(midnight.timestamp())
+
+
+def validate_price_window(start, end, now=None):
+    stamp = now or datetime.now(timezone.utc)
+    if stamp.tzinfo is None:
+        raise ValueError('price-window validation requires a timezone')
+    ny = stamp.astimezone(ZoneInfo('America/New_York'))
+    if start > end or end > ny.date() or (end == ny.date() and ny.hour < 16):
+        raise ValueError('Require a completed New York trading-date window')
+
+
+def acquire_one(ticker, symbol, start, end, root, data_root, gate, retry_transient=False, identity_source=None,
+                events_through=None):
     if not re.fullmatch(r'[A-Z0-9][A-Z0-9._/\-]{0,31}', ticker) or '..' in ticker:
         raise ValueError('INVALID_TICKER')
     contract = {'provider': SOURCE, 'ticker': ticker, 'symbol': symbol, 'start': start, 'end': end, 'interval': '1d'}
+    p2 = event_request_end(end, events_through)
+    if events_through is not None:
+        contract['events_through'] = events_through
     if ticker != symbol:
         if not isinstance(identity_source, str) or not identity_source.startswith('https://'):
             raise ValueError('NONIDENTICAL_SYMBOL_REQUIRES_EXPLICIT_MAPPING_EVIDENCE')
@@ -172,7 +200,6 @@ def acquire_one(ticker, symbol, start, end, root, data_root, gate, retry_transie
         row['prior_attempts'] = saved.get('prior_attempts', []) + [{k: v for k, v in saved.items() if k != 'prior_attempts'}]
     url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + quote(symbol, safe='')
     p1 = int(datetime.fromisoformat(start).replace(tzinfo=timezone.utc).timestamp())
-    p2 = int((datetime.fromisoformat(end) + timedelta(days=1)).replace(tzinfo=timezone.utc).timestamp())
     params = {'period1': p1, 'period2': p2, 'interval': '1d', 'events': 'div,splits,capitalGains', 'includeAdjustedClose': 'true'}
     try:
         response = None
@@ -217,6 +244,8 @@ def acquire_one(ticker, symbol, start, end, root, data_root, gate, retry_transie
             'rejected_rows': rejected, 'source_metadata': meta}
         if identity_source:
             lineage['transport_mapping_evidence'] = identity_source
+        if events_through is not None:
+            lineage['requested_events_through'] = events_through
         row['catalog_record'] = {'dataset': DATASET, 'ticker': ticker, 'adjustment': BASIS, 'path': str(out),
             'row_count': len(frame), 'min_date': frame.date.min(), 'max_date': frame.date.max(),
             'source': SOURCE, 'lineage': lineage}
@@ -240,6 +269,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--start', default='2018-01-01')
     parser.add_argument('--end', required=True)
+    parser.add_argument('--events-through', help='Extend raw corporate-action evidence through this NY date; price bars remain bounded by --end')
     parser.add_argument('--work-root', type=Path, required=True)
     parser.add_argument('--tickers', nargs='+')
     parser.add_argument('--symbol-map', type=Path, help='JSON ticker -> {provider_symbol,evidence_url}; explicit verified aliases only')
@@ -249,8 +279,8 @@ def main(argv=None):
                         help='Retry cached network/HTTP 5xx failures, preserving earlier attempt evidence')
     args = parser.parse_args(argv)
     start, end = (datetime.strptime(s, '%Y-%m-%d').date() for s in (args.start, args.end))
-    if start > end or end >= datetime.now(timezone.utc).date():
-        raise ValueError('Require a past completed-date window')
+    validate_price_window(start, end)
+    event_request_end(str(end), args.events_through)
     if not 1 <= args.workers <= 4:
         raise ValueError('workers must be 1..4')
     paths = resolve()
@@ -271,7 +301,8 @@ def main(argv=None):
         from scripts.storage.manage_data import acquisition_tickers
         from scripts.storage.storage_r2a import DataStore
         tickers = acquisition_tickers(DataStore())
-    print(json.dumps({'status': 'PLAN', 'count': len(tickers), 'start': str(start), 'end': str(end), 'provider': SOURCE}), flush=True)
+    print(json.dumps({'status': 'PLAN', 'count': len(tickers), 'start': str(start), 'end': str(end),
+        'events_through': args.events_through, 'provider': SOURCE}), flush=True)
     if not args.execute:
         return 0
     root = args.work_root.resolve()
@@ -283,7 +314,8 @@ def main(argv=None):
     results = []
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(acquire_one, t, mappings.get(t, {}).get('provider_symbol', t), str(start), str(end),
-            root, paths.data_root, gate, args.retry_transient_failures, mappings.get(t, {}).get('evidence_url')): t for t in tickers}
+            root, paths.data_root, gate, args.retry_transient_failures, mappings.get(t, {}).get('evidence_url'),
+            args.events_through): t for t in tickers}
         for future in as_completed(futures):
             row = future.result()
             results.append(row)
@@ -294,6 +326,8 @@ def main(argv=None):
         'completed_at': utc_now(), 'attempted_symbols': len(results),
         'successful_symbols': sum(r['status'] == 'SUCCESS' for r in results),
         'target_reached_symbols': sum(r.get('max_date') == str(end) for r in results), 'results': results}
+    if args.events_through is not None:
+        report['events_through'] = args.events_through
     write_json(root / 'acquisition_report.json', report)
     print(json.dumps({k: v for k, v in report.items() if k != 'results'}), flush=True)
     return 0

@@ -16,11 +16,12 @@ from apps.demo_console.pages.research import render_research
 from apps.demo_console.pages.machine_learning import render_machine_learning
 from apps.demo_console.components.motion import render_motion
 from apps.demo_console.components.demo_tour import render_demo_tour
-from apps.demo_console.components.decision_trace import remember_case, resolve_case_ticker, trace_facts
+from apps.demo_console.components.decision_trace import remember_case, resolve_case_ticker, trace_facts, carry_case
 from apps.demo_console.components.ml_comparison import comparison_rows
 from apps.demo_console.components.replay import pause_replay
 from apps.demo_console.components.system_overview import render_system_overview
 from apps.demo_console.i18n import option_labeler, tr
+from apps.demo_console.adapters import workspace_reader
 
 
 def _short(value: str | None) -> str:
@@ -79,7 +80,8 @@ def _switch_portfolio_workspace() -> None:
 
 
 def _portfolio_rows(model: DecisionOverview, source: str, group: str, query: str):
-    rows = model.ranking if source == "Raw A2 Top20" else model.holdings
+    display = workspace_reader.rank_band(model, st.session_state.get("workspace_rank_band", "Top20")) if workspace_reader.is_updated(model) else model
+    rows = display.ranking if source == "Raw A2 Top20" else model.holdings
     members = model.retained if group == "Retained" else model.entered if group == "Entered" else None
     filtered = tuple(row for row in rows if query in row.ticker.casefold()
                      and (group == "All names" or members is not None and row.ticker in members))
@@ -99,6 +101,9 @@ def _remember_portfolio_security(current_tickers: tuple[str, ...]) -> None:
 
 def _prepare_portfolio_case(model: DecisionOverview) -> None:
     """Resolve the visible inspector before the shared case header is rendered."""
+    if (workspace_reader.is_updated(model) and model.execution_status != "EXECUTED"
+            and st.session_state.get("record_set") == "Historical holdings"):
+        model = workspace_reader.latest_executed_overview(model) or model
     tickers = tuple(row.ticker for row in _current_portfolio_rows(model))
     canonical = resolve_case_ticker(model)
     selected = st.session_state.get("inspect_ticker")
@@ -136,23 +141,38 @@ def _render_inspector(model: DecisionOverview, ticker: str) -> None:
 
 
 def _render_portfolio(model: DecisionOverview) -> None:
-    st.html(section_header(tr("Explore portfolio records"), tr("SECURITY WORKSPACE"),
-                           tr("{ranked} ranked / {held} held", ranked=len(model.ranking), held=len(model.holdings))))
+    selected_model = model
+    updated = workspace_reader.is_updated(model)
+    st.html(section_header(tr("Explore portfolio records"), tr("SECURITY WORKSPACE")))
     controls = st.columns([1.25, 1, 1.2], gap="medium")
     with controls[0]:
         query = st.text_input(tr("Search ticker"), placeholder=tr("Find a symbol…"), key="ticker_search",
                               persist_state="session").strip().casefold()
     with controls[1]:
+        labels = ({"Raw A2 Top20": tr("Signal rankings"), "Historical holdings": tr("Executed portfolio")}
+                  if updated else None)
         source = st.selectbox(tr("Record set"), ["Raw A2 Top20", "Historical holdings"], key="record_set",
-                              format_func=option_labeler(["Raw A2 Top20", "Historical holdings"]), persist_state="session")
+                              format_func=labels.get if labels else option_labeler(["Raw A2 Top20", "Historical holdings"]), persist_state="session")
     with controls[2]:
         group = st.selectbox(tr("Snapshot membership"), ["All names", "Retained", "Entered"], key="membership_filter",
                              format_func=option_labeler(["All names", "Retained", "Entered"]), persist_state="session")
+    if updated and source == "Historical holdings" and model.execution_status != "EXECUTED":
+        executed = workspace_reader.latest_executed_overview(model)
+        if executed is not None:
+            st.caption(tr("Latest executed portfolio · {execution} open · From signal {signal}",
+                execution=executed.provenance.execution_date, signal=executed.decision_date))
+            model = executed
+        else:
+            st.caption(tr("No verified executed portfolio is available by the selected date."))
+    elif updated and source == "Raw A2 Top20" and model.execution_status == "PENDING_NEXT_OPEN":
+        st.caption(tr("These are the selected signal's rankings. Its next-open portfolio is still pending."))
     rows, members, filtered = _portfolio_rows(model, source, group, query)
+    if filtered and st.session_state.get("inspect_ticker") not in {row.ticker for row in filtered}:
+        st.session_state["inspect_ticker"] = filtered[0].ticker
     inspector, table = st.columns([1, 2.25], gap="medium")
     with table:
         st.caption(tr("{count} of {total} records · {record_set} · {date}", count=len(filtered), total=len(rows),
-                      record_set=tr(source), date=model.decision_date or tr("N/A")))
+                      record_set=labels.get(source) if labels else tr(source), date=model.decision_date or tr("N/A")))
         if group != "All names" and members is None:
             st.info(tr("Snapshot membership is not exposed for this date."))
         elif not filtered:
@@ -177,6 +197,9 @@ def _render_portfolio(model: DecisionOverview) -> None:
                               ("Entered", model.entered), ("Exited", model.exited)):
             st.markdown(f"**{tr(label)}**")
             st.html(chips(values))
+    if updated:
+        from apps.demo_console.components.rx_portfolio import render_rx_portfolio
+        render_rx_portfolio(selected_model)
 
 
 def _render_coverage(model: DecisionOverview) -> None:
@@ -222,7 +245,10 @@ def case_context_html(model: DecisionOverview, view: str) -> str:
                     + text(model.decision_date or tr("Not recorded")) + '</b></span>'
                     + '<span class="uq-case-scope">' + text(tr("No unambiguous current Top20 record")) + '</span></div>')
         return ""
-    dates = (("Decision date", facts["decision_date"]), ("Execution date", facts["execution_date"]))
+    pending = workspace_reader.is_updated(model) and model.execution_status == "PENDING_NEXT_OPEN"
+    dates = (("Decision date", facts["decision_date"]),
+             ("Scheduled execution" if pending else "Execution date",
+              model.scheduled_execution_date if pending else facts["execution_date"]))
     return ('<div class="uq-case-context"><span class="uq-case-identity"><small>'
             + text(tr("Recorded case")) + '</small><strong>' + text(facts["ticker"]) + '</strong></span>'
             + ''.join('<span class="uq-case-date"><small>' + text(tr(label)) + '</small><b>'
@@ -231,14 +257,28 @@ def case_context_html(model: DecisionOverview, view: str) -> str:
             + '</div>')
 
 
-def render_overview(model: DecisionOverview, *, presentation: bool = True, view: str = "Overview") -> None:
+def render_overview(model: DecisionOverview, *, presentation: bool = True, view: str = "Overview",
+                    selected_package=None) -> None:
+    if selected_package is not None:
+        from apps.demo_console.pages.selected_strategies import render_workspace
+        render_workspace(model, selected_package, presentation=presentation, view=view)
+        return
     from apps.demo_console.components.recorded_2026 import is_recorded_2026, render_research_period
 
     apply_style(presentation=presentation)
     st.html(header_html(model, view))
-    if view == "Research":
+    updated = workspace_reader.is_updated(model)
+    if updated:
+        _render_updated_context(model, view)
+        if view == "Machine learning" or (
+            view == "Portfolio" and st.session_state.get("record_set", "Raw A2 Top20") == "Raw A2 Top20"
+        ):
+            st.segmented_control(tr("Rank range"), ("Top20", "21–40", "Top40"), default="Top20",
+                required=True, key="workspace_rank_band", persist_state="session",
+                on_change=_change_rank_band, args=(model,))
+    if view == "Research" and not updated:
         render_research_period()
-    recorded_2026 = is_recorded_2026(view)
+    recorded_2026 = not updated and is_recorded_2026(view)
     if view == "History":
         sync_history_case(model)
     elif view == "Portfolio":
@@ -260,6 +300,13 @@ def render_overview(model: DecisionOverview, *, presentation: bool = True, view:
                 label_visibility="collapsed", width="content")
     if model.error and not recorded_2026:
         st.error(tr(model.error))
+    if updated and view in ('Portfolio', 'History'):
+        from apps.demo_console.components.stock_history_search import render_stock_history_search
+        search_panel = st.expander(tr('Search stock history · All historical stocks'),
+            expanded=False, key='full_stock_history_panel', on_change='rerun')
+        if search_panel.open:
+            with search_panel:
+                render_stock_history_search(model)
     if view == "Machine learning":
         render_machine_learning(model, presentation=presentation)
     elif view == "Portfolio":
@@ -272,14 +319,14 @@ def render_overview(model: DecisionOverview, *, presentation: bool = True, view:
         render_research(model, presentation=presentation)
     else:
         render_system_overview(model, presentation=presentation)
-    if not recorded_2026:
+    if not recorded_2026 and not updated:
         st.html(f'<div class="uq-scope-strip"><b>{text(tr("RAW A2 BASELINE"))}</b><span class="uq-scope-copy">'
                 f'{text(tr("Recorded historical portfolio · Stateful RX trace and combined final portfolio"))} '
                 f'<strong>{text(tr("NOT EXPOSED"))}</strong></span></div>')
     if view != "Evidence" and not recorded_2026:
         _render_provenance(model, presentation=presentation)
     st.html('<footer class="uq-footer"><span>US TECH QUANT <span class="uq-separator">/</span> '
-            f'{text(tr("RESEARCH TERMINAL"))}</span><span>{text(tr("FROZEN HISTORICAL ARTIFACTS · READ ONLY"))}</span></footer>')
+            f'{text(tr("RESEARCH TERMINAL"))}</span><span>{text(tr("UPDATED RESEARCH · SIMULATED PORTFOLIO" if updated else "FROZEN HISTORICAL ARTIFACTS · READ ONLY"))}</span></footer>')
     if st.session_state.get("_rendered_workspace") != view:
         st.session_state["_rendered_workspace"] = view
         # Only a workspace change resets the presentation. Date, filter and
@@ -288,3 +335,50 @@ def render_overview(model: DecisionOverview, *, presentation: bool = True, view:
                 'document.querySelector(\'[data-testid="stMain"]\')?.scrollTo({top:0,behavior:"instant"});'
                 '});</script>', unsafe_allow_javascript=True)
     render_motion(view, model.decision_date, enabled=st.session_state.get("motion_enabled", True))
+
+
+def _change_rank_band(model):
+    visible = workspace_reader.rank_band(model, st.session_state.get("workspace_rank_band", "Top20"))
+    tickers = tuple(row.ticker for row in visible.ranking)
+    if tickers and resolve_case_ticker(model) not in tickers:
+        carry_case(tickers[0])
+    pause_replay(reset=True)
+
+
+def _render_updated_context(model, view):
+    coverage = model.coverage
+    def value(number):
+        return "—" if number is None else str(number)
+    partial = coverage.status == "PARTIAL" or (coverage.excluded_count or 0) > 0
+    context, details = st.columns([6, 1], gap="small", vertical_alignment="center")
+    with context:
+        facts = ((tr("13F pool"), coverage.quarter or "—"),
+                 (tr("Partial coverage" if partial else "Calculated coverage"),
+                  f"{value(coverage.eligible_count)} / {value(coverage.universe_member_count)}"),
+                 (tr("Performance through"), model.performance_cutoff_date or "—"))
+        st.html('<div class="uq-data-context" role="status">' + ''.join(
+            '<span' + (' class="uq-data-partial"' if i == 1 and partial else '')
+            + '><small>' + text(label) + '</small><b>' + text(item) + '</b></span>'
+            for i, (label, item) in enumerate(facts))
+            + ('<span class="uq-data-pending">' + text(tr("Next open pending")) + '</span>'
+               if model.execution_status == "PENDING_NEXT_OPEN" else '') + '</div>')
+    with details:
+        with st.popover(tr("Data details"), icon=":material/info:", width="stretch"):
+            st.markdown('**' + tr("Data coverage") + '**')
+            st.caption(tr("Rankings and performance use {eligible} qualified names from a {total}-name pool; {excluded} are excluded.",
+                eligible=value(coverage.eligible_count), total=value(coverage.universe_member_count), excluded=value(coverage.excluded_count)))
+            st.caption(tr("13F {quarter} · Effective {effective} · {count} institutions", quarter=coverage.quarter or "—",
+                effective=coverage.effective_date or "—", count=value(coverage.institution_count)))
+            st.caption(tr("Verified security identities: {count}", count=value(coverage.mapped_count)))
+            st.markdown('**' + tr("Signal and execution") + '**')
+            st.caption(tr("Signal {signal} · Performance through {cutoff}", signal=model.decision_date or "—", cutoff=model.performance_cutoff_date or "—"))
+            if model.execution_status == "PENDING_NEXT_OPEN":
+                st.caption(tr("Execution is scheduled for {date}. The signal has no executed portfolio yet.", date=model.scheduled_execution_date or "—"))
+            elif model.provenance.execution_date:
+                st.caption(tr("Executed at the {date} open.", date=model.provenance.execution_date))
+            else:
+                st.caption(tr("The execution input is not ready for this signal."))
+            st.caption(tr("Descriptive replay · Execution-open valuation · Trading costs included"))
+    if model.performance_cutoff_date and model.decision_date and model.performance_cutoff_date < model.decision_date:
+        st.warning(tr("Performance ends on {cutoff}; it does not cover signal {signal}. Later execution data still needs verification.",
+            cutoff=model.performance_cutoff_date, signal=model.decision_date))

@@ -1,4 +1,4 @@
-"""Prospective research lifecycle helpers for the existing Harness.
+"""Task-scoped prospective research lifecycle helpers.
 
 This module is task-local: it reuses the authoritative research registry,
 creates no registry of its own, and only deletes exact manifest paths.
@@ -657,7 +657,7 @@ def apply_registry_completion(
     patch = {
         "schema_version": 1,
         "expected_base_head_sha256": query["head_sha256"],
-        "author": f"harness-worker:{spec['research_id']}",
+        "author": f"research-lifecycle:{spec['research_id']}",
         "event_time_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "validation": {"status": "PASS", "post_2025_observation_count": 0},
         "independent_review": {

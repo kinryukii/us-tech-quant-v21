@@ -9,6 +9,7 @@ import altair as alt
 import streamlit as st
 
 from apps.demo_console.adapters import decision_reader
+from apps.demo_console.adapters import workspace_reader
 from apps.demo_console.components.chart_display import render_chart
 from apps.demo_console.components.history_charts import (
     _recorded_domain, _style, _x, security_records,
@@ -27,9 +28,9 @@ def _score(value):
                      and isfinite(value)) else None
 
 
-def _rank(value):
+def _rank(value, limit=20):
     return value if (isinstance(value, int) and not isinstance(value, bool)
-                     and 1 <= value <= 20) else None
+                     and 1 <= value <= limit) else None
 
 
 def comparison_rows(model: DecisionOverview) -> tuple[HoldingRow, ...]:
@@ -37,7 +38,7 @@ def comparison_rows(model: DecisionOverview) -> tuple[HoldingRow, ...]:
     if model.error:
         return ()
     counts = Counter(row.ticker for row in model.ranking)
-    rows = (replace(row, rank=_rank(row.rank), score=_score(row.score))
+    rows = (replace(row, rank=_rank(row.rank, model.ranking_limit), score=_score(row.score))
             for row in model.ranking if row.ticker and counts[row.ticker] == 1)
     return tuple(sorted(rows, key=lambda row: (row.rank is None, row.rank or 0, row.ticker)))
 
@@ -51,10 +52,10 @@ def selection_pair(rows, primary=None, secondary=None) -> tuple[str | None, str 
     return first, second
 
 
-def comparison_delta(primary: HoldingRow, secondary: HoldingRow) -> dict:
+def comparison_delta(primary: HoldingRow, secondary: HoldingRow, rank_limit=20) -> dict:
     """Signed primary-minus-comparison differences, retaining unknown values."""
     values = {}
-    for field, clean in (("rank", _rank), ("score", _score)):
+    for field, clean in (("rank", lambda value: _rank(value, rank_limit)), ("score", _score)):
         first, second = clean(getattr(primary, field)), clean(getattr(secondary, field))
         difference = first - second if first is not None and second is not None else None
         values[field] = _score(difference)
@@ -78,9 +79,10 @@ def comparison_chart(history, primary: str, secondary: str, metric="rank"):
     if metric not in {"rank", "score"}:
         raise ValueError("Comparison metric must be rank or score.")
     records = comparison_history(history, primary, secondary)
-    y = (alt.Y("rank:Q", title=tr("Top20 rank · 1 is highest"),
-               scale=alt.Scale(domain=[20, 1], zero=False),
-               axis=alt.Axis(values=[1, 5, 10, 15, 20], format="d"))
+    limit = max((model.ranking_limit for model in history), default=20)
+    y = (alt.Y("rank:Q", title=tr("Top20 rank · 1 is highest") if limit == 20 else "Top40 rank · 1 is highest",
+               scale=alt.Scale(domain=[limit, 1], zero=False),
+               axis=alt.Axis(values=[1, 5, 10, 15, 20] if limit == 20 else [1, 10, 20, 30, 40], format="d"))
          if metric == "rank" else
          alt.Y("score:Q", title=tr("Recorded model score"),
                scale=alt.Scale(domain=_recorded_domain(records, "score", zero=False), zero=False),
@@ -166,7 +168,7 @@ def render_model_comparison(model: DecisionOverview, presentation=True) -> None:
                 with st.container(horizontal=True):
                     st.metric(tr("Recorded rank"), f"#{row.rank}" if row.rank is not None else tr("Not recorded"))
                     st.metric(tr("Recorded score"), _value(row.score))
-    difference = comparison_delta(by_ticker[primary], by_ticker[secondary])
+    difference = comparison_delta(by_ticker[primary], by_ticker[secondary], model.ranking_limit)
     with st.container(horizontal=True):
         st.metric(tr("Rank difference · primary − comparison"), _value(difference["rank"], signed=True), border=True)
         st.metric(tr("Score difference · primary − comparison"), _value(difference["score"], signed=True), border=True)
@@ -189,13 +191,14 @@ def render_model_comparison(model: DecisionOverview, presentation=True) -> None:
     metric = metric if metric in _METRICS else "Recorded rank"
     window = window if window in _WINDOWS else "20 snapshots"
     with st.spinner(tr("Loading verified historical snapshots…")):
-        history = decision_reader.load_history(model.decision_date, window=_WINDOWS[window])
+        history = (workspace_reader.load_history(model, _WINDOWS[window]) if workspace_reader.is_updated(model)
+                   else decision_reader.load_history(model.decision_date, window=_WINDOWS[window]))
     if not history or all(snapshot.error for snapshot in history):
         st.info(tr("Comparison history is unavailable. The current recorded pair remains visible."))
         return
     render_chart(comparison_chart(history, primary, secondary, _METRICS[metric]),
                  width="stretch", height=300 if presentation else 270,
                  theme=None, key="ml_comparison_chart")
-    st.caption(tr("Recorded Top20 history through {date}. Gaps mean outside Top20 or unavailable evidence; no rank or score is filled in.",
+    st.caption(tr("本次 Top40 排名历史截至 {date}；缺失排名与分数不补造。" if workspace_reader.is_updated(model) else "Recorded Top20 history through {date}. Gaps mean outside Top20 or unavailable evidence; no rank or score is filled in.",
                   date=model.decision_date))
-    st.caption(tr("This pair is selected from the current decision date's Top20. Its historical paths describe these names; they do not measure full-universe predictive skill."))
+    st.caption("所选股票来自当前排名范围。个股路径不代表完整股票池的预测能力。" if workspace_reader.is_updated(model) else tr("This pair is selected from the current decision date's Top20. Its historical paths describe these names; they do not measure full-universe predictive skill."))
