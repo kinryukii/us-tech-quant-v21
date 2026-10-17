@@ -102,3 +102,21 @@ us-tech-quanttmppytest/
 __pycache__/
 *.pyc
 *.before_*.bak
+
+# Retained historical Python source; generated data and models stay ignored.
+!scripts/research/a2/retained/**/data/
+scripts/research/a2/retained/**/data/**
+!scripts/research/a2/retained/**/data/**/
+!scripts/research/a2/retained/**/data/**/*.py
+!scripts/research/a2/retained/**/models/
+scripts/research/a2/retained/**/models/**
+!scripts/research/a2/retained/**/models/**/
+!scripts/research/a2/retained/**/models/**/*.py
+!tests/research/a2/retained/**/data/
+tests/research/a2/retained/**/data/**
+!tests/research/a2/retained/**/data/**/
+!tests/research/a2/retained/**/data/**/*.py
+!tests/research/a2/retained/**/models/
+tests/research/a2/retained/**/models/**
+!tests/research/a2/retained/**/models/**/
+!tests/research/a2/retained/**/models/**/*.py

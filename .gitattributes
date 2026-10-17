@@ -6,3 +6,5 @@
 
 # Frozen normalizer source: preserve its existing byte SHA across checkouts.
 scripts/research/a2/data/a2_free_pit_foundation_r1.py -text
+# Frozen RX replay dependency: preserve the caller-pinned original bytes.
+_codex_transfer/rx_exact_1sigma_replay_r1_scratch/pre2026_exact_rx_replay.py -text
