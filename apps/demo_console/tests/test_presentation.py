@@ -263,3 +263,16 @@ def test_launcher_handles_an_occupied_port_without_stopping_its_server(existing_
         server.shutdown()
         server.server_close()
         worker.join(timeout=3)
+
+
+def test_deploy_action_only_is_hidden_and_native_controls_remain_available():
+    from apps.demo_console.components.visuals import styles
+    css = styles()
+    assert '[data-testid="stAppDeployButton"] { display:none!important; }' in css
+    assert '[data-testid="stToolbar"]:not(:has([data-testid="stExpandSidebarButton"]))' not in css
+    assert '[data-testid="stExpandSidebarButton"] {' in css
+    assert '[data-testid="stSidebarCollapseButton"]' in css
+    assert 'stMainMenu' not in css and 'stToolbarActions' not in css
+    assert '@media(max-width:900px)' in css
+    assert '.st-key-applied_stock_trajectories [data-testid="stHorizontalBlock"] { flex-direction:column!important;' in css
+    assert '.st-key-applied_stock_trajectories [data-testid="stColumn"] { width:100%!important;' in css

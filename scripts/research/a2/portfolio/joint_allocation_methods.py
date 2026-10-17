@@ -24,11 +24,11 @@ SPEC = dict(horizon_sessions=5, annualization=252/5, iterations=128, tolerance=2
             l1_turnover=.001,l2_turnover=.01,turnover_limit=.20,
             cvar_alpha=.90,cvar_epsilon=.0005,bl_tau=.05,
             no_trade_band=.0025,minimum_trade_usd=1.,partial_rebalance=.5,
-            risk_budget="fixed 1+(stable ticker rank mod 3), normalized",
+            risk_budget="fixed 1+(current active-support stable ticker ordinal mod 3), normalized",
             volatility_target_annual=.10, fixed_gross=1.)
 ALIASES = {"mean_es":"mean_cvar","kelly":"log_growth",
            "concentration_penalty":"l2_weight",
-           "cost_aware":"mean_variance","l1_weight":"mean_variance",
+           "cost_aware":"mean_variance","robust_cost_aware":"robust_mean_variance","l1_weight":"mean_variance",
            "risk_constrained_cash":"volatility_targeting", "turnover_limit":"mean_variance",
            "uncertainty_penalty":"robust_mean_variance"}
 ALLOCATION_METHODS = (
@@ -36,7 +36,7 @@ ALLOCATION_METHODS = (
     "mean_variance","robust_mean_variance","mean_cvar","mean_es","mean_semivariance",
     "kelly","log_growth","expected_return_shrinkage","uncertainty_penalty","black_litterman",
     "l2_weight","l1_weight","concentration_penalty","reference_regularization",
-    "tracking_error","cost_aware","l1_turnover","l2_turnover","turnover_limit",
+    "tracking_error","cost_aware","robust_cost_aware","l1_turnover","l2_turnover","turnover_limit",
 )
 CONTROL_METHODS = ("no_trade_band","buy_hold_hysteresis","partial_rebalance","minimum_trade",
                    "discrete_allocation","fractional_allocation","participation_constraint","liquidity_constraint","turnover_limit")
@@ -88,11 +88,16 @@ def _hrp(covariance, ids):
 
 
 def allocate_q(method,mu,uncertainty,covariance,current,locked,allowed,buy_allowed,slots,ticker_rank,
-               *, scenarios=None,reference=None,parameters=None):
+               *, scenarios=None,reference=None,parameters=None,execution_friction_bps=0.,investment_budget=1.):
     """Constrained full-candidate solve; numerical limits remain explicit."""
     if method not in ALLOCATION_METHODS:
         raise AllocationUnavailable("UNKNOWN_ALLOCATION_METHOD")
     requested=method
+    friction=float(execution_friction_bps)
+    if not np.isfinite(friction) or not 0 <= friction < 10000:
+        raise ValueError("INVALID_SIGNAL_KNOWN_EXECUTION_FRICTION")
+    if friction and requested not in {"cost_aware", "robust_cost_aware"}:
+        raise ValueError("EXECUTION_FRICTION_PENALTY_REQUIRES_COST_AWARE_ROLE")
     method=ALIASES.get(method,method)
     for key,value in (parameters or {}).items():
         if key not in SPEC or value != SPEC[key]:
@@ -103,7 +108,12 @@ def allocate_q(method,mu,uncertainty,covariance,current,locked,allowed,buy_allow
     mu,uncertainty,covariance,current=map(lambda x:np.asarray(x,float),(mu,uncertainty,covariance,current))
     locked,allowed,buy_allowed=map(lambda x:np.asarray(x,bool),(locked,allowed,buy_allowed))
     n=len(mu);reserved=np.where(locked,current,0.)
-    mass=1-float(reserved.sum())
+    budget=float(investment_budget)
+    if not np.isfinite(budget) or not 0 <= budget <= 1:
+        raise AllocationUnavailable("INVALID_INVESTMENT_BUDGET")
+    if budget < float(reserved.sum())-EPS:
+        raise AllocationUnavailable("INVESTMENT_BUDGET_BELOW_RESERVED_WEIGHT")
+    mass=budget-float(reserved.sum())
     cap=float(spec.get("max_q",.1))
     upper=np.where(allowed&buy_allowed,cap,np.where(allowed,np.minimum(current,cap),0.))
     ids=np.flatnonzero(upper>EPS)
@@ -118,7 +128,10 @@ def allocate_q(method,mu,uncertainty,covariance,current,locked,allowed,buy_allow
         raise AllocationUnavailable("INVALID_FROZEN_FIVE_SESSION_RISK")
     clean=np.zeros(n);clean[ids]=mu[ids]
     equivalence=("LONG_ONLY_SIMPLEX_L1_CONSTANT_NO_SPARSITY_IDENTIFICATION" if requested=="l1_weight"
+                 else "SIGNAL_KNOWN_L1_EXPECTED_TURNOVER_FRICTION_PENALTY" if requested=="cost_aware" and friction
                  else "ZERO_FEE_COST_OBJECTIVE_EQUIVALENT_TO_MV" if requested=="cost_aware"
+                 else "SIGNAL_KNOWN_L1_FRICTION_PLUS_FORECAST_UNCERTAINTY" if requested=="robust_cost_aware" and friction
+                 else "ZERO_FEE_COST_OBJECTIVE_EQUIVALENT_TO_ROBUST_MV" if requested=="robust_cost_aware"
                  else "TURNOVER_LIMIT_APPLIED_TO_ACCOUNT_TARGET_W_AFTER_Q_G" if requested=="turnover_limit"
                  else f"EXACT_OBJECTIVE_ALIAS:{requested}->{method}" if requested in ALIASES else "")
     values=np.full(n,-np.inf)
@@ -170,7 +183,14 @@ def allocate_q(method,mu,uncertainty,covariance,current,locked,allowed,buy_allow
         effective[ids]=prior[ids]+spec["bl_tau"]*(sub@view)
     budgets=np.zeros(n)
     active=(upper>EPS)|locked
-    budgets[active]=(1+np.asarray(ticker_rank)[active]%3) if method=="risk_budgeting" else 1
+    if method=="risk_budgeting":
+        active_ids=np.flatnonzero(active)
+        # Rank only observable legal/held support; future superset insertions
+        # may change absolute ranks but cannot change these relative ordinals.
+        ordered=active_ids[np.argsort(np.asarray(ticker_rank)[active_ids],kind="stable")]
+        budgets[ordered]=1+np.arange(len(ordered))%3
+    else:
+        budgets[active]=1
     budgets/=max(budgets.sum(),1)
     covariance_norm=np.max(np.abs(covariance).sum(axis=1)) if covariance.ndim==2 else np.max(covariance)
     step=1/max(penalty*covariance_norm+2*spec["l2_weight"]+2*spec["l2_turnover"],1e-6)
@@ -218,6 +238,12 @@ def allocate_q(method,mu,uncertainty,covariance,current,locked,allowed,buy_allow
         elif method=="l2_turnover":
             delta=w-current
             objective+=spec["l2_turnover"]*float(delta@delta);gradient+=2*spec["l2_turnover"]*delta
+        if requested in {"cost_aware", "robust_cost_aware"} and friction:
+            # Signal-close current weights are available; actual next-Open
+            # turnover remains unknown here and is charged by the account.
+            delta=w-current
+            objective+=(friction/10000.)*float(np.abs(delta).sum())
+            gradient+=(friction/10000.)*np.sign(delta)
         return objective,gradient
     if method=="turnover_limit":
         fixed_turnover=float(np.abs(reserved-current).sum())
@@ -334,11 +360,17 @@ def _v24_call(self,day,ctx):
 class JointAllocationPolicy(JointResearchPolicy):
     """One fixed allocation/exposure configuration per instance; same engine."""
     def __init__(self,*args,method="mean_variance",gross_method="fixed",
-                 scenarios_by_year=None,reference_by_day=None,**kwargs):
+                 scenarios_by_year=None,reference_by_day=None,execution_friction_bps=0.,**kwargs):
         super().__init__(*args,**kwargs)
         if len(self.role_ids)!=1:
             raise ValueError("ONE_FIXED_ALLOCATION_CONFIG_PER_INSTANCE")
         self.method,self.gross_method=method,gross_method
+        self.execution_friction_bps=float(execution_friction_bps)
+        if not np.isfinite(self.execution_friction_bps) or not 0 <= self.execution_friction_bps < 10000:
+            raise ValueError("INVALID_SIGNAL_KNOWN_EXECUTION_FRICTION")
+        if self.execution_friction_bps:
+            if method not in {"cost_aware", "robust_cost_aware"} or gross_method!="fixed" or any(float(r["rho"])!=1. for r in self.roles.values()):
+                raise ValueError("COST_AWARE_COMPARISON_REQUIRES_FIXED_GROSS_FULL_REBALANCE")
         self.scenarios_by_year=scenarios_by_year or {}
         self.reference_by_day=reference_by_day or {}
         self.allocation_receipts=[]
@@ -349,7 +381,8 @@ class JointAllocationPolicy(JointResearchPolicy):
     def _optimize(self,mean,uncertainty,covariance,step,current,locked,allowed,buy_allowed,slots,ticker_rank):
         result=allocate_q(self.method,mean,uncertainty,covariance,current,locked,allowed,buy_allowed,slots,ticker_rank,
             scenarios=self.scenarios_by_year.get(self.year),reference=self.reference_by_day.get(self.day),
-            parameters={"max_q":self.max_q,"iterations":self.iterations,"tolerance":self.tolerance})
+            parameters={"max_q":self.max_q,"iterations":self.iterations,"tolerance":self.tolerance},
+            execution_friction_bps=self.execution_friction_bps)
         self.allocation_receipts.append(dict(day=self.day,method=self.method,status=result.status,equivalence=result.equivalence))
         return result.q,result.iterations,result.residual,result.objective,result.status
     def _exposure(self,q,covariance,reserved,kind):

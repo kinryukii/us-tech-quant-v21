@@ -215,3 +215,221 @@ def shareholder_open_targets(keys, raw, calendar, event_records, apply_event_win
     frame['label_coordinate']='SHAREHOLDER_OPEN_T_PLUS_1_TO_T_PLUS_6_5_SESSION_RETURN_SUPPORTED_EVENTS_FAIL_CLOSED'
     frame['target_source']='EXISTING_FULL848_RAW_AND_FROZEN_COMMON_CA_WINDOW_FORMULA'
     return frame.drop(columns=['entry_open','exit_open'])
+
+
+def cash_inclusive_shareholder_open_targets(keys, raw, calendar, event_records,
+        apply_event_windows, *, cash_events=(), cutoff,
+        label_only_post_verified_cash=False, research_cash_authority=None,
+        cash_publication_proofs=()):
+    """New, pure H5 economic-label descendant; never changes the old label.
+
+    ``event_records`` must retain every unadjudicated common event after exact
+    source-backed cash classification by the existing cash binder. ``cash_events``
+    are its strictly publication-dated USD/raw-old-share entitlements, not
+    post-verified research events by default. Explicit label-only opt-in admits
+    ordinary USD ResearchReconstructedCashEvent via the unchanged B owner,
+    with a separate exact source-pinned publication knowledge proof. This never
+    mutates event.available_at or grants historical decision/account eligibility.
+    The caller owns complete event/identity/quote
+    source coverage; this function grants no historical/PIT/source authority.
+
+    The original window owner supplies final and pre-ex raw quantities. The
+    entitlement owner alone creates, pays and values cash claims. Unit-lot value
+    at exit is raw stock value + paid cash + still-nonspendable receivables.
+    Entry-ex events are excluded; exit-ex events are included. Maturity and all
+    supplied publication clocks must be strictly before the caller's fold cutoff.
+    Unknown terms/identity/clocks stay blocked, never dropped or filled.
+    """
+    from scripts.v22.corporate_action_transition_r1 import (
+        SourceBackedEntitlementEvent, ResearchReconstructedCashEvent,
+        CASH_ENTITLEMENT_FAMILIES, RAW_OLD_SHARE_COORDINATE,
+        apply_entitlement_lifecycle, _validate_research_account_authority,
+    )
+    boundary = pd.Timestamp('2026-01-01', tz='UTC')
+    cut = pd.Timestamp(cutoff)
+    if pd.isna(cut) or cut.tzinfo is None or cut.tz_convert('UTC') > boundary:
+        raise ValueError('CASH_H5_EXPLICIT_PRE2026_FOLD_CUTOFF_REQUIRED')
+    cut = cut.tz_convert('UTC')
+    dates = pd.DatetimeIndex(pd.to_datetime(calendar))
+    if (dates.empty or dates.tz is not None or dates.hasnans or dates.has_duplicates
+            or not dates.is_monotonic_increasing or not dates.equals(dates.normalize())
+            or dates.max() >= pd.Timestamp('2026-01-01')):
+        raise ValueError('CASH_H5_PRE2026_LEGAL_SESSION_CALENDAR_REQUIRED')
+    required = {'signal_date', 'ticker', 'security_id'}
+    if not required.issubset(keys) or keys.duplicated(['signal_date', 'ticker']).any():
+        raise ValueError('CASH_H5_EXACT_SIGNAL_SECURITY_KEYS_REQUIRED')
+    if keys.duplicated(['signal_date', 'security_id']).any():
+        raise ValueError('CASH_H5_AMBIGUOUS_SAME_DAY_SECURITY_IDENTITY')
+    known = keys.security_id.map(lambda value: isinstance(value, str) and bool(value.strip())
+        and not any(tag in value.upper() for tag in ('UNKNOWN', 'PLACEHOLDER', 'FROZEN_VENDOR:', 'UNCONFIRMED')))
+    if not known.all():
+        raise ValueError('CASH_H5_KNOWN_SECURITY_ID_REQUIRED')
+    clock = lambda day, hour: (pd.Timestamp(day) + pd.Timedelta(hours=hour,
+        minutes=30 if hour == 9 else 0)).tz_localize('America/New_York').tz_convert('UTC')
+    signal_days = pd.DatetimeIndex(pd.to_datetime(keys.signal_date))
+    raw_days = pd.DatetimeIndex(pd.to_datetime(raw.trade_date))
+    if (signal_days.tz is not None or raw_days.tz is not None or signal_days.hasnans or raw_days.hasnans
+            or any(clock(day, 16) >= cut for day in signal_days)
+            or any(clock(day, 9) >= cut for day in raw_days)):
+        raise ValueError('CASH_H5_INPUT_CLOCK_NOT_BEFORE_FOLD_CUTOFF')
+    events = tuple(cash_events)
+    if type(label_only_post_verified_cash) is not bool:
+        raise ValueError('CASH_H5_EXPLICIT_LABEL_ONLY_BOOLEAN_REQUIRED')
+    if (not label_only_post_verified_cash and
+            (research_cash_authority is not None or tuple(cash_publication_proofs))):
+        raise ValueError('CASH_H5_LABEL_ONLY_OPT_IN_REQUIRED')
+    allowed = ((SourceBackedEntitlementEvent, ResearchReconstructedCashEvent)
+        if label_only_post_verified_cash else (SourceBackedEntitlementEvent,))
+    if any(type(event) not in allowed for event in events):
+        raise ValueError('CASH_H5_STRICT_SOURCE_DATED_CASH_EVENTS_REQUIRED')
+    if len({event.event_id for event in events}) != len(events):
+        raise ValueError('CASH_H5_DUPLICATE_CASH_EVENT_ID')
+    reconstructed = tuple(e for e in events if type(e) is ResearchReconstructedCashEvent)
+    label_known_at = {}
+    validated_authority = None
+    if reconstructed:
+        # The old authority remains the unique source/terms admission owner.
+        # This does not turn its accounting-only admission into label knowledge.
+        if (not isinstance(research_cash_authority, dict) or
+                research_cash_authority.get('schema') != 'B_FROZEN_HISTORY_CASH_ACCOUNT_AUTHORITY_V1'):
+            raise ValueError('CASH_H5_ORIGINAL_B_CASH_AUTHORITY_REQUIRED')
+        validated_authority = _validate_research_account_authority(events, research_cash_authority)
+        proofs = tuple(cash_publication_proofs)
+        if (any(not isinstance(p, dict) for p in proofs)
+                or len({p.get('event_fingerprint') for p in proofs}) != len(proofs)
+                or sorted(p.get('event_fingerprint', '') for p in proofs)
+                    != sorted(e.event_fingerprint for e in reconstructed)):
+            raise ValueError('CASH_H5_EXACT_LABEL_PUBLICATION_PROOFS_REQUIRED')
+        for event in reconstructed:
+            proof = next(p for p in proofs if p['event_fingerprint'] == event.event_fingerprint)
+            exact = dict(schema='B_CASH_LABEL_PUBLICATION_BOUND_PROOF_V1',
+                clock_role='LABEL_KNOWLEDGE_ONLY_NOT_DECISION_AVAILABILITY',
+                publication_bound_status='SOURCE_BOUND_CONSERVATIVE_UPPER_BOUND',
+                event_fingerprint=event.event_fingerprint, security_id=event.old_security_id,
+                ticker=event.ticker, ex_date=event.ex_date,
+                publication_bound_proof_ref=dict(path=event.reconstruction_ref,
+                    sha256=event.reconstruction_sha256))
+            if any(type(proof.get(k)) is not type(v) or proof.get(k) != v for k, v in exact.items()):
+                raise ValueError('CASH_H5_LABEL_PUBLICATION_SUBJECT_OR_SOURCE_PIN_MISMATCH')
+            known_at = pd.Timestamp(proof.get('publication_known_at'))
+            if pd.isna(known_at) or known_at.tzinfo is None:
+                raise ValueError('CASH_H5_LABEL_PUBLICATION_KNOWLEDGE_CLOCK_REQUIRED')
+            known_at = known_at.tz_convert('UTC')
+            if not known_at < cut:
+                raise ValueError('CASH_H5_LABEL_PUBLICATION_NOT_BEFORE_FOLD_CUTOFF')
+            if event.available_at is not None and known_at < pd.Timestamp(event.available_at).tz_convert('UTC'):
+                raise ValueError('CASH_H5_LABEL_PUBLICATION_KNOWLEDGE_MAY_NOT_BACKDATE_SOURCE')
+            label_known_at[event.event_fingerprint] = known_at
+    elif research_cash_authority is not None or tuple(cash_publication_proofs):
+        raise ValueError('CASH_H5_LABEL_PROOFS_WITHOUT_RECONSTRUCTED_EVENTS')
+    records = tuple(event_records)
+    frame = shareholder_open_targets(keys, raw, dates, records, apply_event_windows)
+    frame['security_id'] = keys.security_id.to_numpy()
+    frame['label_quantity_event_count'] = frame.label_common_event_count
+    frame['label_cash_event_count'] = 0
+    frame['label_cash_paid_per_entry_share'] = np.nan
+    frame['label_cash_receivable_per_entry_share'] = np.nan
+    frame['label_available_at'] = pd.Series(pd.NaT, index=frame.index, dtype='datetime64[ns, UTC]')
+    frame['cash_label_reason'] = 'UNQUALIFIED_OR_MISSING_ENDPOINT_OR_QUANTITY_EVENT'
+    frame['y_open5'] = np.nan
+    frame['label_coordinate'] = 'CASH_INCLUSIVE_SHAREHOLDER_OPEN_T_PLUS_1_TO_T_PLUS_6_5_SESSION_RETURN_V1'
+    frame['target_source'] = 'EXISTING_RAW_AND_QUANTITY_OWNER_PLUS_SOURCE_BACKED_ENTITLEMENT_OWNER_V1'
+    frame['strict_PIT_promotion_eligible'] = False
+    if reconstructed:
+        frame['label_only_post_verified_cash'] = True
+        frame['target_source'] = 'EXISTING_RAW_AND_QUANTITY_OWNER_PLUS_LABEL_ONLY_POST_VERIFIED_CASH_OWNER_V1'
+    # Price lookup is after the original endpoint validation; no replacement mark.
+    opening = raw.set_index(['ticker', pd.to_datetime(raw.trade_date)]).open
+    positions = {day: i for i, day in enumerate(dates)}
+    for i, row in frame.iterrows():
+        eligible = bool(row.label_available)
+        frame.at[i, 'label_available'] = False
+        if not eligible or pd.isna(row.label_end_date):
+            continue
+        entry, end = pd.Timestamp(row.execution_date), pd.Timestamp(row.label_end_date)
+        mature = clock(row.label_mature_date, 16)
+        if not mature < cut:
+            frame.at[i, 'cash_label_reason'] = 'LABEL_NOT_MATURE_BEFORE_FOLD_CUTOFF'
+            continue
+        relevant = tuple(event for event in events if event.ticker == row.ticker
+            and entry < pd.Timestamp(event.ex_date) <= end)
+        frame.at[i, 'label_cash_event_count'] = len(relevant)
+        frame.at[i, 'label_common_event_count'] = int(row.label_quantity_event_count) + len(relevant)
+        available_at = mature
+        try:
+            # Additional quantity-clock proof is required only in this new target.
+            # The old owner and all old labels keep their original semantics.
+            for event in records:
+                day = pd.Timestamp(event['event_date'])
+                if event['ticker'] != row.ticker or not entry < day <= end:
+                    continue
+                available = pd.Timestamp(event.get('available_at'))
+                if (pd.isna(available) or available.tzinfo is None
+                        or not available.tz_convert('UTC') < cut
+                        or available.tz_convert('UTC') > clock(day, 9)):
+                    raise ValueError('QUANTITY_EVENT_SOURCE_CLOCK_UNKNOWN_OR_LATE')
+                sid = event.get('security_id', event.get('old_security_id'))
+                if sid != row.security_id:
+                    raise ValueError('QUANTITY_EVENT_SECURITY_ID_UNKNOWN_OR_MISMATCH')
+            for event in relevant:
+                if type(event) is ResearchReconstructedCashEvent:
+                    event.__post_init__(source_scope='B_FROZEN_PRE2026_ACCOUNTING_ONLY')
+                else:
+                    event.__post_init__()  # Revalidate deserialized/corrupted terms.
+                if event.action_type not in CASH_ENTITLEMENT_FAMILIES:
+                    raise ValueError('UNSUPPORTED_CASH_EVENT_FAMILY')
+                if event.old_security_id != row.security_id:
+                    raise ValueError('CASH_EVENT_SECURITY_ID_MISMATCH')
+                available = (label_known_at[event.event_fingerprint]
+                    if type(event) is ResearchReconstructedCashEvent else pd.Timestamp(event.available_at))
+                if not available.tz_convert('UTC') < cut:
+                    raise ValueError('CASH_EVENT_SOURCE_NOT_BEFORE_FOLD_CUTOFF')
+                available_at = max(available_at, available.tz_convert('UTC'))
+                if pd.Timestamp(event.ex_date) not in positions:
+                    raise ValueError('CASH_EVENT_EX_NOT_LEGAL_SESSION')
+            cash, receivable, state = 0., 0., None
+            lifecycle_kwargs = {}
+            historical_fingerprints = {e.event_fingerprint for e in relevant
+                if type(e) is ResearchReconstructedCashEvent}
+            if historical_fingerprints:
+                # Exact subset transport; all terms validation and arithmetic
+                # remain in the existing owner, including its authority check.
+                admission = validated_authority['frozen_history_cash_admission']
+                scoped_admission = dict(admission, events=[dict(item)
+                    for item in admission['events']
+                    if item['event_fingerprint'] in historical_fingerprints])
+                lifecycle_kwargs['research_account_authority'] = dict(validated_authority,
+                    frozen_history_cash_admission=scoped_admission)
+            for di in range(positions[entry] + 1, positions[end] + 1) if relevant else ():
+                day = dates[di]
+                # Snapshot raw-old shares strictly before this ex session.
+                # Multiplication remains solely inside the original owner.
+                probe = pd.DataFrame({'ticker': [row.ticker], 'execution_date': [entry],
+                                      'label_end_date': [dates[di - 1]]})
+                quantity, blocked, _ = apply_event_windows(probe, records)
+                if bool(blocked[0]) or not np.isfinite(quantity[0]) or quantity[0] <= 0:
+                    raise ValueError('PRE_EX_QUANTITY_UNQUALIFIED')
+                applied = apply_entitlement_lifecycle(relevant,
+                    {row.security_id: float(quantity[0])}, cash,
+                    execution_date=day, session_open_at=clock(day, 9),
+                    security_tickers={row.security_id: row.ticker},
+                    quantity_coordinate=RAW_OLD_SHARE_COORDINATE, state=state, enabled=True,
+                    **lifecycle_kwargs)
+                if not applied.accounting_qualified:
+                    raise ValueError('CASH_ENTITLEMENT_UNQUALIFIED:' + str(applied.state.blocked_events))
+                cash, receivable, state = applied.cash, applied.receivable_value_usd, applied.state
+            entry_open, exit_open = float(opening.loc[(row.ticker, entry)]), float(opening.loc[(row.ticker, end)])
+            value = (float(row.label_quantity_multiplier) * exit_open + cash + receivable) / entry_open - 1.
+            if not np.isfinite(value):
+                raise ValueError('CASH_H5_NONFINITE_UNIT_LOT_VALUE')
+        except (ValueError, TypeError, KeyError) as error:
+            frame.at[i, 'cash_label_reason'] = str(error)
+            frame.at[i, 'label_unsupported_common_event'] = True
+            continue
+        frame.at[i, 'label_available'] = True
+        frame.at[i, 'y_open5'] = value
+        frame.at[i, 'label_cash_paid_per_entry_share'] = cash
+        frame.at[i, 'label_cash_receivable_per_entry_share'] = receivable
+        frame.at[i, 'label_available_at'] = available_at
+        frame.at[i, 'cash_label_reason'] = 'QUALIFIED_CALLER_SOURCE_COVERAGE_REQUIRED'
+    return frame

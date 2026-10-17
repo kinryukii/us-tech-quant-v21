@@ -172,3 +172,37 @@ def test_scenarios_reuse_already_estimated_mean_and_reject_other_dates():
     state.fitted_dates=state.fitted_dates[:-1]
     with pytest.raises(ValueError,match="dates"):driver.scenario_inputs(frame,np.array(["X"]),states)
 
+def test_json_safe_event_metadata_has_stable_roundtrip_dates_and_scalars():
+    import json
+    value={"corporate_action_receipts":[{"date":pd.Timestamp("2023-01-03"),
+        "quantity":np.float64(2),"status":"SUPPORTED","flags":(np.bool_(True),None)}],
+        "corporate_action_exceptions":[{"effective_date":pd.Timestamp("2023-01-04")}]}
+    safe=driver.json_safe(value)
+    assert safe==json.loads(json.dumps(safe,default=str,allow_nan=False))
+    assert safe["corporate_action_receipts"][0]["date"]=="2023-01-03 00:00:00"
+
+
+def test_pending_retry_checks_all_old_dependencies(monkeypatch):
+    import pytest,copy
+    monkeypatch.setattr(driver,"verified_engineering_repair",lambda task:{"old_policy_freeze_sha256":"old_freeze"})
+    expected={"path_id":"P","dependencies":{"policy_freeze_sha256":"new_freeze","model":"same_model"}}
+    retained={"identity":copy.deepcopy(expected)}
+    retained["identity"]["dependencies"]["policy_freeze_sha256"]="old_freeze"
+    driver.verify_retained_identity(None,retained,expected)
+    retained["identity"]["dependencies"]["model"]="changed_model"
+    with pytest.raises(ValueError,match="identity changed"):driver.verify_retained_identity(None,retained,expected)
+
+def test_missing_control_is_not_a_verified_shared_failure():
+    assert driver.failed_required_controls({})==[]
+    rec={"identity":{"path_id":driver.CONTROLS[0]},"status":"CONTINUOUS_REPLAY_COMPLETE",
+         "metrics":{"eligible_for_selection":True},"receipt":"r","receipt_sha256":"h"}
+    assert driver.failed_required_controls({driver.CONTROLS[0]:rec})==[]
+
+def test_one_verified_failed_control_blocks_every_candidate_without_second_replay():
+    pid=driver.CONTROLS[0]
+    rec={"identity":{"path_id":pid},"status":"CONTINUOUS_REPLAY_COMPLETE","receipt":"verified","receipt_sha256":"h",
+         "metrics":{"path_id":pid,"eligible_for_selection":False,"final_certified_nav":None,
+                    "accounting_qualified":False,"scope_complete":False,"required_audits_passed":True}}
+    assert len(driver.failed_required_controls({pid:rec}))==1
+    candidate={"path_id":"M001","eligible_for_selection":True,"final_certified_nav":1e20}
+    assert driver.select_finalist([rec["metrics"],candidate])==(None,False)

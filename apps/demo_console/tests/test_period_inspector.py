@@ -184,6 +184,8 @@ class PeriodInspectorAppTests(unittest.TestCase):
                      ("decision_date", "replay_date", "workspace", "research_range", "research_tabs")}
         first_id = _native_month_chart(app).proto.id
         self.assertFalse(app.expander[0].proto.expanded)
+        self.assertFalse(any(node.key == "research_month_detail_month" for node in app.selectbox))
+        self.assertFalse(any(json.loads(node.proto.spec).get("name") == "research_month_detail_chart" for node in app.get("vega_lite_chart")))
         _month_click(app, "2025-01")
         self.healthy(app)
         self.assertTrue(app.expander[0].proto.expanded)
@@ -249,6 +251,8 @@ class PeriodInspectorAppTests(unittest.TestCase):
 
     def test_latest_default_is_chronological_and_never_exposes_other_months(self):
         app = self.app()
+        from apps.demo_console.tests.test_localized_tabs import _open_expander
+        _open_expander(app, "research_month_detail")
         self.assertEqual(app.selectbox(key="research_month_detail_month").options, ["2025-02", "2025-01"])
         self.assertEqual(app.selectbox(key="research_month_detail_month").value, "2025-02")
         self.assertEqual([metric.value for metric in app.metric], ["2", "-14.50%", "-14.50%"])
@@ -261,6 +265,8 @@ class PeriodInspectorAppTests(unittest.TestCase):
 
     def test_selected_month_survives_language_and_valid_window_changes(self):
         app = self.app()
+        from apps.demo_console.tests.test_localized_tabs import _open_expander
+        _open_expander(app, "research_month_detail")
         app.selectbox(key="research_month_detail_month").select("2025-01").run()
         before = app.dataframe[0].value.copy(deep=True)
         for language in ("zh", "ja", "en"):
@@ -286,6 +292,8 @@ class PeriodInspectorAppTests(unittest.TestCase):
 
     def test_native_month_event_is_not_overwritten_by_initial_or_replayed_default(self):
         app = self.app()
+        from apps.demo_console.tests.test_localized_tabs import _open_expander
+        _open_expander(app, "research_month_detail")
         widget = app.selectbox(key="research_month_detail_month")
         self.assertEqual(widget.proto.default, 0)
         self.assertFalse(widget.proto.set_value)
@@ -322,6 +330,8 @@ class PeriodInspectorAppTests(unittest.TestCase):
 
     def test_absent_reference_is_null_and_empty_window_has_no_chart_or_zero_metrics(self):
         app = self.app()
+        from apps.demo_console.tests.test_localized_tabs import _open_expander
+        _open_expander(app, "research_month_detail")
         app.checkbox(key="missing_reference").check().run()
         self.healthy(app)
         spec, rows = _chart_rows(app)

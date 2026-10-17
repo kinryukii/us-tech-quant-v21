@@ -106,7 +106,7 @@ def _summary(app):
 
 def _allocation_matrix(app):
     return next(item.value for item in app.dataframe if list(item.value.columns) ==
-                ["Ticker", "Raw A2", "HGB · Diagonal", "HGB · Factor"])
+                ["Ticker", "Raw A2", "HGB · Diagonal", "ElasticNet MID", "Ridge H5 MID", "R7 LINEAR"])
 
 
 def _open_legacy_strategies_bookmark(app):
@@ -162,6 +162,22 @@ def hgb_workspace(tmp_path, monkeypatch):
     path.write_text(json.dumps(package, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setenv("USTQ_SELECTED_HGB_PACKAGE", str(path))
     reader.clear_cache()
+    from apps.demo_console.adapters import applied_account_reader as account_reader
+    from apps.demo_console.tests.test_applied_account_reader import state
+    current = state()
+    for book in current["books"].values():
+        book["plan"].update(signal_date="2026-09-24", execution_date="2026-09-25")
+    from apps.demo_console.adapters import new_strategy_replay_reader
+    monkeypatch.setattr(new_strategy_replay_reader, "load_views", lambda *args, **kwargs: {})
+    diag = current["books"]["HGB_DIAG_5"]["plan"]
+    diag.update(rows=deepcopy(package["strategies"]["HGB_DIAG_5"]["application"]["rows"]),
+        target_cash_weight=package["strategies"]["HGB_DIAG_5"]["application"]["target_cash_weight"])
+    for row in diag["rows"]:
+        row["security_id"] = "synthetic-" + row["ticker"]
+    monkeypatch.setattr(account_reader, "load_state", lambda: current)
+    from apps.demo_console.pages import research
+    from apps.demo_console.adapters.benchmarks_reader import BenchmarkHistory
+    monkeypatch.setattr(research, "read_updated_benchmarks", lambda *args, **kwargs: BenchmarkHistory())
     raw_calls, raw_reference_calls, render_calls = [], [], []
     raw_dates = ("2026-09-23", "2026-09-24")
     raw_reference_path = tmp_path / "raw_reference_manifest.json"
@@ -202,31 +218,36 @@ def hgb_workspace(tmp_path, monkeypatch):
     reader.clear_cache()
 
 
-def test_main_three_strategy_summary_and_shared_paths_keep_observations(hgb_workspace):
+def test_main_five_strategy_summary_and_shared_paths_keep_observations(hgb_workspace):
     app = _new_app()
     _healthy(app)
     assert app.selectbox(key="workspace_strategy").value == "RAW_A2"
     frame = _summary(app)
     assert frame["Strategy"].tolist() == list(WORKSPACE_STRATEGIES.values())
-    assert frame["Period return"].tolist() == ["—", "97.42%", "49.08%"]
-    assert len(_chart(app, "applied_nav")[1]) == 6
-    assert len(_chart(app, "applied_drawdown")[1]) == 6
+    assert frame["Period return"].tolist() == ["—", "97.42%", "—", "—", "—"]
+    assert len(_chart(app, "applied_nav")[1]) == 3
+    assert not any(json.loads(item.proto.spec).get("name") == "applied_drawdown" for item in app.get("vega_lite_chart"))
     assert not app.metric
-    assert [tab.label for tab in app.tabs] == ["Decisions & portfolio", "Stock history across strategies", "Quantitative comparison"]
+    assert not app.tabs
     markup = next(item.proto.body for item in app.get("html") if 'class="uq-strategy-scorecard"' in item.proto.body)
-    assert markup.count('class="uq-strategy-score"') == 3
-    assert all(value in markup for value in ("97.42%", "49.08%", "Raw A2", 'data-strategy="RAW_A2"'))
+    assert markup.count('class="uq-strategy-score"') == 5
+    assert all(value in markup for value in ("97.42%", "ElasticNet MID", "R7 LINEAR", "Raw A2", 'data-strategy="RAW_A2"'))
     assert not next(item for item in app.expander if item.label == "Drawdown comparison").proto.expanded
-    assert app.selectbox(key="applied_rank_count") and app.selectbox(key="applied_rank_order")
-    assert "Daily rankings and allocations" in _content(app)
-    assert "Stock history across strategies" in _content(app)
+    assert not any(item.key in ("applied_rank_count", "applied_rank_order") for item in app.selectbox)
+    assert "Daily rankings and allocations" not in _content(app)
+    app.session_state["applied_risk_path"] = True
+    app.run()
+    _healthy(app)
+    assert len(_chart(app, "applied_drawdown")[1]) == 3
+    app.radio(key="workspace").set_value("Research").run()
+    _healthy(app)
     metrics = _table(app, "Metric").set_index("Metric")
     assert metrics.at["Annualized volatility", "HGB · Diagonal"] != "—"
     assert metrics.at["Cumulative turnover · Times", "HGB · Diagonal"] == "—"
-    assert metrics.at["Simulated fees / Window initial NAV", "HGB · Factor"] == "—"
+    assert metrics.at["Simulated fees / Window initial NAV", "R7 LINEAR"] == "—"
 
 
-def test_detail_focus_preserves_three_strategy_interval_and_allocation(hgb_workspace):
+def test_detail_focus_preserves_five_strategy_interval_and_allocation(hgb_workspace):
     from datetime import date
     app = _new_app(strategy=IDS[0])
     app.selectbox(key="research_range").select("Custom dates").run()
@@ -234,25 +255,26 @@ def test_detail_focus_preserves_three_strategy_interval_and_allocation(hgb_works
     app.button(key="research_dates_apply").click().run()
     _healthy(app)
     expected = _summary(app).copy()
+    app.radio(key="workspace").set_value("Portfolio").run()
+    _healthy(app)
     matrix = _allocation_matrix(app).copy()
-    for focus in (IDS[1], "RAW_A2", IDS[0]):
+    for focus in (*tuple(WORKSPACE_STRATEGIES)[2:], "RAW_A2", IDS[0]):
         app.selectbox(key="workspace_strategy").select(focus).run()
         _healthy(app)
         assert app.selectbox(key="decision_date").value == "2026-09-24"
-        assert app.selectbox(key="research_range").value == "Custom dates"
-        assert_frame_equal(_summary(app), expected)
+        assert app.session_state["research_range"] == "Custom dates"
         assert_frame_equal(_allocation_matrix(app), matrix)
     app.radio(key="workspace").set_value("Research").run()
     _healthy(app)
     assert_frame_equal(_summary(app), expected)
-    assert len(_chart(app, "research_hgb_nav")[1]) == 4
+    assert len(_chart(app, "applied_nav")[1]) == 2
 
 
 def test_signal_comparison_never_carries_an_old_target_to_a_new_date(hgb_workspace):
-    app = _new_app(strategy=IDS[1])
+    app = _new_app(strategy="R7_GROSS_LINEAR", view="Portfolio")
     current = _allocation_matrix(app).set_index("Ticker")
     assert current.at["CASH", "HGB · Diagonal"] == "39.94%"
-    assert current.at["CASH", "HGB · Factor"] == "66.33%"
+    assert current.at["CASH", "R7 LINEAR"] == "40.00%"
     assert len([x for x in current["HGB · Diagonal"] if x not in ("0.00%", "—")]) == 12
     app.selectbox(key="decision_date").select("2026-09-23").run()
     _healthy(app)
@@ -261,25 +283,28 @@ def test_signal_comparison_never_carries_an_old_target_to_a_new_date(hgb_workspa
     app.selectbox(key="decision_date").select("2026-01-05").run()
     _healthy(app)
     historical = _allocation_matrix(app).set_index("Ticker")
-    assert historical.at["CASH", "HGB · Diagonal"] == "80.00%"
-    assert "HIST_DIAG_02" in historical.index
+    assert historical.iloc[:, 1:].eq("—").all().all()
+    assert "HIST_DIAG_02" not in historical.index
+    assert not app.get("vega_lite_chart")
+    app.radio(key="workspace").set_value("Overview").run()
+    _healthy(app)
     assert {row["execution_date"] for row in _chart(app,"applied_nav")[1]} == {"2026-01-05"}
 
 
 def test_applied_bookmark_and_languages_keep_shared_context(hgb_workspace):
-    app = _new_app(strategy=IDS[1],date="2026-08-17")
+    app = _new_app(strategy="R7_GROSS_LINEAR",date="2026-08-17")
     _healthy(app)
     _open_legacy_strategies_bookmark(app)
     _healthy(app)
     assert app.radio(key="workspace").value == "Overview"
-    assert app.selectbox(key="workspace_strategy").value == IDS[1]
+    assert app.selectbox(key="workspace_strategy").value == "R7_GROSS_LINEAR"
     assert app.selectbox(key="decision_date").value == "2026-08-17"
     for language in ("zh","ja","en"):
         app.selectbox(key="language").select(language).run()
         _healthy(app)
-        assert app.selectbox(key="workspace_strategy").value == IDS[1]
+        assert app.selectbox(key="workspace_strategy").value == "R7_GROSS_LINEAR"
         assert app.selectbox(key="decision_date").value == "2026-08-17"
-        assert len(_chart(app,"applied_nav")[1]) == 4
+        assert len(_chart(app,"applied_nav")[1]) == 2
 
 
 def test_invalid_package_exposes_no_fallback_and_preserves_selected_id(hgb_workspace):
@@ -287,14 +312,14 @@ def test_invalid_package_exposes_no_fallback_and_preserves_selected_id(hgb_works
     package["strategies"][IDS[0]]["application"]["target_cash_weight"] = .99
     hgb_workspace["path"].write_text(json.dumps(package),encoding="utf-8")
     reader.clear_cache()
-    app = _new_app(strategy=IDS[1])
+    app = _new_app(strategy=IDS[0])
     assert not app.exception and app.error
-    assert app.selectbox(key="workspace_strategy").value == IDS[1]
+    assert app.selectbox(key="workspace_strategy").value == IDS[0]
     assert not app.dataframe and not app.get("vega_lite_chart")
 
 
 def test_hgb_model_details_keep_original_frozen_feature_contract(hgb_workspace):
-    app = _new_app(strategy=IDS[1],view="Machine learning")
+    app = _new_app(strategy=IDS[0],view="Machine learning")
     _healthy(app)
     assert _metrics(app)["Model input features"] == "21"
     assert _metrics(app)["Training boundary"] == "< 2026-01-01"

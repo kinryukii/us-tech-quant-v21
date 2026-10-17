@@ -437,3 +437,326 @@ def test_massive_gap_requires_five_exact_prefix_sessions(tmp_path,monkeypatch):
     raw.loc[prefix,'open']+=.01
     with pytest.raises(ValueError,match='OVERLAP_MISMATCH:open'):
         prices._qualified_massive_tail(record,raw,'AAPL',kwargs['target'],kwargs['store'],gap_dates=[str(gap.date())])
+
+
+@pytest.mark.parametrize("members", [[], (), None])
+def test_empty_rehab_members_are_blocked_before_sdk_or_profile(tmp_path, monkeypatch, members):
+    from types import SimpleNamespace
+    from scripts.storage import refresh_market_data
+    calls = []
+    def forbidden(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("EMPTY_REHAB_MUST_NOT_OPEN_SDK")
+    monkeypatch.setattr(prices.importlib, "import_module", forbidden)
+    monkeypatch.setattr(refresh_market_data, "load_module", forbidden)
+    work = tmp_path / "empty_rehab"
+    result = prices.refresh_rehab(SimpleNamespace(repo_root=tmp_path), members, work, "2026-10-05")
+    assert calls == [] and result["status"] == "BLOCKED"
+    assert result["reason"] == "REHAB_MEMBERS_EMPTY" and result["qualification_reason"] == "NO_VERIFIED_CURRENT_MEMBERS"
+    assert result["quote_context_opened"] is False and result["results"] == []
+    assert result["history_requests"] == result["trade_requests"] == 0
+    assert result["receipt_sha256"] == prices.digest(Path(result["receipt_path"]))
+    assert json.loads(Path(result["receipt_path"]).read_text())["status"] == "BLOCKED"
+
+
+def test_nonempty_zero_event_rehab_still_requires_real_per_code_response(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from scripts.storage import refresh_market_data
+    calls = []
+    class Context:
+        def set_sync_query_connect_timeout(self, timeout): calls.append(("timeout", timeout))
+        def get_rehab(self, code):
+            calls.append(("rehab", code))
+            return 0, pd.DataFrame()
+        def close(self): calls.append(("close",))
+    sdk = SimpleNamespace(RET_OK=0, SysConfig=SimpleNamespace(set_all_thread_daemon=lambda value: calls.append(("daemon", value))),
+                          OpenQuoteContext=lambda **kwargs: calls.append(("context",)) or Context())
+    profile = SimpleNamespace(load_profile=lambda *a: SimpleNamespace(host="127.0.0.1", port=11111), tcp_probe=lambda *a: (True, ""))
+    original_import = prices.importlib.import_module
+    monkeypatch.setattr(prices.importlib, "import_module", lambda name, *a, **kw: sdk if name == "moomoo" else original_import(name, *a, **kw))
+    monkeypatch.setattr(refresh_market_data, "load_module", lambda *a: profile)
+    result = prices.refresh_rehab(SimpleNamespace(repo_root=tmp_path), [{"moomoo_symbol": "US.TEST"}], tmp_path/"one_rehab", "2026-10-05")
+    assert result["status"] == "READY" and len(result["results"]) == 1
+    assert result["results"][0]["status"] == "PASS" and result["results"][0]["row_count"] == 0
+    assert calls == [("daemon", True), ("context",), ("timeout", 10), ("rehab", "US.TEST"), ("close",)]
+
+
+
+def test_quote_constructor_and_sdk_reconnect_timer_inherit_owned_daemon():
+    import threading
+    from types import SimpleNamespace
+    from scripts.common.daily_support import open_quote_context
+    release = threading.Event()
+    constructor_daemon = []
+    class Context:
+        def __init__(self, **kwargs):
+            assert kwargs == {"host": "127.0.0.1", "port": 11111, "is_async_connect": True}
+            constructor_daemon.append(threading.current_thread().daemon)
+            self.timer = threading.Timer(0, self._reconnect)
+            self.timer.start()
+        def _reconnect(self): release.wait()
+        def close(self): release.set()
+    context = open_quote_context(SimpleNamespace(OpenQuoteContext=Context), host="127.0.0.1", port=11111)
+    try:
+        assert constructor_daemon == [True] and context.timer.daemon is True
+        assert context.timer.function.__self__ is context
+    finally:
+        context.close(); context.timer.join(timeout=1)
+    assert not context.timer.is_alive()
+
+
+def test_quote_context_constructor_exception_is_preserved():
+    from types import SimpleNamespace
+    from scripts.common.daily_support import open_quote_context
+    def fail(**kwargs): raise ConnectionError("SYNTHETIC_QUOTE_CONSTRUCTOR_FAILURE")
+    with pytest.raises(ConnectionError, match="SYNTHETIC_QUOTE_CONSTRUCTOR_FAILURE"):
+        open_quote_context(SimpleNamespace(OpenQuoteContext=fail), host="localhost", port=11111)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf")])
+def test_quote_context_invalid_deadline_never_calls_sdk(timeout):
+    from types import SimpleNamespace
+    from scripts.common.daily_support import open_quote_context
+    calls = []
+    with pytest.raises(ValueError, match="TIMEOUT_INVALID"):
+        open_quote_context(SimpleNamespace(OpenQuoteContext=lambda **kwargs: calls.append(kwargs)),
+                           host="localhost", port=11111, creation_timeout=timeout)
+    assert calls == []
+
+
+def test_quote_context_timeout_closes_late_result_once_on_owned_daemon():
+    import threading
+    from types import SimpleNamespace
+    from scripts.common.daily_support import open_quote_context
+    release, closed = threading.Event(), threading.Event()
+    calls = []
+    class Context:
+        def close(self): calls.append(("close", threading.current_thread().daemon)); closed.set()
+    def delayed(**kwargs):
+        assert threading.current_thread().daemon is True
+        release.wait()
+        return Context()
+    try:
+        with pytest.raises(TimeoutError, match="QUOTE_CONTEXT_CREATION_TIMEOUT"):
+            open_quote_context(SimpleNamespace(OpenQuoteContext=delayed), host="localhost", port=11111, creation_timeout=.01)
+    finally:
+        release.set()
+    assert closed.wait(1) and calls == [("close", True)]
+
+
+def test_daemon_quote_timer_cannot_hold_subprocess_shutdown(tmp_path):
+    import subprocess
+    import sys
+    import textwrap
+    code = textwrap.dedent("""
+        import threading
+        from types import SimpleNamespace
+        from scripts.common.daily_support import open_quote_context
+        class Context:
+            def __init__(self, **kwargs):
+                self.timer = threading.Timer(0, self._reconnect)
+                self.timer.start()
+            def _reconnect(self): threading.Event().wait()
+            def close(self): pass
+        context = open_quote_context(SimpleNamespace(OpenQuoteContext=Context), host='localhost', port=11111)
+        assert context.timer.daemon
+        context.close()
+        print('NORMAL_EXIT_WITH_OWN_DAEMON_TIMER', flush=True)
+    """)
+    result = subprocess.run([sys.executable, "-B", "-c", code], cwd=Path(__file__).parents[1],
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0 and "NORMAL_EXIT_WITH_OWN_DAEMON_TIMER" in result.stdout
+
+
+
+def _production_gap_projection(raw, needed):
+    """Run only the production owner's invariant metadata and gap expression."""
+    import ast
+    tree = ast.parse(Path(prices.__file__).read_text(encoding="utf-8"))
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "load_price_inputs")
+    names = {"raw_first", "raw_last", "raw_dates", "gaps"}
+    selected = []
+    for node in ast.walk(function):
+        if isinstance(node, ast.Assign):
+            targets = {name.id for target in node.targets for name in ast.walk(target) if isinstance(name, ast.Name)}
+            if targets and targets <= names:
+                selected.append(node)
+    selected.sort(key=lambda node: node.lineno)
+    assert len(selected) == 3
+    namespace = {"raw": raw, "needed": needed, "pd": pd}
+    exec(compile(ast.Module(body=selected, type_ignores=[]), "production-gap-projection", "exec"), namespace)
+    return namespace["gaps"]
+
+
+def _previous_gap_expression(raw, needed):
+    return [day for day in needed if raw.trade_date.min() <= pd.Timestamp(day) <= raw.trade_date.max()
+            and pd.Timestamp(day) not in set(raw.trade_date)]
+
+
+@pytest.mark.parametrize("case", ["complete", "multiple_gaps", "duplicates_unsorted", "boundaries", "empty_needed", "nat"])
+def test_cached_gap_metadata_keeps_exact_previous_list(case):
+    from types import SimpleNamespace
+    dates = pd.bdate_range("2024-01-02", periods=150)
+    needed = dates[-121:].strftime("%Y-%m-%d").tolist()
+    observed = pd.Series(dates)
+    if case == "multiple_gaps":
+        observed = observed.drop([35, 57, 91]).reset_index(drop=True)
+        needed.insert(0, dates[57].date().isoformat())
+    elif case == "duplicates_unsorted": observed = pd.Series([*dates[::-1], dates[40], dates[80]])
+    elif case == "boundaries":
+        observed = pd.Series(dates.delete([1, 148]))
+        needed = [(dates[0]-pd.Timedelta(days=1)).date().isoformat(), dates[0].date().isoformat(),
+                  dates[1].date().isoformat(), dates[-2].date().isoformat(), dates[-1].date().isoformat(),
+                  (dates[-1]+pd.Timedelta(days=1)).date().isoformat()]
+    elif case == "empty_needed": needed = []
+    elif case == "nat": observed = pd.concat([observed, pd.Series([pd.NaT])], ignore_index=True)
+    raw = SimpleNamespace(trade_date=observed)
+    assert _production_gap_projection(raw, needed) == _previous_gap_expression(raw, needed)
+
+
+def test_cached_gap_metadata_constructs_date_set_once_for_121_needed_days():
+    from types import SimpleNamespace
+    class Dates:
+        def __init__(self, values): self.values, self.calls = values, {"min": 0, "max": 0, "set_iterations": 0}
+        def min(self): self.calls["min"] += 1; return self.values.min()
+        def max(self): self.calls["max"] += 1; return self.values.max()
+        def __iter__(self): self.calls["set_iterations"] += 1; return iter(self.values)
+    dates = pd.Series(pd.bdate_range("2024-01-02", periods=150))
+    needed = dates.iloc[-121:].dt.strftime("%Y-%m-%d").tolist()
+    previous, current = Dates(dates), Dates(dates)
+    assert _production_gap_projection(SimpleNamespace(trade_date=current), needed) == _previous_gap_expression(SimpleNamespace(trade_date=previous), needed) == []
+    assert previous.calls == {"min": 121, "max": 121, "set_iterations": 121}
+    assert current.calls == {"min": 1, "max": 1, "set_iterations": 1}
+
+
+
+def _native_scope_fixture(tmp_path, monkeypatch, original_days, current_days,
+                          *, ticker="TEST", source_ticker=None, code=None, security_id="123", date_kind="string"):
+    from types import SimpleNamespace
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    source_ticker = source_ticker or ticker
+    code = code or "US." + ticker
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    coverage = {"raw": {"code_map": {}, "file_sha256": {}}}
+    if original_days is not None:
+        anchor = tmp_path / "anchor.parquet"
+        pd.DataFrame({"code": code, "time_key": original_days, "close": 999.}).to_parquet(anchor, index=False)
+        coverage["raw"]["code_map"][code] = {"ticker": ticker, "paths": [str(anchor)], "first_date": min(original_days)}
+        coverage["raw"]["file_sha256"][str(anchor)] = prices.digest(anchor)
+    coverage_path = tmp_path / "scope_coverage.json"
+    coverage_path.write_text(json.dumps(coverage), encoding="utf-8")
+    monkeypatch.setattr(prices, "COVERAGE_PATH", coverage_path)
+    monkeypatch.setattr(prices, "COVERAGE_SHA", prices.digest(coverage_path))
+    catalog = []
+    if current_days is not None:
+        path = tmp_path / "native.parquet"
+        values = current_days
+        if date_kind == "timestamp": values = pd.to_datetime(values)
+        elif date_kind == "date32": values = [pd.Timestamp(day).date() for day in values]
+        table = pa.table({"ticker": [source_ticker]*len(values), "date": values,
+            "provider_code": [code]*len(values), "source": ["MOOMOO_OPEND"]*len(values),
+            "adjustment": ["raw"]*len(values), "open": [999.]*len(values)})
+        pq.write_table(table, path)
+        catalog.append({"dataset": "prices_daily", "ticker": source_ticker, "adjustment": "raw",
+            "source": "MOOMOO_OPEND", "format": "parquet", "path": str(path),
+            "source_sha256": prices.digest(path), "min_date": min(current_days), "max_date": max(current_days)})
+    kwargs = dict(paths=SimpleNamespace(data_root=tmp_path), members=[{"ticker": ticker,
+        "security_id": security_id, "moomoo_symbol": code}], catalog_prices=catalog, target=days[-1], sessions=days)
+    return kwargs, coverage, days
+
+
+def test_native_scope_finds_internal_gap_between_bound_original_and_catalog(tmp_path, monkeypatch):
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    kwargs, _, _ = _native_scope_fixture(tmp_path, monkeypatch, days[:80], days[82:])
+    assert prices.native_missing_interval_starts(**kwargs) == {"TEST": days[80]}
+
+
+def test_native_scope_complete_union_has_no_extra_acquisition(tmp_path, monkeypatch):
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    kwargs, _, _ = _native_scope_fixture(tmp_path, monkeypatch, days[:80], days[80:])
+    assert prices.native_missing_interval_starts(**kwargs) == {}
+
+
+def test_native_scope_leaves_final_tail_to_original_max_plus_one_owner(tmp_path, monkeypatch):
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    kwargs, _, _ = _native_scope_fixture(tmp_path, monkeypatch, days[:80], days[80:-1])
+    assert prices.native_missing_interval_starts(**kwargs) == {}
+
+
+@pytest.mark.parametrize("date_kind", ["string", "timestamp", "date32"])
+def test_native_scope_reads_only_dates_with_bounded_arrow_and_exact_identity(tmp_path, monkeypatch, date_kind):
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    kwargs, _, _ = _native_scope_fixture(tmp_path, monkeypatch, [*days[:80], "2027-01-04"],
+        [*days[82:], "2027-01-04"], date_kind=date_kind)
+    kwargs["sessions"].append("2027-01-04")
+    reads, original_read = [], prices.pq.read_table
+    def projected(path, *, columns, filters):
+        assert columns in (["time_key"], ["date"])
+        date_field = columns[0]
+        lower = next(value for field, op, value in filters if field == date_field and op == ">=")
+        upper = next(value for field, op, value in filters if field == date_field and op == "<")
+        assert str(lower)[:10] == days[-121] and str(upper)[:10] == "2026-10-06"
+        assert any(field in ("code", "provider_code") and op == "=" and value == "US.TEST" for field, op, value in filters)
+        if columns == ["date"]:
+            assert {("ticker", "=", "TEST"), ("source", "=", "MOOMOO_OPEND"), ("adjustment", "=", "raw")} <= set(filters)
+        table = original_read(path, columns=columns, filters=filters)
+        returned = pd.to_datetime(table.column(0).to_pandas()).dt.strftime("%Y-%m-%d")
+        assert returned.between(days[-121], kwargs["target"]).all()
+        reads.append((columns, filters, len(table)))
+        return table
+    monkeypatch.setattr(prices.pq, "read_table", projected)
+    assert prices.native_missing_interval_starts(**kwargs) == {"TEST": days[80]}
+    assert len(reads) == 2 and all(count <= 121 for _, _, count in reads)
+
+
+def test_native_scope_short_new_history_does_not_request_before_real_first_day(tmp_path, monkeypatch):
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    kwargs, _, _ = _native_scope_fixture(tmp_path, monkeypatch, None, days[-20:])
+    assert prices.native_missing_interval_starts(**kwargs) == {}
+    path = Path(kwargs["catalog_prices"][0]["path"])
+    frame = pd.read_parquet(path)
+    frame = frame.loc[frame.date.ne(days[-12])]
+    frame.to_parquet(path, index=False)
+    kwargs["catalog_prices"][0]["source_sha256"] = prices.digest(path)
+    assert prices.native_missing_interval_starts(**kwargs) == {"TEST": days[-12]}
+
+
+def test_native_scope_exact_reviewed_alias_returns_native_source_ticker(tmp_path, monkeypatch):
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    kwargs, _, _ = _native_scope_fixture(tmp_path, monkeypatch, None, [*days[:80], *days[81:]],
+        ticker="BGNE", source_ticker="ONC", code="US.ONC", security_id="07725L102")
+    assert prices.native_missing_interval_starts(**kwargs) == {"ONC": days[80]}
+    kwargs["members"][0]["security_id"] = "WRONG"
+    with pytest.raises(ValueError, match="NATIVE_EXPLICIT_TRANSPORT_ALIAS_INVALID"):
+        prices.native_missing_interval_starts(**kwargs)
+
+
+def test_native_scope_does_not_union_other_provider_code_or_unbound_anchor(tmp_path, monkeypatch):
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    kwargs, coverage, _ = _native_scope_fixture(tmp_path, monkeypatch, days[:80], days[82:])
+    path = Path(kwargs["catalog_prices"][0]["path"])
+    frame = pd.read_parquet(path); frame["provider_code"] = "US.OTHER"
+    frame.to_parquet(path, index=False)
+    kwargs["catalog_prices"][0]["source_sha256"] = prices.digest(path)
+    assert prices.native_missing_interval_starts(**kwargs) == {}
+    coverage["raw"]["code_map"]["US.TEST"]["ticker"] = "OTHER"
+    prices.COVERAGE_PATH.write_text(json.dumps(coverage), encoding="utf-8")
+    monkeypatch.setattr(prices, "COVERAGE_SHA", prices.digest(prices.COVERAGE_PATH))
+    assert prices.native_missing_interval_starts(**kwargs) == {}
+
+
+def test_native_scope_rejects_changed_hash_and_skips_non_native_metadata(tmp_path, monkeypatch):
+    days = pd.bdate_range(end="2026-10-05", periods=123).strftime("%Y-%m-%d").tolist()
+    kwargs, _, _ = _native_scope_fixture(tmp_path, monkeypatch, None, days)
+    kwargs["catalog_prices"][0]["source_sha256"] = "0"*64
+    with pytest.raises(ValueError, match="PRICE_SOURCE_HASH_MISMATCH"):
+        prices.native_missing_interval_starts(**kwargs)
+    kwargs["catalog_prices"][0]["source"] = "YAHOO_CHART"
+    assert prices.native_missing_interval_starts(**kwargs) == {}
+
+
+def test_native_scope_empty_members_performs_no_source_reads(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs): raise AssertionError("no source read for empty scope")
+    monkeypatch.setattr(prices, "verify", forbidden)
+    assert prices.native_missing_interval_starts(tmp_path, [], [], "2026-10-05", []) == {}

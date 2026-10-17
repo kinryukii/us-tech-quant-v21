@@ -416,3 +416,265 @@ def test_non_quarter_end_cannot_activate_complete_manager_set():
                             for mid in registry.manager_id.iloc[:23]])
     with pytest.raises(ValueError, match="REPORT_DATE_NOT_QUARTER_END"):
         u._complete_reporting_periods(initial, registry)
+
+
+@pytest.fixture
+def transport_evidence(tmp_path, monkeypatch):
+    from scripts.research.a2.inference.current_native_prices import REVIEWED_TRANSPORT_ALIASES
+    from scripts.storage import refresh_market_data
+    aliases = {ticker: REVIEWED_TRANSPORT_ALIASES[ticker] for ticker in ("BGNE", "BLDE", "BSIG")}
+    paths = SimpleNamespace(daily_root=tmp_path / "daily", cache_root=tmp_path / "cache",
+        results_root=tmp_path / "results", repo_root=tmp_path / "repo")
+    old = paths.daily_root / "old"; old.mkdir(parents=True)
+    refs = {}
+    for name in ("registry", "identity_source"):
+        file = tmp_path / name; file.write_text(name)
+        refs[name] = {"path": str(file), "sha256": u._hash(file)}
+    observed = pd.Timestamp.now(tz="UTC") + pd.Timedelta(seconds=10)
+    context = {**refs, "quarter": "2026Q2", "target_date": "2026-10-02",
+        "latest_disclosures_checked_at": "2026-10-02T20:01:00+00:00", "identity_checked_at": observed.isoformat()}
+    members = [{"security_id": a["security_id"], "ticker": ticker, "moomoo_symbol": "US." + ticker,
+        "moomoo_transport_code": "US." + ticker, "mapping_source": "TEST_EXACT_CUSIP"} for ticker,a in aliases.items()]
+    pd.DataFrame(members).to_parquet(old / "mapped_members.parquet",index=False)
+    report = {**context, "status":"READY", "current":True, "universe_members_sha256":u._hash(old / "mapped_members.parquet")}
+    u._save(old / "universe_report.json",report)
+    proof = {"schema":"USTQ_EXISTING_CUSIP_RENAMED_TRANSPORT_PRIMARY_PROOF_V1", "model_fit_calls":0,
+        "universe_mutations":0, "observation_as_of":observed.date().isoformat(),
+        "old_universe":{"path":str(old / "universe_report.json"),"sha256":u._hash(old / "universe_report.json")},
+        "old_member_rows":{r["ticker"]:r for r in members},
+        "aliases":[{"ticker":ticker,"provider_symbol":a["source_ticker"],"security_id":a["security_id"],
+            "symbol_effective_from":a["symbol_effective_from"],"kind":"SAME_CUSIP_RENAMED_TRANSPORT",
+            "urls":[a["evidence_url"],a["identity_evidence_url"]]} for ticker,a in aliases.items()]}
+    proof_file=tmp_path / "primary_transport_proof.json";u._save(proof_file,proof)
+    reference={"path":str(proof_file),"sha256":u._hash(proof_file)}
+    pool=pd.DataFrame([{"cusip":r["security_id"]} for r in members])
+    base=pd.DataFrame([identity(r["security_id"],r["ticker"]) for r in members])
+    helper_file=paths.results_root / "13f_pit_v1/scripts/v17c/two_gap_closeout_v17c.py"
+    helper_file.parent.mkdir(parents=True);helper_file.write_text("synthetic helper")
+    calls=[]; rejected=set()
+    def validate(codes,*args):
+        calls.append(codes)
+        return pd.DataFrame([{"moomoo_transport_code":code,"request_status":"PASS",
+            "direct_static_hit":code not in rejected,"request_error":""} for code in codes]),1
+    helper=SimpleNamespace(validate_transport_codes=validate,
+        query_openfigi_exact=lambda *a:pytest.fail("Three transport repairs need no OpenFIGI"),valid_ticker=lambda v:True)
+    monkeypatch.setattr(u,"import_source",lambda *a:helper)
+    profile=SimpleNamespace(host="127.0.0.1",port=18441)
+    monkeypatch.setattr(refresh_market_data,"load_module",lambda *a:SimpleNamespace(load_profile=lambda *a:profile,tcp_probe=lambda *a:(True,"")))
+    monkeypatch.setattr(u.requests,"get",lambda *a,**k:pytest.fail("No primary HTTP for reviewed immutable proof"))
+    root=paths.daily_root / "new";root.mkdir()
+    return SimpleNamespace(paths=paths,old=old,root=root,context=context,pool=pool,base=base,
+        proof=proof,reference=reference,aliases=aliases,calls=calls,rejected=rejected)
+
+
+def test_reviewed_transport_repairs_resolved_old_codes_without_changing_logical_members(transport_evidence):
+    e=transport_evidence
+    before=e.base.copy(deep=True)
+    completed,summary=u.complete_identity_mapping(e.paths,e.pool,e.base,e.root,context=e.context,transport_alias_evidence=e.reference)
+    members,gaps=u._map_universe(e.pool,completed,as_of=e.context["target_date"])
+    assert not gaps and len(members)==3
+    assert {r["ticker"]:r["moomoo_symbol"] for r in members}=={t:a["provider_code"] for t,a in e.aliases.items()}
+    assert set(completed.cusip)==set(e.base.cusip) and e.base.equals(before)
+    assert summary["static_requests"]==1 and summary["openfigi_requests"]==0
+    assert summary["transport_repairs_requested"]==3 and summary["unresolved_transport_repairs"]==[]
+    assert len(e.calls)==1 and len(e.calls[0])==3
+
+
+@pytest.mark.parametrize("change",["cusip","code","url","effective","base","old_member","future_observation","future_same_day_datetime"])
+def test_reviewed_transport_proof_drift_is_rejected(transport_evidence,change):
+    e=transport_evidence
+    ticker="BGNE";a=e.aliases[ticker];cid=a["security_id"];code=a["provider_code"]
+    proof=json.loads(Path(e.reference["path"]).read_text())
+    if change=="cusip":cid="WRONG_CID"
+    elif change=="code":code="US.WRONG"
+    elif change=="url":proof["aliases"][0]["urls"][0]="https://example.invalid"
+    elif change=="effective":proof["aliases"][0]["symbol_effective_from"]="2025-02-02"
+    elif change=="base":e.context["quarter"]="2026Q3"
+    elif change=="old_member":proof["old_member_rows"][ticker]["security_id"]="WRONG_CID"
+    elif change=="future_observation":proof["observation_as_of"]=(pd.Timestamp(e.context["identity_checked_at"])+pd.Timedelta(days=1)).date().isoformat()
+    else:proof["observation_as_of"]=(pd.Timestamp(e.context["identity_checked_at"])+pd.Timedelta(minutes=1)).isoformat()
+    u._save(Path(e.reference["path"]),proof);e.reference["sha256"]=u._hash(Path(e.reference["path"]))
+    with pytest.raises(ValueError):u._reviewed_transport_alias(cid,ticker,code,e.reference,e.context)
+    assert not e.calls
+
+
+def test_reviewed_transport_static_failure_keeps_original_mapping(transport_evidence):
+    e=transport_evidence;e.rejected.add("US.ONC")
+    completed,summary=u.complete_identity_mapping(e.paths,e.pool,e.base,e.root,context=e.context,transport_alias_evidence=e.reference)
+    bgne=completed.loc[completed.ticker.eq("BGNE")].iloc[0]
+    assert bgne.moomoo_transport_code=="US.BGNE"
+    assert summary["unresolved_transport_repairs"]==["07725L102"]
+
+
+def _finish_transport_report(e,completed,summary):
+    members,_=u._map_universe(e.pool,completed,as_of=e.context["target_date"])
+    pd.DataFrame(members).to_parquet(e.root/"mapped_members.parquet",index=False)
+    report={**e.context,"status":"READY","current":True,"members":members,
+        "universe_members_sha256":u._hash(e.root/"mapped_members.parquet"),"identity_completion":summary,
+        "identity_artifacts":{key:{"path":str(e.root/name),"sha256":u._hash(e.root/name)}
+            for key,name in (("openfigi","openfigi_exact_cusip.json"),("overlay","identity_overlay.parquet"),("validation","identity_transport_validation.parquet"))}}
+    u._save(e.root/"universe_report.json",report)
+
+
+def test_reviewed_transport_next_target_requires_fresh_static_but_no_new_primary_or_figi(transport_evidence):
+    e=transport_evidence
+    completed,summary=u.complete_identity_mapping(e.paths,e.pool,e.base,e.root,context=e.context,transport_alias_evidence=e.reference)
+    _finish_transport_report(e,completed,summary)
+    same=u._prior_identity_evidence(e.paths,e.pool,e.paths.daily_root/"same",e.context,prior_reports=[e.root/"universe_report.json"])
+    assert len(same["overlay"])==3 and len(same["transport_aliases"])==3
+    later={**e.context,"target_date":"2026-10-05","identity_checked_at":(pd.Timestamp(e.context["identity_checked_at"])+pd.Timedelta(days=1)).isoformat()}
+    newroot=e.paths.daily_root/"later";newroot.mkdir()
+    prior=u._prior_identity_evidence(e.paths,e.pool,newroot,later,prior_reports=[e.root/"universe_report.json"])
+    assert prior["overlay"]=={} and prior["validation"]=={} and len(prior["transport_aliases"])==3
+    u.complete_identity_mapping(e.paths,e.pool,e.base,newroot,context=later,reusable_evidence=prior)
+    assert len(e.calls)==2
+
+
+def test_reviewed_transport_prior_current_static_rejection_is_not_overridden(transport_evidence):
+    e=transport_evidence
+    completed,summary=u.complete_identity_mapping(e.paths,e.pool,e.base,e.root,context=e.context,transport_alias_evidence=e.reference)
+    _finish_transport_report(e,completed,summary)
+    current=e.paths.daily_root/"reject";current.mkdir()
+    pd.DataFrame([{"moomoo_transport_code":"US.ONC","request_status":"PASS","direct_static_hit":False}]).to_parquet(current/"identity_transport_validation.parquet",index=False)
+    prior=u._prior_identity_evidence(e.paths,e.pool,current,e.context,prior_reports=[e.root/"universe_report.json"])
+    assert "07725L102" not in prior["overlay"] and "07725L102" not in prior["transport_aliases"]
+
+
+@pytest.mark.parametrize("artifact",["overlay","validation"])
+def test_reviewed_transport_prior_requires_explicit_immutable_artifact_refs(transport_evidence,artifact):
+    e=transport_evidence
+    completed,summary=u.complete_identity_mapping(e.paths,e.pool,e.base,e.root,context=e.context,transport_alias_evidence=e.reference)
+    _finish_transport_report(e,completed,summary)
+    file=e.root/"universe_report.json";report=json.loads(file.read_text());del report["identity_artifacts"][artifact];u._save(file,report)
+    prior=u._prior_identity_evidence(e.paths,e.pool,e.paths.daily_root/"later",e.context,prior_reports=[file])
+    assert not prior["transport_aliases"] and any("ARTIFACTS_UNBOUND" in r["reason"] for r in prior["issues"])
+
+
+@pytest.mark.parametrize("artifact",["overlay","validation"])
+def test_reviewed_transport_prior_artifact_changed_after_report_is_rejected(transport_evidence,artifact):
+    e=transport_evidence
+    completed,summary=u.complete_identity_mapping(e.paths,e.pool,e.base,e.root,context=e.context,transport_alias_evidence=e.reference)
+    _finish_transport_report(e,completed,summary)
+    file=e.root/("identity_overlay.parquet" if artifact=="overlay" else "identity_transport_validation.parquet")
+    file.write_bytes(b"altered")
+    prior=u._prior_identity_evidence(e.paths,e.pool,e.paths.daily_root/"later",e.context,prior_reports=[e.root/"universe_report.json"])
+    assert not prior["transport_aliases"] and any("HASH_MISMATCH" in r["reason"] for r in prior["issues"])
+
+
+def _clock_fixture(root, *, header_time="20260814160504"):
+    accepted = pd.Timestamp(pd.to_datetime(header_time, format="%Y%m%d%H%M%S")).tz_localize("America/New_York").tz_convert("UTC")
+    new = accepted.tz_localize(None).tz_localize("America/New_York").tz_convert("UTC")
+    accession = "0000000001-26-000001"
+    filed = accepted.tz_convert("America/New_York").date().isoformat()
+    item = {"manager_id": "manager", "manager_name": "Manager", "cik": 1,
+            "accession": accession, "form": "13F-HR", "report_date": "2026-06-30",
+            "filed_date": filed, "accepted_at": new.isoformat(),
+            "source_url": f"https://www.sec.gov/Archives/edgar/data/1/{accession.replace('-', '')}/{accession}.txt"}
+    payload = (f"<SEC-DOCUMENT>\n<SEC-HEADER>\nACCESSION NUMBER: {accession}\n"
+               f"<ACCEPTANCE-DATETIME>{header_time}\nCONFORMED SUBMISSION TYPE: 13F-HR\n"
+               f"CONFORMED PERIOD OF REPORT: 20260630\nFILED AS OF DATE: {filed.replace('-', '')}\n"
+               "CENTRAL INDEX KEY: 1\n</SEC-HEADER>\n<XML><edgarSubmission>"
+               "<submissionType>13F-HR</submissionType><periodOfReport>06-30-2026</periodOfReport>"
+               "<tableEntryTotal>0</tableEntryTotal><tableValueTotal>0</tableValueTotal>"
+               "<isAmendment>false</isAmendment></edgarSubmission></XML>\n</SEC-DOCUMENT>").encode()
+    raw = root / "original.txt"; raw.write_bytes(payload)
+    observed = "2026-09-14T09:37:55+00:00"
+    old = {**item, "accepted_at": accepted.isoformat(), "raw_path": str(raw),
+           "source_sha256": u._hash(raw), "observed_at_utc": observed}
+    source = {"url": item["source_url"], "http_status": 200, "sha256": u._hash(raw),
+              "raw_path": str(raw), "observed_at_utc": observed}
+    document = {"verified_filings": [old], "sources": [source]}
+    prior = root / "acquisition.json"; prior.write_text(json.dumps(document))
+    recent = {"accessionNumber": [accession], "form": [item["form"]],
+              "reportDate": [item["report_date"]], "filingDate": [filed],
+              "acceptanceDateTime": [new.isoformat()]}
+    metadata = root / "current.json"; metadata.write_text(json.dumps({"cik": 1, "filings": {"recent": recent}}))
+    current = {"path": str(metadata), "sha256": u._hash(metadata), "url": "https://data.sec.gov/submissions/CIK0000000001.json",
+               "status": 200, "observed_at": u.datetime.now(u.timezone.utc).isoformat()}
+    return payload, item, {"path": str(prior), "sha256": u._hash(prior)}, current, document
+
+
+@pytest.mark.parametrize("header_time", ["20260814160504", "20260114160504"])
+def test_exact_clock_vintage_reconciliation_keeps_raw_parser_strict(tmp_path, header_time):
+    payload, item, prior, current, _ = _clock_fixture(tmp_path, header_time=header_time)
+    parser = SimpleNamespace(localname=lambda tag: tag.rsplit("}", 1)[-1].lower(),
+                             text_at=lambda root, name: u._xml_field(root, name, False))
+    with pytest.raises(ValueError, match="acceptance header disagrees"):
+        u._inspect_filing(payload, item, parser)
+    corrected, proof = u._reconcile_acceptance(payload, item, prior, current, pd.Timestamp("2026-10-05T20:00:00Z"))
+    rows, _ = u._inspect_filing(payload, corrected, parser)
+    assert rows == [] and proof["raw_bytes_unchanged"] is True
+    assert corrected["accepted_at"] == proof["accepted_at_preserved"]
+    assert proof["ordinary_discovery_asof_changed"] is False
+    assert proof["prior_acquisition"] == prior and proof["current_submission_metadata"] == current
+    assert (pd.Timestamp(item["accepted_at"]) - pd.Timestamp(corrected["accepted_at"])).total_seconds() == (14400 if header_time.startswith("202608") else 18000)
+
+
+@pytest.mark.parametrize("mutation", ["source_url", "accession", "cik", "manager_id", "manager_name", "form", "report_date", "filed_date",
+    "raw_sha", "raw_bytes", "prior_sha", "prior_time", "prior_observed", "prior_request", "missing_prior", "duplicate_prior",
+    "time_tolerance", "current_sha", "current_bytes", "current_url", "current_cik", "current_form", "current_time", "missing_current",
+    "naive_time", "future_observation", "mtime_is_not_evidence"])
+def test_clock_vintage_reconciliation_rejects_unbound_or_changed_evidence(tmp_path, mutation):
+    payload, item, prior, current, document = _clock_fixture(tmp_path)
+    old = document["verified_filings"][0]
+    if mutation in {"source_url", "accession", "manager_id", "manager_name", "form", "report_date", "filed_date"}:
+        old[mutation] = "CHANGED"
+    elif mutation == "cik": old["cik"] = 2
+    elif mutation == "raw_sha": old["source_sha256"] = "0" * 64
+    elif mutation == "raw_bytes": Path(old["raw_path"]).write_bytes(payload + b"changed")
+    elif mutation == "prior_sha": prior["sha256"] = "0" * 64
+    elif mutation == "prior_time": old["accepted_at"] = "2026-08-14T20:05:05Z"
+    elif mutation == "prior_observed":
+        old["observed_at_utc"] = "2026-10-05T20:00:01Z"; document["sources"][0]["observed_at_utc"] = old["observed_at_utc"]
+    elif mutation == "prior_request": document["sources"][0]["sha256"] = "0" * 64
+    elif mutation == "missing_prior": document["verified_filings"] = []
+    elif mutation == "duplicate_prior": document["verified_filings"].append(dict(old))
+    elif mutation == "time_tolerance": item["accepted_at"] = "2026-08-15T00:05:05Z"
+    elif mutation == "current_sha": current["sha256"] = "0" * 64
+    elif mutation == "current_bytes": Path(current["path"]).write_text("{}")
+    elif mutation == "current_url": current["url"] = "https://example.com/current.json"
+    elif mutation in {"current_cik", "current_form", "current_time"}:
+        metadata = json.loads(Path(current["path"]).read_text())
+        if mutation == "current_cik": metadata["cik"] = 2
+        elif mutation == "current_form": metadata["filings"]["recent"]["form"][0] = "13F-HR/A"
+        else: metadata["filings"]["recent"]["acceptanceDateTime"][0] = "2026-08-15T00:05:05Z"
+        Path(current["path"]).write_text(json.dumps(metadata)); current["sha256"] = u._hash(Path(current["path"]))
+    elif mutation == "missing_current": current = None
+    elif mutation == "naive_time": item["accepted_at"] = "2026-08-15T00:05:04"
+    elif mutation == "future_observation": current["observed_at"] = "2030-01-01T00:00:00Z"
+    elif mutation == "mtime_is_not_evidence":
+        del old["observed_at_utc"]
+    Path(prior["path"]).write_text(json.dumps(document))
+    if mutation != "prior_sha": prior["sha256"] = u._hash(Path(prior["path"]))
+    with pytest.raises((ValueError, KeyError)):
+        u._reconcile_acceptance(payload, item, prior, current, pd.Timestamp("2026-10-05T20:00:00Z"))
+
+
+def test_clock_vintage_correct_time_requires_no_repair(tmp_path):
+    payload, item, prior, current, document = _clock_fixture(tmp_path)
+    item["accepted_at"] = document["verified_filings"][0]["accepted_at"]
+    assert u._reconcile_acceptance(payload, item, prior, None, pd.Timestamp("2026-10-05T20:00:00Z")) == (item, None)
+
+
+def test_submissions_bind_current_immutable_raw_metadata(tmp_path):
+    payload, item, prior, current, _ = _clock_fixture(tmp_path)
+    reader = SimpleNamespace(receipts=[{"url": current["url"], "raw_path": current["path"], **{key: current[key] for key in ("sha256", "observed_at", "status")}}])
+    manager = {"manager_id": "manager", "manager_name": "Manager", "manager_weight": 1, "required_for_gate": True, "cik": 1}
+    records = u._submission_records(manager, json.loads(Path(current["path"]).read_text()), reader, "2026-06-30", pd.Timestamp("2026-10-06T10:00:00Z"))
+    assert records[0]["submission_metadata_reference"] == current
+
+
+def test_clock_vintage_rejects_acceptance_beyond_signal_cutoff(tmp_path):
+    payload, item, prior, current, _ = _clock_fixture(tmp_path)
+    with pytest.raises(ValueError, match="AFTER_CUTOFF"):
+        u._reconcile_acceptance(payload, item, prior, current, pd.Timestamp("2026-08-14T20:05:04Z"))
+
+
+def test_clock_vintage_rejects_history_response_with_wrong_cik_url(tmp_path):
+    payload, item, prior, current, _ = _clock_fixture(tmp_path)
+    metadata = json.loads(Path(current["path"]).read_text())
+    Path(current["path"]).write_text(json.dumps(metadata["filings"]["recent"]))
+    current["sha256"] = u._hash(Path(current["path"]))
+    current["url"] = "https://data.sec.gov/submissions/CIK0000000002-submissions-001.json"
+    with pytest.raises(ValueError, match="URL_INVALID"):
+        u._reconcile_acceptance(payload, item, prior, current, pd.Timestamp("2026-10-05T20:00:00Z"))

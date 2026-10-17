@@ -93,17 +93,22 @@ def _stamp(ref):
     return str(path), digest, stat.st_size, stat.st_mtime_ns
 
 
-def _table(ref, required, *, parent, optional=()):
+def _arrow_table(ref, required, *, parent, optional=()):
+    """Keep the verified column projection in Arrow until its consumer converts it."""
     path, expected = _ref(ref, parent=parent)
     if _hash(path) != expected:
         raise ValueError("UPDATED_OUTPUT_HASH_MISMATCH:" + path.name)
     names = pq.read_schema(path).names
     if not set(required).issubset(names):
         raise ValueError("UPDATED_OUTPUT_COLUMNS_MISSING:" + path.name)
-    rows = pq.read_table(path, columns=[*required, *(key for key in optional if key in names)]).to_pylist()
+    table = pq.read_table(path, columns=[*required, *(key for key in optional if key in names)])
     if _hash(path) != expected:
         raise ValueError("UPDATED_OUTPUT_CHANGED_DURING_READ:" + path.name)
-    return rows
+    return table
+
+
+def _table(ref, required, *, parent, optional=()):
+    return _arrow_table(ref, required, parent=parent, optional=optional).to_pylist()
 
 
 def _number(value, *, nonnegative=False):
@@ -208,7 +213,55 @@ def _learning(manifest, rankings):
         target=target, vintages=tuple(vintages), source_fingerprint=fingerprint)
 
 
-@lru_cache(maxsize=2)
+
+def _performance_parent(manifest, contract, parent):
+    """Borrow only exact outputs from one bound immutable original run."""
+    origin = manifest.get("performance_origin")
+    if origin is None:
+        return parent
+    if (contract.get("performance_origin") != origin
+            or set(origin) != {"schema", "mode", "manifest"}
+            or origin.get("schema") != "A2_IMMUTABLE_PERFORMANCE_ORIGIN_V1"
+            or origin.get("mode") != "REUSE_VERIFIED_EXECUTED_LEDGER_SAME_END"):
+        raise ValueError("UPDATED_PERFORMANCE_ORIGIN_BINDING_MISMATCH")
+    path, expected = _ref(origin["manifest"])
+    if path.name != "manifest.json" or path.parent.parent != parent.parent or path.parent == parent:
+        raise ValueError("UPDATED_PERFORMANCE_ORIGIN_OUTSIDE_OWNER")
+    if _hash(path) != expected:
+        raise ValueError("UPDATED_PERFORMANCE_ORIGIN_HASH_MISMATCH")
+    original = _json(path)
+    if (original.get("source_id") != SOURCE_ID or original.get("status") not in {"READY", "PARTIAL"}
+            or Path(original.get("report_path", "")).resolve() != path
+            or original.get("performance_origin") is not None
+            or original.get("model_fit_count") != 0 or original.get("parameter_search_count") != 0
+            or original.get("performance_end_date") != manifest.get("performance_end_date")
+            or manifest.get("ranking_end_date") != manifest.get("performance_end_date")
+            or original.get("evaluation") != manifest.get("evaluation")
+            or original.get("ranking_manifest") != manifest.get("ranking_manifest")
+            or original.get("calendar_lineage") != manifest.get("calendar_lineage")
+            or original.get("execution_open") != manifest.get("execution_open")
+            or original.get("price_inputs") != manifest.get("price_inputs")):
+        raise ValueError("UPDATED_PERFORMANCE_ORIGIN_IDENTITY_CHANGED")
+    names = ("portfolio_daily", "positions", "trades", "price_paths", "corporate_action_events")
+    for name in names:
+        ref = original["outputs"][name]
+        if manifest["outputs"].get(name) != ref:
+            raise ValueError("UPDATED_PERFORMANCE_ORIGIN_OUTPUT_CHANGED:" + name)
+        output, digest = _ref(ref, parent=path.parent)
+        if _hash(output) != digest:
+            raise ValueError("UPDATED_PERFORMANCE_ORIGIN_OUTPUT_HASH_CHANGED:" + name)
+    old_contract_path, old_contract_hash = _ref(original["evaluation_contract"], parent=path.parent)
+    if _hash(old_contract_path) != old_contract_hash:
+        raise ValueError("UPDATED_PERFORMANCE_ORIGIN_CONTRACT_HASH_CHANGED")
+    old_contract = _json(old_contract_path)
+    if (old_contract.get("evaluation") != contract.get("evaluation")
+            or old_contract.get("source_id") != SOURCE_ID
+            or old_contract.get("execution_open") != contract.get("execution_open")
+            or old_contract.get("price_refs") != contract.get("price_refs")):
+        raise ValueError("UPDATED_PERFORMANCE_ORIGIN_CONTRACT_CHANGED")
+    return path.parent
+
+@lru_cache(maxsize=1)
 def _cached_bundle(path, digest, output_stamps):
     if _hash(path) != digest:
         raise ValueError("UPDATED_MANIFEST_CHANGED")
@@ -228,13 +281,14 @@ def _cached_bundle(path, digest, output_stamps):
     if (contract.get("source_id") != SOURCE_ID or contract.get("evaluation") != evaluation
             or contract.get("rankings") != {key: outputs["rankings"][key] for key in ("path", "sha256")}):
         raise ValueError("UPDATED_EVALUATION_CONTRACT_BINDING_MISMATCH")
+    performance_parent = _performance_parent(manifest, contract, parent)
     calendar = _table(outputs["decision_calendar"], ("signal_date", "scheduled_execution_date", "execution_date", "execution_status", "performance_cutoff_date", "portfolio_snapshot_date"),
         parent=parent, optional=("quarter", "effective_date", "institution_count", "universe_member_count", "mapped_count", "eligible_count", "excluded_count", "coverage_status"))
     rankings = _table(outputs["rankings"], ("target_date", "security_id", "ticker", "rank", "score", "model_year", "model_sha256"), parent=parent,
         optional=("universe_id", "universe_quarter", "universe_effective_date", "institution_count"))
     positions = _table(outputs["positions"], ("date", "previous_date", "ticker", "shares_before", "shares_after", "model", "portfolio", "posttrade_weight"),
-        parent=parent, optional=("security_id",))
-    points = _points(_table(outputs["portfolio_daily"], DAILY_COLUMNS, parent=parent))
+        parent=performance_parent, optional=("security_id",))
+    points = _points(_table(outputs["portfolio_daily"], DAILY_COLUMNS, parent=performance_parent))
     rank_by_day, position_by_day = defaultdict(list), defaultdict(list)
     for row in rankings:
         rank = _count(row["rank"])
@@ -299,6 +353,16 @@ def bundle(reference):
         if lineage.get("freeze_path") or lineage.get("freeze_sha256"):
             stamps += (_stamp({"path": lineage["freeze_path"], "sha256": lineage["freeze_sha256"]}),)
     stamps += (_stamp(manifest["evaluation_contract"]),)
+    if manifest.get("performance_origin"):
+        origin = manifest["performance_origin"]["manifest"]
+        stamps += (_stamp(origin),)
+        origin_path, origin_sha = _ref(origin)
+        if _hash(origin_path) != origin_sha:
+            raise ValueError("UPDATED_PERFORMANCE_ORIGIN_HASH_MISMATCH")
+        original = _json(origin_path)
+        stamps += (_stamp(original["evaluation_contract"]),)
+        stamps += tuple(_stamp(original["outputs"][name]) for name in
+                        ("portfolio_daily", "positions", "trades", "price_paths", "corporate_action_events"))
     return _cached_bundle(str(path), digest, stamps)
 
 

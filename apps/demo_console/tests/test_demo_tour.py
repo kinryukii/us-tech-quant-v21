@@ -563,3 +563,156 @@ def test_programmatic_widget_restore_does_not_log_duplicate_defaults(tour_app, m
     assert app.session_state[replay._STATE_KEY].status == "paused"
     run_without_duplication(app.selectbox(key="history_window").select(None))
     assert app.selectbox(key="history_window").value == "60 snapshots"
+
+# The showcase uses the same lifecycle and controls, with no historical fixture.
+def test_showcase_callbacks_traverse_seven_stops_without_changing_data_or_trade_state(monkeypatch):
+    state = {"workspace": "History", "decision_date": "2025-10-02",
+             "workspace_strategy": "RAW_A2", "workspace_sample": "historical",
+             "trade_authorized": False,
+             replay._STATE_KEY: replay.ReplayState(("2025-10-01", "2025-10-02"), "20 snapshots", index=1),
+             replay._TOKEN_KEY: "old-tick"}
+    monkeypatch.setattr(demo_tour.st, "session_state", state)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Showcase must not resolve a historical case")
+    monkeypatch.setattr(demo_tour, "carry_case", forbidden)
+    monkeypatch.setattr(demo_tour, "resolve_case_ticker", forbidden)
+    original = {key: state[key] for key in ("workspace", "decision_date", "workspace_strategy", "workspace_sample", "trade_authorized")}
+    demo_tour.start_showcase_tour()
+    assert state[replay._STATE_KEY].status == "paused" and state[replay._TOKEN_KEY] is None
+    assert demo_tour._sync_step("History") is None
+    demo_tour._move_tour(-1, None)
+    assert state[demo_tour._STEP] == 0
+    for index, (section, stage, *_copy) in enumerate(demo_tour._SHOWCASE_STOPS):
+        assert state[demo_tour._STEP] == index and state[demo_tour._GALLERY] == section
+        assert demo_tour.showcase_architecture_stage() == stage
+        assert demo_tour.showcase_tour_active()
+        if section == "Strategy applications":
+            assert state["_localized_tabs:strategy_application_tools"] == "Machine learning"
+        elif section == "Data & charts":
+            assert state["_localized_tabs:workbench_evidence_tools"] == "Performance & risk"
+        assert {key: state[key] for key in original} == original
+        demo_tour._move_tour(1, None)
+    assert not demo_tour.showcase_tour_active()
+    assert demo_tour._STEP not in state and demo_tour._ARCHITECTURE_STAGE not in state
+    assert state[demo_tour._GALLERY] == "Daily simulation"
+    assert state["trade_authorized"] is False
+    demo_tour._move_tour(1, None)
+    assert demo_tour._STEP not in state
+
+
+def test_showcase_manual_sections_sync_without_forcing_navigation_and_invalid_steps_exit(monkeypatch):
+    state = {"decision_date": "2025-10-02"}
+    monkeypatch.setattr(demo_tour.st, "session_state", state)
+    demo_tour.start_showcase_tour()
+    demo_tour._move_tour(1, None)
+    state[demo_tour._GALLERY] = "Data & charts"
+    assert demo_tour._sync_showcase_step() == 5
+    assert state[demo_tour._GALLERY] == "Data & charts"
+    assert demo_tour.showcase_architecture_stage() is None
+    state[demo_tour._GALLERY] = "Technical showcase"
+    assert demo_tour._sync_showcase_step() == 0
+    assert demo_tour.showcase_architecture_stage() == "pit"
+    for bad in (None, -1, 7, True, "1"):
+        demo_tour.start_showcase_tour()
+        state[demo_tour._STEP] = bad
+        assert demo_tour._sync_showcase_step() is None
+        assert not demo_tour.showcase_tour_active()
+    assert state["decision_date"] == "2025-10-02"
+
+
+def test_showcase_and_historical_profiles_share_stop_and_preserve_legacy_start(monkeypatch):
+    state = {"decision_date": "2025-10-02", "workspace": "History"}
+    carried = []
+    monkeypatch.setattr(demo_tour.st, "session_state", state)
+    monkeypatch.setattr(demo_tour, "carry_case", carried.append)
+    demo_tour.start_showcase_tour()
+    demo_tour.start_guided_tour("SYNTHETIC")
+    assert demo_tour._start_tour is demo_tour.start_guided_tour
+    assert state["workspace"] == "Overview" and not demo_tour.showcase_tour_active()
+    assert state[demo_tour._ACTIVE] is True and carried == ["SYNTHETIC"]
+    assert demo_tour._ARCHITECTURE_STAGE not in state
+    demo_tour._move_tour(1, None)
+    assert state["workspace"] == "Machine learning" and state["ml_section"] == "Model engine"
+    demo_tour._stop_tour()
+    assert state[demo_tour._ACTIVE] is False
+    assert state["decision_date"] == "2025-10-02"
+
+
+@pytest.mark.parametrize("language", ("en", "zh", "ja"))
+def test_showcase_native_buttons_complete_backtrack_exit_and_keep_language_step(language):
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_string('''
+import streamlit as st
+from apps.demo_console.i18n import language_scope, tr
+from apps.demo_console.components.demo_tour import start_showcase_tour, render_showcase_tour
+st.selectbox("Language", ("en", "zh", "ja"), key="language")
+with language_scope(st.session_state.language):
+    st.button(tr("Start system walkthrough"), key="showcase_tour_start", on_click=start_showcase_tour)
+    render_showcase_tour()
+''', default_timeout=20)
+    app.session_state["language"] = language
+    app.session_state["decision_date"] = "2025-10-02"
+    app.session_state["workspace_strategy"] = "RAW_A2"
+    app.run()
+    assert not app.exception and not app.get("progress")
+    app.button(key="showcase_tour_start").click().run()
+    assert not app.exception and app.button(key="demo_tour_previous").disabled
+    for index in range(7):
+        assert app.session_state[demo_tour._STEP] == index
+        assert app.session_state[demo_tour._GALLERY] == demo_tour._SHOWCASE_STOPS[index][0]
+        body = next(node.proto.body for node in app.get("html") if 'uq-showcase-tour' in node.proto.body)
+        with language_scope(language):
+            assert tr(demo_tour._SHOWCASE_STOPS[index][2]) in body
+            assert tr("Engineering benefit") in body and tr("Verification path") in body
+        assert app.session_state["decision_date"] == "2025-10-02"
+        assert app.session_state["workspace_strategy"] == "RAW_A2"
+        if index == 2:
+            other_language = "en" if language != "en" else "ja"
+            app.selectbox(key="language").select(other_language).run()
+            assert app.session_state[demo_tour._STEP] == 2
+            app.selectbox(key="language").select(language).run()
+            app.button(key="demo_tour_previous").click().run()
+            assert app.session_state[demo_tour._STEP] == 1
+            app.button(key="demo_tour_next").click().run()
+        app.button(key="demo_tour_next").click().run()
+        assert not app.exception
+    assert not app.session_state[demo_tour._ACTIVE] and not app.get("progress")
+    app.button(key="showcase_tour_start").click().run()
+    app.button(key="demo_tour_exit").click().run()
+    assert not app.session_state[demo_tour._ACTIVE] and not app.get("progress")
+
+
+def test_showcase_import_and_callbacks_do_not_import_historical_readers():
+    import sys
+    from pathlib import Path
+    script = r'''
+import importlib.abc, sys
+import streamlit
+blocked=('apps.demo_console.adapters','pandas','altair','torch','xgboost')
+class Guard(importlib.abc.MetaPathFinder):
+ def find_spec(self,fullname,path=None,target=None):
+  if any(fullname==prefix or fullname.startswith(prefix+'.') for prefix in blocked):
+   raise AssertionError('Unexpected showcase dependency: '+fullname)
+sys.meta_path.insert(0,Guard())
+from apps.demo_console.components import demo_tour
+state={'decision_date':'2025-10-02'}
+demo_tour.st.session_state=state
+demo_tour.start_showcase_tour()
+for _ in range(7): demo_tour._move_tour(1,None)
+assert state['decision_date']=='2025-10-02'
+assert not any(any(name==p or name.startswith(p+'.') for p in blocked) for name in sys.modules)
+print('showcase data-free PASS')
+'''
+    result = subprocess.run([sys.executable, "-B", "-c", script], cwd=Path(__file__).parents[3],
+                            text=True, capture_output=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "showcase data-free PASS"
+
+
+def test_showcase_guide_stage_is_bounded_and_does_not_emit_python_events():
+    from apps.demo_console.components import architecture_exhibit as exhibit
+    for stage in ("pit", "inference", "risk", "lineage", "resources", "execution"):
+        assert exhibit.architecture_payload(guided_stage=stage)["guided_stage"] == stage
+    assert exhibit.architecture_payload(guided_stage="unregistered")["guided_stage"] is None
+    assert exhibit.architecture_payload()["guided_stage"] is None
+    assert "setStateValue" not in exhibit.JS and "setTriggerValue" not in exhibit.JS

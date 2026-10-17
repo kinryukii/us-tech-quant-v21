@@ -590,8 +590,8 @@ def test_completion_uses_content_addressed_receipt_reference(tmp_path: Path) -> 
     task_root.mkdir(parents=True)
     spec = research_spec(task_root)
     knowledge = task_root / "result_receipt.json"
-    knowledge.write_text("{}", encoding="utf-8")
     completed = receipt(spec)
+    knowledge.write_text(json.dumps(completed), encoding="utf-8")
     registry = lifecycle._registry_module(repo)
 
     result = lifecycle.apply_registry_completion(
@@ -628,8 +628,8 @@ def test_existing_immutable_registry_accepts_compact_completion(tmp_path: Path) 
     task_root.mkdir(parents=True)
     spec = research_spec(task_root)
     knowledge = task_root / "result_receipt.json"
-    knowledge.write_text("{}", encoding="utf-8")
     completed = receipt(spec)
+    knowledge.write_text(json.dumps(completed), encoding="utf-8")
     result = lifecycle.apply_registry_completion(
         repo, spec, completed, knowledge, reviewer="independent-reviewer",
     )
@@ -673,8 +673,8 @@ def test_existing_active_registry_row_is_closed_with_completion_knowledge(tmp_pa
         "operations_sha256": registry.sha256_value(operations),
     })
     knowledge = task_root / "result_receipt.json"
-    knowledge.write_text("{}", encoding="utf-8")
     completed = receipt(spec)
+    knowledge.write_text(json.dumps(completed), encoding="utf-8")
     result = lifecycle.apply_registry_completion(
         repo, spec, completed, knowledge, reviewer="independent-reviewer",
     )
@@ -701,12 +701,13 @@ def test_terminal_completion_idempotency_rejects_receipt_drift(tmp_path: Path) -
     task_root.mkdir(parents=True)
     spec = research_spec(task_root)
     knowledge = task_root / "result_receipt.json"
-    knowledge.write_text("{}", encoding="utf-8")
     completed = receipt(spec)
+    knowledge.write_text(json.dumps(completed), encoding="utf-8")
     lifecycle.apply_registry_completion(
         repo, spec, completed, knowledge, reviewer="independent-reviewer",
     )
     drifted = {**completed, "completed_at": "2025-12-30T00:00:00+00:00"}
+    knowledge.write_text(json.dumps(drifted), encoding="utf-8")
     with pytest.raises(lifecycle.LifecycleError, match="TERMINAL_REGISTRY_COMPLETION_DRIFT"):
         lifecycle.apply_registry_completion(
             repo, spec, drifted, knowledge, reviewer="independent-reviewer",
@@ -725,15 +726,16 @@ def test_terminal_completion_pins_receipt_hash(tmp_path: Path) -> None:
     task_root.mkdir(parents=True)
     spec = research_spec(task_root)
     knowledge = task_root / "result_receipt.json"
-    knowledge.write_text("{}", encoding="utf-8")
     completed = receipt(spec)
+    knowledge.write_text(json.dumps(completed), encoding="utf-8")
     lifecycle.apply_registry_completion(
         repo, spec, completed, knowledge, reviewer="independent-reviewer",
     )
-    knowledge.write_text('{"drift":true}', encoding="utf-8")
+    drifted = {**completed, "source_note": "drift"}
+    knowledge.write_text(json.dumps(drifted), encoding="utf-8")
     with pytest.raises(lifecycle.LifecycleError, match="TERMINAL_REGISTRY_COMPLETION_DRIFT"):
         lifecycle.apply_registry_completion(
-            repo, spec, completed, knowledge, reviewer="independent-reviewer",
+            repo, spec, drifted, knowledge, reviewer="independent-reviewer",
         )
 
 
@@ -752,3 +754,69 @@ def test_closed_negative_budget_is_five_mib() -> None:
         "budget_bytes": 5 * 1024 * 1024,
         "status": "KEY_EVIDENCE_JUSTIFICATION_REQUIRED",
     }
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("final_status", "ACTIVE", "COMPLETION_RECEIPT_STATUS_NOT_TERMINAL"),
+    ("final_status", "DONE", "COMPLETION_RECEIPT_STATUS_NOT_TERMINAL"),
+    ("final_status", "UNSUPPORTED", "COMPLETION_RECEIPT_STATUS_NOT_TERMINAL"),
+    ("research_id", "OTHER_BRANCH", "COMPLETION_RECEIPT_RESEARCH_ID_MISMATCH"),
+    ("mechanism_key", "f" * 64, "COMPLETION_RECEIPT_MECHANISM_KEY_MISMATCH"),
+    ("hypothesis", "changed after completion", "COMPLETION_RECEIPT_SPEC_MISMATCH:hypothesis"),
+    ("config_reference", "config/changed.json", "COMPLETION_RECEIPT_SPEC_MISMATCH:config_reference"),
+    ("data_reference", "contract://changed", "COMPLETION_RECEIPT_SPEC_MISMATCH:data_reference"),
+])
+def test_completion_entry_rejects_unsupported_or_drifted_receipt_before_registry(
+    tmp_path: Path, field: str, value: object, error: str,
+) -> None:
+    task_root = tmp_path / "results" / "task"
+    task_root.mkdir(parents=True)
+    spec = research_spec(task_root)
+    completed = {**receipt(spec), field: value}
+    knowledge = task_root / "result_receipt.json"
+    knowledge.write_text(json.dumps(completed), encoding="utf-8")
+    repo = tmp_path / "missing-repo"
+
+    with pytest.raises(lifecycle.LifecycleError, match=error):
+        lifecycle.apply_registry_completion(
+            repo, spec, completed, knowledge, reviewer="independent-reviewer",
+        )
+    assert not repo.exists()
+
+
+def test_completion_entry_binds_referenced_bytes_to_supplied_receipt(tmp_path: Path) -> None:
+    task_root = tmp_path / "results" / "task"
+    task_root.mkdir(parents=True)
+    spec = research_spec(task_root)
+    completed = receipt(spec)
+    knowledge = task_root / "result_receipt.json"
+    knowledge.write_text(json.dumps({**completed, "stop_reason": "different"}), encoding="utf-8")
+    repo = tmp_path / "missing-repo"
+
+    with pytest.raises(lifecycle.LifecycleError, match="COMPLETION_RECEIPT_CONTENT_MISMATCH"):
+        lifecycle.apply_registry_completion(
+            repo, spec, completed, knowledge, reviewer="independent-reviewer",
+        )
+    assert not repo.exists()
+
+
+@pytest.mark.parametrize("payload,error", [
+    (b"{", "SMALL_JSON_UNREADABLE"),
+    (b"[]", "JSON_OBJECT_REQUIRED"),
+    (b" " * 262_145, "SMALL_JSON_BUDGET_EXCEEDED"),
+], ids=["invalid-json", "non-object", "oversized"])
+def test_completion_entry_requires_bounded_json_object(
+    tmp_path: Path, payload: bytes, error: str,
+) -> None:
+    task_root = tmp_path / "results" / "task"
+    task_root.mkdir(parents=True)
+    spec = research_spec(task_root)
+    knowledge = task_root / "result_receipt.json"
+    knowledge.write_bytes(payload)
+    repo = tmp_path / "missing-repo"
+
+    with pytest.raises(lifecycle.LifecycleError, match=error):
+        lifecycle.apply_registry_completion(
+            repo, spec, receipt(spec), knowledge, reviewer="independent-reviewer",
+        )
+    assert not repo.exists()

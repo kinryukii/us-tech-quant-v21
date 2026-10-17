@@ -68,6 +68,10 @@ def refresh_rehab(paths, members, work_root, target, progress=None):
                "results": [], "history_requests": 0, "trade_requests": 0}
     context = None
     try:
+        if not members:
+            receipt.update(reason="REHAB_MEMBERS_EMPTY", qualification_reason="NO_VERIFIED_CURRENT_MEMBERS",
+                           quote_context_opened=False)
+            raise ValueError("REHAB_MEMBERS_EMPTY")
         profile_module = load_module(paths.repo_root / PROFILE, "today_rehab_profile")
         profile = profile_module.load_profile(paths.repo_root / "config/moomoo_opend_connection.json", dict(os.environ))
         connected, reason = profile_module.tcp_probe(profile)
@@ -78,7 +82,8 @@ def refresh_rehab(paths, members, work_root, target, progress=None):
         os.environ["APPDATA"] = str(appdata)
         sdk = importlib.import_module("moomoo")
         sdk.SysConfig.set_all_thread_daemon(True)
-        context = sdk.OpenQuoteContext(host=profile.host, port=profile.port, is_async_connect=True)
+        from scripts.common.daily_support import open_quote_context
+        context = open_quote_context(sdk, host=profile.host, port=profile.port)
         context.set_sync_query_connect_timeout(10)
         codes = sorted({row.get("moomoo_symbol", row.get("moomoo_transport_code")) for row in members})
         for index, code in enumerate(codes, 1):
@@ -402,6 +407,98 @@ def _qualified_massive_tail(record, original, ticker, target, store, raw_cache=N
 
 
 
+def native_missing_interval_starts(paths, members, catalog_prices, target, sessions):
+    """Hint the first internal native gap; never grant feature eligibility.
+
+    Project only dates within the last 121 completed sessions, filtering the
+    exact provider code before reading. Accepted original anchors and native
+    catalog records keep their hash and identity bindings. New native histories
+    begin at their real first date, rather than an assumed 121-session start.
+    A missing final tail remains the daily acquisition owner's max+1 job.
+    """
+    if not members:
+        return {}
+    import pyarrow as pa
+    from scripts.research.a2.inference.current_native_prices import REVIEWED_TRANSPORT_ALIASES, validate_explicit_alias
+    needed = sorted({str(day)[:10] for day in sessions if str(day)[:10] <= target})[-121:]
+    if not needed:
+        return {}
+    lower = needed[0]
+    upper = (pd.Timestamp(target) + pd.Timedelta(days=1)).date().isoformat()
+    coverage = json.loads(verify(COVERAGE_PATH, COVERAGE_SHA).read_text(encoding="utf-8"))
+    checked = {}
+
+    def bound_source(path, expected):
+        key = str(Path(path).resolve())
+        if key not in checked:
+            checked[key] = (expected, verify(path, expected))
+        elif checked[key][0] != expected:
+            raise ValueError("NATIVE_SCOPE_SOURCE_HASH_CONFLICT")
+        return checked[key][1]
+
+    def dates(path, column, identity):
+        schema = pq.read_schema(path)
+        if column not in schema.names or any(name not in schema.names for name, _, _ in identity):
+            raise ValueError("NATIVE_SCOPE_DATE_OR_IDENTITY_COLUMN_MISSING")
+        kind = schema.field(column).type
+        if pa.types.is_string(kind) or pa.types.is_large_string(kind):
+            start, end = lower, upper
+        elif pa.types.is_timestamp(kind):
+            start, end = pd.Timestamp(lower).to_pydatetime(), pd.Timestamp(upper).to_pydatetime()
+        elif pa.types.is_date(kind):
+            start, end = pd.Timestamp(lower).date(), pd.Timestamp(upper).date()
+        else:
+            raise ValueError("NATIVE_SCOPE_DATE_TYPE_UNSUPPORTED")
+        frame = pq.read_table(path, columns=[column],
+            filters=[*identity, (column, ">=", start), (column, "<", end)]).to_pandas()
+        values = pd.to_datetime(frame[column], errors="raise")
+        if values.isna().any():
+            raise ValueError("NATIVE_SCOPE_DATE_INVALID")
+        return set(values.dt.strftime("%Y-%m-%d"))
+
+    native = {}
+    for record in catalog_prices:
+        if (record.get("dataset"), record.get("adjustment"), record.get("source"), record.get("format")) != (
+                "prices_daily", "raw", "MOOMOO_OPEND", "parquet"):
+            continue
+        native.setdefault(record["ticker"], []).append(record)
+    starts = {}
+    for member in members:
+        ticker = member["ticker"]
+        code = member.get("moomoo_symbol", member.get("moomoo_transport_code"))
+        if not code:
+            continue
+        source_ticker = ticker
+        if ticker in REVIEWED_TRANSPORT_ALIASES:
+            source_ticker = validate_explicit_alias(REVIEWED_TRANSPORT_ALIASES[ticker], ticker,
+                                                  code, [member.get("security_id")])
+        observed, first_dates = set(), []
+        anchor = coverage["raw"]["code_map"].get(code)
+        if anchor and anchor.get("ticker") == ticker:
+            first_dates.append(anchor["first_date"])
+            for value in anchor["paths"]:
+                path = bound_source(value, coverage["raw"]["file_sha256"][value])
+                observed.update(dates(path, "time_key", [("code", "=", code)]))
+        for record in native.get(source_ticker, []):
+            path = Path(record["path"])
+            if not path.resolve().is_relative_to(Path(paths.data_root).resolve()):
+                raise ValueError("NATIVE_SCOPE_CATALOG_OUTSIDE_DATA_ROOT")
+            path = bound_source(path, record.get("source_sha256", record.get("sha256")))
+            current_dates = dates(path, "date", [("ticker", "=", source_ticker),
+                ("provider_code", "=", code), ("source", "=", "MOOMOO_OPEND"), ("adjustment", "=", "raw")])
+            if current_dates:
+                # This is a hash-bound published catalog's actual minimum. If
+                # absent, only the bounded observed first date can seed scope.
+                first_dates.append(str(record.get("min_date") or min(current_dates))[:10])
+                observed.update(current_dates)
+        if observed and first_dates:
+            first, last = max(lower, min(first_dates)), max(observed)
+            missing = next((day for day in needed if first <= day <= last and day not in observed), None)
+            if missing:
+                starts[source_ticker] = min(missing, starts.get(source_ticker, missing))
+    return starts
+
+
 def load_price_inputs(target, members, sessions, acquisitions, store, rehab_receipt,
                       *, coverage_reference=None):
     """Return (accepted full-history index frame, lineage, explicit missing rows).
@@ -483,8 +580,10 @@ def load_price_inputs(target, members, sessions, acquisitions, store, rehab_rece
                     raise ValueError("CONFLICTING_OVERLAP_RAW_PRICE")
             raw = raw.sort_values("trade_date").drop_duplicates("trade_date").reset_index(drop=True)
             bridge = None
-            gaps = [day for day in needed if raw.trade_date.min() <= pd.Timestamp(day) <= raw.trade_date.max()
-                    and pd.Timestamp(day) not in set(raw.trade_date)]
+            raw_first, raw_last = raw.trade_date.min(), raw.trade_date.max()
+            raw_dates = set(raw.trade_date)
+            gaps = [day for day in needed if raw_first <= pd.Timestamp(day) <= raw_last
+                    and pd.Timestamp(day) not in raw_dates]
             if raw.trade_date.max() < pd.Timestamp(target) or gaps:
                 candidate = massive.get(ticker)
                 if candidate is None:

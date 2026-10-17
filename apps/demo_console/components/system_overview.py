@@ -4,7 +4,6 @@ This is editorial navigation, not a component registry or a health monitor.
 Engineering descriptions refer to reviewed source; adoption and current run
 status are not inferred. Economic observations arrive through DecisionOverview.
 """
-from dataclasses import dataclass
 from collections.abc import Mapping
 from functools import partial
 
@@ -25,54 +24,7 @@ from apps.demo_console.components.ml_comparison import comparison_rows
 from apps.demo_console.i18n import option_labeler, tr
 
 
-@dataclass(frozen=True)
-class Capability:
-    title: str
-    question: str
-    mechanism: str
-    evidence: str
-    scope: str
-    references: tuple[tuple[str, str], ...]
-    replay: bool = False
-
-
-CAPABILITIES = (
-    Capability("Information timing", "Was this information available at the decision time?",
-        "Disclosure timestamps carry a timezone and are checked against the signal cutoff. A later filing waits for a permitted session; missing timestamps are rejected.",
-        "Inspect the existing timing functions in the synthetic reliability drill.",
-        "This demonstrates one implemented timing rule. It does not validate the complete historical information chain.",
-        (("13F disclosure timing primitives", "scripts/v22/pit_13f_reconstruction_r1.py :: accepted_utc / filing_is_public_for_signal / first_legal_signal_session"),)),
-    Capability("Model lineage", "Which model and training boundary produced the recorded output?",
-        "The verified freeze binds the feature schema, HGB configuration and yearly training and label-maturity boundaries to the recorded model identity.",
-        "Inspect the feature definitions, annual vintages and original same-date ranks and scores in the learning studio.",
-        "Historical stage models were not persisted. Inspect recorded model identity where available; local attribution and full-universe predictive quality are not established here.",
-        (("Verified learning metadata", "apps/demo_console/adapters/system_status_reader.py :: learning_profile"),
-         ("Frozen-model producer reference", "scripts/v22/abcde_a2_r1_nonlinear_cross_sectional_modeling.py :: stage_rows / build_stock_state_features")), True),
-    Capability("Execution mechanics", "What happens when a trade cannot execute as planned?",
-        "The inspected simulator handles missing opening prices, stale valuation marks and sell-before-buy cash flow. Recorded fees constrain buy capacity; negative cash and implicit leverage are rejected.",
-        "The historical execution ledger separately exposes the frozen replay's costs, cash, turnover and recorded simulation flags.",
-        "The source mechanism and the historical ledger have distinct identities. This page does not claim the current source version produced the selected replay, or that RX decisions are available.",
-        (("Portfolio execution and accounting", "scripts/v22/abcde_a2_r4_portfolio_translation_using_hgb_incumbent.py :: execution_eligibility_policy / calculate_weight_rebalance / simulate_portfolio"),
-         ("Frozen execution reader", "apps/demo_console/adapters/performance_reader.py"))),
-    Capability("Risk inspection", "How did the recorded portfolio behave during setbacks?",
-        "Inspect net and gross paths alongside every drawdown episode, recovery status, transaction costs and return concentration, through the selected execution only.",
-        "A chronological episode explorer keeps unrecovered periods visible. When available, the fixed A control provides a same-study comparison with its own downside.",
-        "Historical outcomes describe the portfolio path. They do not prove a deployed risk controller, independent alpha or future recovery times.",
-        (("Validated performance and cutoff", "apps/demo_console/adapters/performance_reader.py"),
-         ("Drawdown episodes on original coordinates", "apps/demo_console/components/drawdown_episodes.py :: analyze_drawdown_episodes / episode_chart")), True),
-    Capability("Research discipline", "Can a renamed trial hide an old failure?",
-        "Registry entry points resolve aliases and specification fingerprints, flag duplicate or closed branches, and bind trial completion receipts to identities. Failure counts cannot be silently reduced.",
-        "The inspected registry and lifecycle have paired synthetic checks for duplicate proposals, closed-branch repackaging, failure counts and terminal receipts.",
-        "These are entry-point mechanisms. The current accepted registry head, complete trial history and repository-wide enforcement are not audited in this display.",
-        (("Research identity and duplicate checks", "scripts/maintenance/research_registry.py :: evaluate_proposal / resolve_alias / apply_patch"),
-         ("Trial lifecycle and completion receipts", "scripts/maintenance/prospective_research_lifecycle.py :: evaluate_start_decision / validate_completion_receipt / apply_registry_completion"))),
-    Capability("Storage separation", "How are source code, data and evidence kept apart?",
-        "The storage configuration separates the code repository from data, results, caches, daily state, backtests and environments. The resolver rejects overlapping roots and repository-bound outputs.",
-        "Code and control stay lightweight; input data, retained evidence and rebuildable outputs have separate configured destinations.",
-        "Routing checks are not operating-system access controls. Read-only data policy and evidence retention remain separate protections.",
-        (("Canonical storage configuration", "config/storage_paths.json"),
-         ("Storage root validation", "scripts/common/storage_paths.py :: resolve / validate / assert_path_outside_repo"))),
-)
+from apps.demo_console.components.technology_catalog import Capability, CAPABILITIES
 
 
 def open_capability(workspace, *, section=None, research_tab=None):
@@ -259,9 +211,10 @@ def _render_research_canvas(model, *, presentation):
             + '</p><b>' + text(tr('{count} execution records', count=summary.observations)) + '</b></div>')
     if history.reference_error:
         st.caption(tr(history.reference_error))
-    with st.expander(tr('Inspect the drawdown path'), expanded=False):
-        render_chart(drawdown_chart(summary, compact=True), width='stretch', theme=None,
-                     key='system_drawdown_chart')
+    with st.expander(tr('Inspect the drawdown path'), expanded=False, on_change="rerun", key="system_drawdown_path") as drawdown_path:
+        if drawdown_path.open:
+            render_chart(drawdown_chart(summary, compact=True), width='stretch', theme=None,
+                         key='system_drawdown_chart')
 
 
 def _open_selected_trace():
@@ -419,17 +372,18 @@ def render_system_overview(model, *, presentation=True):
     if not workspace_reader.is_updated(model):
         st.button(tr("View the 2026 recorded window →"), key="system_2026",
                   on_click=open_recorded_2026, type="tertiary")
-    with st.expander(tr('System mechanisms & research coverage'), expanded=False):
-        _render_secondary_tools(model)
-        labels = ("Recorded snapshots", "Recorded features", "Annual model vintages")
-        st.html('<div class="uq-system-evidence-strip"><span>' + text(tr("UPDATED REPLAY" if workspace_reader.is_updated(model) else "CURRENT FROZEN REPLAY")) + '</span>'
-                + ''.join('<div><strong>' + text(f'{value:,}' if value is not None else '—') + '</strong><span>'
-                          + text(tr(label)) + '</span></div>' for value, label in zip(overview_facts(model), labels)) + '</div>')
-        options = tuple(capability.title for capability in CAPABILITIES)
-        if st.session_state.get("system_capability") not in options:
-            st.session_state["system_capability"] = options[0]
-        selected = st.segmented_control(tr("System capability"), options, required=True,
-            key="system_capability", format_func=option_labeler(options), persist_state="session",
-            label_visibility="collapsed", width="stretch", wrap=True)
-        _render_capability(next(capability for capability in CAPABILITIES if capability.title == selected),
-                           model, presentation=presentation)
+    with st.expander(tr('System mechanisms & research coverage'), expanded=False, on_change="rerun", key="system_mechanisms") as mechanisms:
+        if mechanisms.open:
+            _render_secondary_tools(model)
+            labels = ("Recorded snapshots", "Recorded features", "Annual model vintages")
+            st.html('<div class="uq-system-evidence-strip"><span>' + text(tr("UPDATED REPLAY" if workspace_reader.is_updated(model) else "CURRENT FROZEN REPLAY")) + '</span>'
+                    + ''.join('<div><strong>' + text(f'{value:,}' if value is not None else '—') + '</strong><span>'
+                              + text(tr(label)) + '</span></div>' for value, label in zip(overview_facts(model), labels)) + '</div>')
+            options = tuple(capability.title for capability in CAPABILITIES)
+            if st.session_state.get("system_capability") not in options:
+                st.session_state["system_capability"] = options[0]
+            selected = st.segmented_control(tr("System capability"), options, required=True,
+                key="system_capability", format_func=option_labeler(options), persist_state="session",
+                label_visibility="collapsed", width="stretch", wrap=True)
+            _render_capability(next(capability for capability in CAPABILITIES if capability.title == selected),
+                               model, presentation=presentation)

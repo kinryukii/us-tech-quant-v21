@@ -183,3 +183,157 @@ def test_unregistered_scientific_parameter_override_is_rejected():
     with pytest.raises(ValueError,match="UNREGISTERED_ALLOCATION_PARAMETER"):
         allocation.allocate_q("mean_variance",*args[:-1],parameters={"risk_penalty":3})
 
+
+
+def _pit_risk_budget_inputs(future_names=(), *, holdings=False):
+    """Canonical full-array ranks with only current support declared eligible."""
+    names = [f"B{i:02d}" for i in range(12)]
+    if holdings:
+        names += ["A_HELD_OUTPOOL", "Z_HELD_LOCKED"]
+    full = np.asarray(sorted(names + list(future_names)), dtype=str)
+    count = len(full)
+    mu = np.zeros(count)
+    uncertainty = np.full(count, .01)
+    variance = np.full(count, .001)
+    current = np.zeros(count)
+    locked = np.zeros(count, bool)
+    allowed = np.isin(full, names)
+    buy = allowed.copy()
+    if holdings:
+        outpool = np.flatnonzero(full == "A_HELD_OUTPOOL")[0]
+        reserved = np.flatnonzero(full == "Z_HELD_LOCKED")[0]
+        current[outpool], current[reserved] = .04, .06
+        buy[outpool] = False
+        locked[reserved] = True
+        allowed[reserved] = buy[reserved] = False
+    ranks = np.argsort(np.argsort(full, kind="stable"), kind="stable")
+    args = (mu, uncertainty, variance, current, locked, allowed, buy, 20-int(locked.sum()), ranks)
+    return full, names, args
+
+
+@pytest.mark.parametrize("future_names", [
+    ["A_FUTURE"], ["B05_FUTURE", "B09_FUTURE"], ["A_FUTURE", "B05_FUTURE", "ZZ_FUTURE"],
+])
+def test_risk_budget_current_legal_weights_ignore_unavailable_future_roster_insertions(future_names):
+    base_names, legal, base = _pit_risk_budget_inputs()
+    full_names, _, extended = _pit_risk_budget_inputs(future_names)
+    before = allocation.allocate_q("risk_budgeting", *base)
+    after = allocation.allocate_q("risk_budgeting", *extended)
+    selected = np.asarray([np.flatnonzero(full_names == name)[0] for name in base_names])
+    np.testing.assert_allclose(before.q, after.q[selected], rtol=0, atol=1e-11)
+    assert np.all(after.q[np.isin(full_names, future_names)] == 0)
+    # The old absolute-rank modulo rule really changes despite fixed legal order.
+    old = 1 + base[-1] % 3
+    contaminated = 1 + extended[-1][selected] % 3
+    assert np.any(old != contaminated)
+
+
+def test_risk_budget_depends_on_relative_active_order_not_absolute_rank_values():
+    _, _, args = _pit_risk_budget_inputs()
+    shifted = (*args[:-1], 100 + 7*args[-1])
+    first = allocation.allocate_q("risk_budgeting", *args)
+    second = allocation.allocate_q("risk_budgeting", *shifted)
+    np.testing.assert_array_equal(first.q, second.q)
+    assert first.objective == second.objective
+
+
+def test_risk_budget_current_support_includes_locked_and_out_of_pool_holdings():
+    base_names, _, base = _pit_risk_budget_inputs(holdings=True)
+    full_names, _, extended = _pit_risk_budget_inputs(["A_FUTURE", "B05_FUTURE"], holdings=True)
+    first = allocation.allocate_q("risk_budgeting", *base)
+    second = allocation.allocate_q("risk_budgeting", *extended)
+    selected = np.asarray([np.flatnonzero(full_names == name)[0] for name in base_names])
+    np.testing.assert_allclose(first.q, second.q[selected], rtol=0, atol=1e-9)
+    assert second.q[full_names == "Z_HELD_LOCKED"][0] == pytest.approx(.06)
+    assert second.q[full_names == "A_HELD_OUTPOOL"][0] <= .04+1e-11
+    assert second.q.sum() == pytest.approx(1)
+
+
+def test_risk_budget_may_change_when_new_name_becomes_currently_legal():
+    names, _, args = _pit_risk_budget_inputs(["A_NEW"])
+    unknown = allocation.allocate_q("risk_budgeting", *args)
+    now_allowed, now_buy = args[5].copy(), args[6].copy()
+    now_allowed[names == "A_NEW"] = now_buy[names == "A_NEW"] = True
+    legal_args = (*args[:5], now_allowed, now_buy, *args[7:])
+    disclosed = allocation.allocate_q("risk_budgeting", *legal_args)
+    assert unknown.q[names == "A_NEW"][0] == 0
+    assert disclosed.q[names == "A_NEW"][0] > 0
+    assert np.max(np.abs(unknown.q-disclosed.q)) > 1e-3
+
+
+def test_nonzero_friction_penalty_reduces_signal_known_expected_turnover():
+    """Tiny forecast edge should not justify a more expensive replacement."""
+    n=20
+    mu=np.zeros(n);mu[10:]=.0003
+    sigma=np.full(n,.01);cov=np.eye(n)*.00001
+    current=np.r_[np.full(10,.1),np.zeros(10)]
+    locked=np.zeros(n,bool);allowed=np.ones(n,bool)
+    args=(mu,sigma,cov,current,locked,allowed,allowed,20,np.arange(n))
+    blind=allocation.allocate_q("mean_variance",*args)
+    aware=allocation.allocate_q("cost_aware",*args,execution_friction_bps=10)
+    assert np.abs(aware.q-current).sum()<np.abs(blind.q-current).sum()
+    assert aware.q.sum()==pytest.approx(1)
+    assert "SIGNAL_KNOWN" in aware.equivalence
+    assert not aware.global_optimum_claim
+
+
+def test_zero_friction_opt_in_remains_exact_mean_variance_alias():
+    args=inputs()
+    blind=allocation.allocate_q("mean_variance",*args[:-1])
+    aware=allocation.allocate_q("cost_aware",*args[:-1],execution_friction_bps=0)
+    np.testing.assert_array_equal(blind.q,aware.q)
+    assert aware.objective==blind.objective
+    assert "ZERO_FEE" in aware.equivalence
+
+
+@pytest.mark.parametrize("value",[-1,float("nan"),float("inf"),10000])
+def test_invalid_execution_friction_is_rejected(value):
+    args=inputs()
+    with pytest.raises(ValueError,match="EXECUTION_FRICTION"):
+        allocation.allocate_q("cost_aware",*args[:-1],execution_friction_bps=value)
+
+
+def test_execution_friction_cannot_silently_modify_other_objectives():
+    args=inputs()
+    with pytest.raises(ValueError,match="COST_AWARE_ROLE"):
+        allocation.allocate_q("robust_mean_variance",*args[:-1],execution_friction_bps=10)
+
+
+def test_cost_aware_policy_requires_a_matched_full_rebalance_fixed_gross_pair():
+    n=25;ctx=context(n)
+    kwargs=dict(roles={"v24":{"risk":"DIAG","rho":1}},parameters=parameters(),
+                method="cost_aware",gross_method="fixed",execution_friction_bps=10)
+    model=allocation.JointAllocationPolicy(["v24"],np.full((1,1,n),.01),np.full((1,1,n),.01),
+                                          {(2024,"DIAG"):np.eye(n)*.001},**kwargs)
+    result=model(0,ctx)
+    assert np.isfinite(result.weights).all()
+    assert model.allocation_receipts[0]["equivalence"].startswith("SIGNAL_KNOWN")
+    kwargs["roles"]={"v24":{"risk":"DIAG","rho":.5}}
+    with pytest.raises(ValueError,match="FULL_REBALANCE"):
+        allocation.JointAllocationPolicy(["v24"],np.full((1,1,n),.01),np.full((1,1,n),.01),
+                                        {(2024,"DIAG"):np.eye(n)*.001},**kwargs)
+
+
+
+def test_robust_cost_objective_consumes_uncertainty_risk_and_both_trade_legs():
+    n=20
+    current=np.r_[np.full(10,.1),np.zeros(10)]
+    mu=np.r_[np.zeros(10),np.full(10,.0003)]
+    sigma=np.full(n,.01);cov=np.eye(n)*.00001
+    mask=np.ones(n,bool);lock=np.zeros(n,bool)
+    args=(mu,sigma,cov,current,lock,mask,mask,20,np.arange(n))
+    zero=allocation.allocate_q('robust_cost_aware',*args)
+    original=allocation.allocate_q('robust_mean_variance',*args)
+    np.testing.assert_array_equal(zero.q,original.q)
+    assert zero.objective==original.objective
+    aware=allocation.allocate_q('robust_cost_aware',*args,execution_friction_bps=10)
+    assert np.abs(aware.q-current).sum()<np.abs(zero.q-current).sum()
+    q=aware.q
+    expected=2*float(q@cov@q)-float((mu-.5*sigma)@q)+.001*float(np.abs(q-current).sum())
+    assert aware.objective==pytest.approx(expected,abs=1e-12)
+    high_sigma=sigma.copy();high_sigma[:10]=1.
+    uncertain=allocation.allocate_q('robust_cost_aware',mu,high_sigma,*args[2:],execution_friction_bps=10)
+    assert uncertain.q[:10].sum()<aware.q[:10].sum()
+    high_risk=cov.copy();high_risk[:10,:10]+=np.eye(10)*.1
+    risky=allocation.allocate_q('robust_cost_aware',mu,sigma,high_risk,*args[3:],execution_friction_bps=10)
+    assert risky.q[:10].sum()<aware.q[:10].sum()

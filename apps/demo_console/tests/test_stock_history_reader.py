@@ -66,6 +66,32 @@ def test_rx_parent_binding_and_window_counts():
         subject.prepare_history(ranked, ledger, members, rx)
 
 
+def test_catalog_preserves_last_names_nan_multiple_securities_and_sorted_tickers():
+    ranked, ledger, members = fixture()
+    extra = pd.DataFrame([
+        {'snapshot_id': 'b', 'ticker': 'ABC', 'security_id': 'id3', 'issuer_name': None, 'mapping_verified': True},
+        {'snapshot_id': 'a', 'ticker': 'NAN', 'security_id': 'nanid', 'issuer_name': float('nan'), 'mapping_verified': True},
+        {'snapshot_id': 'a', 'ticker': 'XYZ', 'security_id': 'x2', 'issuer_name': 'Old', 'mapping_verified': True},
+        {'snapshot_id': 'b', 'ticker': 'XYZ', 'security_id': 'x1', 'issuer_name': 'Final', 'mapping_verified': True},
+        {'snapshot_id': 'a', 'ticker': 'IGNORED', 'security_id': 'ignored', 'issuer_name': 'Unverified', 'mapping_verified': False},
+    ])
+    history = subject.prepare_history(ranked.iloc[::-1], ledger.iloc[::-1], pd.concat([members, extra], ignore_index=True))
+    assert history['catalog'] == [
+        {'ticker': 'ABC', 'issuer_name': 'nan', 'security_ids': ['id1', 'id3']},
+        {'ticker': 'NAN', 'issuer_name': 'nan', 'security_ids': ['nanid']},
+        {'ticker': 'NEVER', 'issuer_name': 'NEVER', 'security_ids': ['id2']},
+        {'ticker': 'XYZ', 'issuer_name': 'Final', 'security_ids': ['x1', 'x2']},
+    ]
+    assert history['start_date'] == '2025-01-03' and history['end_date'] == '2025-01-08'
+
+
+def test_empty_verified_catalog_retains_empty_contract():
+    ranked, ledger, members = fixture()
+    history = subject.prepare_history(ranked.iloc[:0], ledger.iloc[::-1], members.iloc[:0])
+    assert history['status'] == 'READY' and history['catalog'] == []
+    assert subject.query_history(history, 'ABC')['status'] == 'NOT_FOUND'
+
+
 def test_rank_not_in_verified_pool_rejected():
     ranked, ledger, members = fixture()
     with pytest.raises(ValueError, match='OUTSIDE_VERIFIED_POOL'):
@@ -273,11 +299,255 @@ def test_applied_blocked_current_never_becomes_zero_target():
     assert row['strategies']['HGB_DIAG_5']['selected'] is None
 
 
+def test_bulk_exact_lookup_keeps_input_order_and_missing_raw_observations():
+    raw, package = applied_fixture()
+    raw['_ranked'] = raw['_ranked'].loc[~(raw['_ranked'].target_date.eq('2026-01-02') & raw['_ranked'].ticker.eq('T01'))].iloc[::-1]
+    days = sorted({row['signal_date'] for row in package['shared_scores']['historical']})
+    package['shared_scores']['historical'] = [row for day in days
+        for row in reversed([row for row in package['shared_scores']['historical'] if row['signal_date'] == day])]
+    package['shared_scores']['current']['rows'].reverse()
+    history = subject.prepare_applied_history(raw, package, '2026-09-24')
+    expected = {(row['ticker'], row['security_id']): row for row in package['shared_scores']['historical']
+                if row['signal_date'] == '2026-01-02'}
+    assert history['_scores']['2026-01-02'] == expected
+    assert history['_scores']['2026-01-02'][('T01', 'id01')]['raw_rank'] == 1
+    assert len(history['_scores']['2026-09-24']) == 40
+    assert subject._rank_record(history['raw_history'], '2026-01-02', 'T01') is None
+
+
+def test_empty_shared_scores_keep_raw_lookup_available():
+    raw, package = applied_fixture()
+    package['shared_scores']['historical'] = []
+    package['shared_scores']['current'].update(status='UNAVAILABLE', signal_date=None, rows=[], reason='Synthetic unavailable')
+    history = subject.prepare_applied_history(raw, package, '2026-09-24')
+    assert history['_scores'] == {}
+    assert len(subject.load_applied_rankings('2026-09-24', history=history)['strategies']['RAW_A2']['rows']) == 41
+
+
+def test_bulk_lookup_preserves_earliest_record_error_precedence():
+    raw, package = applied_fixture()
+    raw['_ranked'].loc[raw['_ranked'].target_date.eq('2026-01-02') & raw['_ranked'].ticker.eq('T01'), 'score'] = 999
+    package['shared_scores']['current']['rows'][0]['security_id'] = 'later_bad_identity'
+    with pytest.raises(ValueError, match='RAW_BINDING_MISMATCH'):
+        subject.prepare_applied_history(raw, package, '2026-09-24')
+
+
 def test_applied_scores_cannot_inherit_a_different_raw_score():
     raw, package = applied_fixture()
     raw['_ranked'].loc[(raw['_ranked'].target_date == '2026-01-02') & (raw['_ranked'].ticker == 'T01'), 'score'] = 999
     with pytest.raises(ValueError, match='RAW_BINDING_MISMATCH'):
         subject.prepare_applied_history(raw, package, '2026-09-24')
+
+
+@pytest.mark.parametrize("field",["raw_rank","raw_score"])
+def test_first_raw_binding_failure_reports_identity_and_roles_without_values(field):
+    raw,package=applied_fixture()
+    raw["source_refs"]={"a2":{"path":"synthetic-parent.json","sha256":"a"*64},
+        "historical":{"path":"synthetic-historical.json","sha256":"b"*64}}
+    shared_refs={"frozen/test2026/predictions.parquet":{"path":"synthetic-prefix.parquet","sha256":"c"*64},
+        "performance_extension/manifest":{"path":"synthetic-extension.json","sha256":"d"*64}}
+    package["source_refs"].update(shared_refs)
+    package["source_hashes"].update({name:ref["sha256"] for name,ref in shared_refs.items()})
+    column={"raw_rank":"rank","raw_score":"score"}[field]
+    raw["_ranked"].loc[(raw["_ranked"].target_date=="2026-01-02")&(raw["_ranked"].ticker=="T01"),column]=999
+    with pytest.raises(ValueError,match="RAW_BINDING_MISMATCH") as raised:
+        subject.prepare_applied_history(raw,package,"2026-09-24")
+    detail=json.loads(str(raised.value).split(":",1)[1])
+    assert detail["signal_date"]=="2026-01-02" and detail["ticker"]=="T01" and detail["security_id"]=="id01"
+    assert detail["fields"]==[field]
+    assert detail["raw_source_roles"]==raw["source_refs"]
+    assert detail["shared_score_source_roles"]==shared_refs
+    assert "999" not in str(raised.value) and "pred_hgb" not in str(raised.value)
+    assert len(str(raised.value))<4200
+
+
+def test_raw_binding_diagnostic_bounds_source_roles_without_scalar_leaks():
+    detail=subject._raw_binding_diagnostic({"source_refs":{"a2":{"path":"x"*5000,"sha256":"a"*64}}},
+        {},{"signal_date":"2026-01-05","ticker":"SYN","security_id":"synthetic-id","raw_score":123.456},["raw_score"])
+    payload=json.loads(detail.split(":",1)[1])
+    assert payload["source_role_size_limit"] is True and payload["raw_source_roles"]=={}
+    assert "123.456" not in detail and len(detail)<4200
+
+
+@pytest.fixture
+def accepted_input_vintage(tmp_path,monkeypatch):
+    """Synthetic publisher-selected archive, with later Raw coverage completion."""
+    import hashlib
+    from scripts.research.a2.portfolio import selected_hgb as owner
+    raw,package=applied_fixture();day='2026-01-05'
+    original=raw['_ranked'].loc[raw['_ranked'].target_date.eq(day)&raw['_ranked'].ticker.ne('T41')].copy()
+    mask=raw['_ranked'].target_date.eq(day)
+    raw['_ranked'].loc[mask&raw['_ranked'].ticker.ne('T41'),'rank']+=1
+    raw['_ranked'].loc[mask&raw['_ranked'].ticker.eq('T41'),['rank','score']]=[1,1.1]
+    package['package_path']=str(tmp_path/'latest.json')
+    archive_path=tmp_path/'history'/(day+'.json');archive_path.parent.mkdir()
+    input_path=tmp_path/'original_input.json'
+    feature={'path':str(tmp_path/'features.parquet'),'sha256':'f'*64}
+    report={'status':'READY','data_date':day,'generated_at':day+'T20:45:00+00:00','model_id':'A2_HGB','model_sha256':subject.base.MODEL_2026_SHA,
+        'coverage':{'eligible_count':40},'selected_hgb_features':feature,
+        'universe':{'universe_id':'pool','quarter':'2026Q1','universe_members_sha256':'c'*64},
+        'ranked_rows':original.to_dict('records')}
+    snapshot={'signal_date':day,'generated_at':day+'T20:50:00+00:00','policy_id':owner.LEGACY_POLICY,
+        'shared_scores':{'rows':[{key:value for key,value in row.items() if key!='signal_date'}
+            for row in package['shared_scores']['historical'] if row['signal_date']==day]},
+        'source_refs':{'current/selected_hgb_features.parquet':feature},
+        'report_binding':{'selected_hgb_features':feature}}
+    selections=[]
+    def write():
+        input_path.write_text(json.dumps(report),encoding='utf-8')
+        source={'path':str(input_path),'sha256':hashlib.sha256(input_path.read_bytes()).hexdigest()}
+        snapshot['source_refs']['current/report.json']=source
+        archive_path.write_text(json.dumps(snapshot),encoding='utf-8')
+        reference={'path':str(archive_path),'sha256':hashlib.sha256(archive_path.read_bytes()).hexdigest()}
+        package['source_refs']['history/'+day+'.json']=reference
+        package['source_hashes']['history/'+day+'.json']=reference['sha256']
+    write()
+    raw['source_refs'].update({'daily/'+day:{'path':str(tmp_path/'canonical.json'),'sha256':'d'*64},
+        'daily_members/'+day:{'path':str(tmp_path/'members.parquet'),'sha256':'c'*64}})
+    # The publisher authority is stubbed explicitly; no real freeze/model is read.
+    def accepted(owner_package,folder,requested,*,report_metadata_loader=None):
+        assert report_metadata_loader is subject._repair_report_metadata
+        assert owner_package is package and folder==archive_path.parent and requested==day
+        selections.append(requested)
+        return archive_path,package['source_hashes']['history/'+day+'.json'],None
+    monkeypatch.setattr(owner,'_revision_selection',accepted)
+    return SimpleNamespace(raw=raw,package=package,day=day,report=report,snapshot=snapshot,
+        write=write,input_path=input_path,archive_path=archive_path,selections=selections)
+
+
+def test_accepted_distinct_input_vintage_keeps_both_exact_rank_roles(accepted_input_vintage):
+    e=accepted_input_vintage;before=deepcopy(e.package)
+    history=subject.prepare_applied_history(e.raw,e.package,'2026-09-24')
+    row=subject.query_applied_history(history,'T01',e.day,e.day)['daily'][0]
+    assert row['strategies']['RAW_A2']['model_rank']==2
+    assert row['strategies']['HGB_DIAG_5']['raw_rank']==1
+    assert row['strategies']['HGB_DIAG_5']['model_rank']==40
+    assert row['strategies']['HGB_DIAG_5']['raw_input_source_ref']==e.snapshot['source_refs']['current/report.json']
+    assert history['_score_errors']=={} and e.selections==[e.day] and e.package==before
+
+
+def test_same_input_vintage_conflict_remains_strict(accepted_input_vintage):
+    e=accepted_input_vintage
+    e.raw['source_refs']['daily/'+e.day]=e.snapshot['source_refs']['current/report.json']
+    with pytest.raises(ValueError,match='RAW_BINDING_MISMATCH'):
+        subject.prepare_applied_history(e.raw,e.package,'2026-09-24')
+
+
+@pytest.mark.parametrize('fault',['missing_ref','source_date','source_model','pool','members','feature','raw_rank',
+    'raw_score','raw_identity','coverage','archive_shared','archive_date','source_sha'])
+def test_unverified_original_input_isolated_to_its_hgb_date(accepted_input_vintage,fault):
+    e=accepted_input_vintage
+    if fault=='missing_ref':
+        e.package['source_refs'].pop('history/'+e.day+'.json');e.package['source_hashes'].pop('history/'+e.day+'.json')
+    else:
+        if fault=='source_date':e.report['data_date']='2026-09-25'
+        elif fault=='source_model':e.report['model_sha256']='e'*64
+        elif fault=='pool':e.report['universe']['universe_id']='different'
+        elif fault=='members':e.report['universe']['universe_members_sha256']='e'*64
+        elif fault=='feature':e.report['selected_hgb_features']={'path':'wrong','sha256':'e'*64}
+        elif fault=='raw_rank':e.report['ranked_rows'][0]['rank']=999
+        elif fault=='raw_score':e.report['ranked_rows'][0]['score']=999
+        elif fault=='raw_identity':e.report['ranked_rows'][0]['security_id']='different'
+        elif fault=='coverage':e.report['coverage']['eligible_count']=41
+        elif fault=='archive_shared':e.snapshot['shared_scores']['rows'][0]['pred_hgb']=999
+        elif fault=='archive_date':e.snapshot['signal_date']='2026-09-25'
+        e.write()
+        if fault=='source_sha':e.input_path.write_text('{}',encoding='utf-8')
+    history=subject.prepare_applied_history(e.raw,e.package,'2026-09-24',isolate_shared_source=True)
+    assert history['status']=='READY' and len(history['catalog'])==42
+    assert set(history['_score_errors'])=={e.day} and e.day not in history['_scores']
+    row=subject.query_applied_history(history,'T01',e.day,e.day)['daily'][0]
+    assert row['strategies']['RAW_A2']['model_rank']==2 and row['strategies']['RAW_A2']['target_weight']==.05
+    for sid in selected.STRATEGY_IDS:
+        assert row['strategies'][sid]['score'] is None and row['strategies'][sid]['target_weight'] is None
+        assert row['strategies'][sid]['target_status']=='UNAVAILABLE'
+    earlier=subject._cutoff_applied_history(history,'2026-01-02')
+    assert earlier['_score_errors']=={} and earlier['_score_source_refs']=={}
+    assert subject.query_applied_history(earlier,'T01')['score_source_errors']=={}
+    assert history['source_refs']['a2']==e.raw['source_refs']['a2']
+
+
+def test_cached_input_vintage_rechecks_hash_and_preserves_independent_raw(accepted_input_vintage):
+    e=accepted_input_vintage
+    history=subject.prepare_applied_history(e.raw,e.package,'2026-09-24')
+    # Only actual file references enter this synthetic cache integrity exercise.
+    history['_score_source_refs'][e.day]['verification_refs']={
+        'accepted_archive':e.package['source_refs']['history/'+e.day+'.json'],
+        'raw_input':e.snapshot['source_refs']['current/report.json']}
+    assert subject._recheck_input_vintages(history) is history
+    e.input_path.write_text('{}',encoding='utf-8')
+    refused=subject._recheck_input_vintages(history)
+    assert refused['catalog']==history['catalog'] and e.day not in refused['_scores']
+    assert e.day in refused['_targets']['RAW_A2'] and e.day not in refused['_targets']['HGB_DIAG_5']
+    assert e.day in history['_scores']  # cached snapshot itself remains immutable.
+
+
+def test_input_projection_skips_unrelated_numeric_values_and_preserves_absolute_offsets(tmp_path,monkeypatch):
+    import hashlib
+    from scripts.common import json_projection
+    path=tmp_path/'large_input.json'
+    path.write_text(json.dumps({'unused':'y'*70000,'ranked_rows':[
+        {'ticker':'UNRELATED','security_id':'other','rank':'x'*100000,'score':'z'*100000},
+        {'ticker':'SYN','security_id':'id','rank':8,'score':.125,'universe_id':'pool','unused':'q'*70000}]}),encoding='utf-8')
+    reference={'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+    loads=json_projection.json.loads
+    def bounded(value,*args,**kwargs):
+        assert len(value)<100,'unrelated wide/numeric evidence was decoded'
+        return loads(value,*args,**kwargs)
+    monkeypatch.setattr(json_projection.json,'loads',bounded)
+    rows,count=subject._project_input_rankings(reference,{('SYN','id')})
+    assert rows=={('SYN','id'):{'ticker':'SYN','security_id':'id','rank':8,'score':.125,'universe_id':'pool'}} and count==2
+
+
+def test_accepted_current_revision_replaces_only_its_same_day_stock_view():
+    raw, package = applied_fixture()
+    day = package['shared_scores']['current']['signal_date']
+    stale = [{**row, 'signal_date': day} for row in deepcopy(package['shared_scores']['current']['rows'])]
+    stale[0]['raw_rank'], stale[1]['raw_rank'] = stale[1]['raw_rank'], stale[0]['raw_rank']
+    package['shared_scores']['historical'].extend(stale)
+    original = deepcopy(package)
+    history = subject.prepare_applied_history(raw, package, day)
+    expected = {(row['ticker'], row['security_id']): {**row, 'signal_date': day}
+                for row in selected.score_snapshot(day, package=package)['rows']}
+    assert history['_scores'][day] == expected
+    assert len(history['_scores'][day]) == 40
+    assert package == original  # The replay's original inputs and records remain immutable.
+    assert package['shared_scores']['historical'][-40:] == stale
+    rankings = subject.load_applied_rankings(day, history=history)
+    for sid in selected.STRATEGY_IDS:
+        assert len(rankings['strategies'][sid]['rows']) == 40
+        assert all(row['raw_rank'] == expected[(row['ticker'], row['security_id'])]['raw_rank']
+                   for row in rankings['strategies'][sid]['rows'])
+
+
+@pytest.mark.parametrize('field,error', [('raw_rank', 'RAW_BINDING_MISMATCH'),
+    ('raw_score', 'RAW_BINDING_MISMATCH'), ('security_id', 'SECURITY_BINDING_MISMATCH')])
+def test_current_revision_retains_exact_raw_and_security_binding(field, error):
+    raw, package = applied_fixture()
+    current = package['shared_scores']['current']
+    day = current['signal_date']
+    package['shared_scores']['historical'].extend({**row, 'signal_date': day} for row in deepcopy(current['rows']))
+    if field == 'raw_rank':
+        current['rows'][0][field], current['rows'][1][field] = current['rows'][1][field], current['rows'][0][field]
+    elif field == 'raw_score':
+        current['rows'][0][field] += .001
+    else:
+        current['rows'][0][field] = 'different_security'
+    with pytest.raises(ValueError, match=error):
+        subject.prepare_applied_history(raw, package, day)
+
+
+@pytest.mark.parametrize('status', ['BLOCKED', 'UNAVAILABLE'])
+def test_missing_current_never_replaces_existing_same_day_history(status):
+    raw, package = applied_fixture()
+    current = package['shared_scores']['current']
+    day = current['signal_date']
+    recorded = [{**row, 'signal_date': day} for row in deepcopy(current['rows'])]
+    package['shared_scores']['historical'].extend(recorded)
+    current.update(status=status, signal_date=None, rows=[], reason='Synthetic current unavailable')
+    history = subject.prepare_applied_history(raw, package, day)
+    assert history['_scores'][day] == {(row['ticker'], row['security_id']): row for row in recorded}
+    assert selected.score_snapshot(day, package=package)['status'] == status
 
 
 @pytest.mark.parametrize('defer_index', [False, True])
@@ -441,3 +711,314 @@ def test_cached_cutoff_excludes_future_only_members_and_daily_source_refs():
     assert not any(key.startswith(('daily/', 'daily_members/')) for key in earlier['source_refs'])
     assert subject.query_applied_history(complete, 'FUTURE', '2026-09-24')['status'] == 'READY'
     assert complete['end_date'] == '2026-09-24'
+
+
+@pytest.fixture
+def current_ranking_evidence(tmp_path):
+    """One immutable accepted decision with an independently bound Raw parent."""
+    import hashlib
+    from apps.demo_console.adapters import workspace_reader as workspace
+    raw, package = applied_fixture()
+    day = package['shared_scores']['current']['signal_date']
+    members = raw['_members'][['ticker', 'security_id']].drop_duplicates()
+    universe_dir = tmp_path / 'universe'
+    universe_dir.mkdir()
+    member_path = universe_dir / 'mapped_members.parquet'
+    members.to_parquet(member_path, index=False)
+    report_path, parent_path = tmp_path / 'recommendation_source.json', tmp_path / 'manifest.json'
+    report = {'status': 'READY', 'data_date': day, 'model_id': 'A2_HGB',
+        'model_sha256': subject.base.MODEL_2026_SHA,
+        'ranked_rows': raw['_ranked'].loc[raw['_ranked'].target_date.eq(day)].to_dict('records'),
+        'coverage': {'eligible_count': 41, 'mapped_count': 42, 'excluded_count': 1},
+        'universe': {'universe_id': 'pool', 'quarter': '2026Q2', 'universe_member_count': 42,
+                    'report_path': str(universe_dir / 'universe_report.json'),
+                    'universe_members_sha256': hashlib.sha256(member_path.read_bytes()).hexdigest()}}
+    package['source_refs'] = {key: {'path': str(tmp_path / ('unused_' + str(i))), 'sha256': digest}
+                             for i, (key, digest) in enumerate(package['source_hashes'].items())}
+    model = SimpleNamespace(source_id=workspace.LATEST, error=None, decision_date=day,
+        source_manifest_path=str(parent_path), source_manifest_sha256=None,
+        ranking=tuple(SimpleNamespace(ticker=row['ticker'], rank=row['rank'], score=row['score'])
+                      for row in report['ranked_rows'] if row['rank'] <= 40))
+    parent = {'ranking_end_date': day, 'recommendation_reports': []}
+    def sync():
+        report_path.write_text(json.dumps(report), encoding='utf-8')
+        ref = {'path': str(report_path), 'sha256': hashlib.sha256(report_path.read_bytes()).hexdigest()}
+        package['source_refs']['current/report.json'] = ref
+        package['source_hashes']['current/report.json'] = ref['sha256']
+        parent['recommendation_reports'] = [ref]
+        parent_path.write_text(json.dumps(parent), encoding='utf-8')
+        model.source_manifest_sha256 = hashlib.sha256(parent_path.read_bytes()).hexdigest()
+    sync()
+    return SimpleNamespace(raw=raw, package=package, day=day, model=model, parent=parent,
+        report=report, report_path=report_path, parent_path=parent_path,
+        member_path=member_path, sync=sync)
+
+
+@pytest.mark.parametrize('supplied_history', [False, True])
+def test_current_rankings_use_exact_current_evidence_without_loading_conflicting_history(
+        current_ranking_evidence, monkeypatch, supplied_history):
+    e = current_ranking_evidence
+    old = e.package['shared_scores']['historical']
+    old[0]['raw_rank'], old[1]['raw_rank'] = old[1]['raw_rank'], old[0]['raw_rank']
+    with pytest.raises(ValueError, match='RAW_BINDING_MISMATCH'):
+        subject.prepare_applied_history(e.raw, e.package, e.day)
+    before = deepcopy(e.package)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('current ranking must not load a full historical index')
+    monkeypatch.setattr(subject, 'load_applied_history', forbidden)
+    monkeypatch.setattr(subject, '_cached_history', forbidden)
+    history = {'status': 'UNAVAILABLE', 'error': 'APPLIED_SHARED_SCORE_RAW_BINDING_MISMATCH'} if supplied_history else None
+    result = subject.load_applied_rankings(e.day, package=e.package, raw_model=e.model, history=history)
+    assert result['status'] == 'READY'
+    assert result['coverage']['eligible_count'] == 41
+    assert len(result['strategies']['RAW_A2']['rows']) == 41
+    for sid in selected.STRATEGY_IDS:
+        assert len(result['strategies'][sid]['rows']) == 40
+        assert result['strategies'][sid]['actual_signal_date'] == e.day
+    assert e.package == before
+
+
+@pytest.mark.parametrize('fault,error', [
+    ('report_hash', 'MANIFEST_HASH_MISMATCH'), ('parent_hash', 'MANIFEST_HASH_MISMATCH'),
+    ('member_hash', 'OUTPUT_HASH_MISMATCH'), ('missing_ref', 'REPORT_PARENT_BINDING_MISMATCH'),
+    ('parent_ref', 'REPORT_PARENT_BINDING_MISMATCH'), ('parent_day', 'REPORT_PARENT_BINDING_MISMATCH'),
+    ('model_day', 'RAW_REFERENCE_UNAVAILABLE'), ('report_day', 'REPORT_IDENTITY_MISMATCH'),
+    ('model_sha', 'REPORT_IDENTITY_MISMATCH'), ('report_status', 'REPORT_IDENTITY_MISMATCH'),
+    ('report_sid', 'RANK_OUTSIDE_VERIFIED_POOL'), ('shared_sid', 'TOP40_BINDING_MISMATCH'),
+    ('shared_rank', 'RAW_BINDING_MISMATCH'), ('shared_score', 'RAW_BINDING_MISMATCH'),
+    ('parent_score', 'RAW_RANKING_BINDING_MISMATCH'), ('universe', 'POOL_BINDING_MISMATCH'),
+    ('member_count', 'MEMBER_COUNT_MISMATCH'), ('score_count', 'SCORE_COUNT_MISMATCH')])
+def test_current_rankings_reject_changed_or_unbound_evidence(current_ranking_evidence, monkeypatch, fault, error):
+    e = current_ranking_evidence
+    if fault == 'report_day':
+        e.report['data_date'] = '2026-09-23'
+    elif fault == 'model_sha':
+        e.report['model_sha256'] = '0' * 64
+    elif fault == 'report_status':
+        e.report['status'] = 'BLOCKED'
+    elif fault == 'report_sid':
+        e.report['ranked_rows'][0]['security_id'] = 'unbound'
+    elif fault == 'universe':
+        e.report['ranked_rows'][0]['universe_id'] = 'other'
+    elif fault == 'member_count':
+        e.report['coverage']['mapped_count'] += 1
+    elif fault == 'score_count':
+        e.report['coverage']['eligible_count'] += 1
+    e.sync()
+    if fault in ('report_hash', 'parent_hash', 'member_hash'):
+        path = {'report_hash': e.report_path, 'parent_hash': e.parent_path, 'member_hash': e.member_path}[fault]
+        path.write_bytes(path.read_bytes() + b' ')
+    elif fault == 'missing_ref':
+        e.package['source_refs'].pop('current/report.json')
+        e.package['source_hashes'].pop('current/report.json')
+    elif fault in ('parent_ref', 'parent_day'):
+        if fault == 'parent_ref':
+            e.parent['recommendation_reports'] = []
+        else:
+            e.parent['ranking_end_date'] = '2026-09-23'
+        e.parent_path.write_text(json.dumps(e.parent), encoding='utf-8')
+        import hashlib
+        e.model.source_manifest_sha256 = hashlib.sha256(e.parent_path.read_bytes()).hexdigest()
+    elif fault == 'model_day':
+        e.model.decision_date = '2026-09-23'
+    elif fault == 'shared_sid':
+        e.package['shared_scores']['current']['rows'][0]['security_id'] = 'unbound'
+    elif fault == 'shared_rank':
+        rows = e.package['shared_scores']['current']['rows']
+        rows[0]['raw_rank'], rows[1]['raw_rank'] = rows[1]['raw_rank'], rows[0]['raw_rank']
+    elif fault == 'shared_score':
+        e.package['shared_scores']['current']['rows'][0]['raw_score'] += .001
+    elif fault == 'parent_score':
+        e.model.ranking[0].score += .001
+    monkeypatch.setattr(subject, 'load_applied_history', lambda **kwargs: pytest.fail('must not fall back after invalid current evidence'))
+    result = subject.load_applied_rankings(e.day, package=e.package, raw_model=e.model,
+        history={'status': 'READY', 'should_not_be_used': True})
+    assert result['status'] == 'UNAVAILABLE'
+    assert error in result['error']
+    assert all(leaf['rows'] == [] for leaf in result['strategies'].values())
+
+
+@pytest.mark.parametrize('day', ['2026-09-23', '2026-09-25'])
+def test_current_rankings_never_borrow_current_for_old_or_future_dates(current_ranking_evidence, monkeypatch, day):
+    e = current_ranking_evidence
+    seen = []
+    def history(**kwargs):
+        seen.append(kwargs['as_of'])
+        return {'status': 'UNAVAILABLE', 'error': 'ORIGINAL_HISTORICAL_BINDING_FAILURE'}
+    monkeypatch.setattr(subject, 'load_applied_history', history)
+    monkeypatch.setattr(subject, '_checked_json', lambda ref: pytest.fail('different date must not read current evidence'))
+    result = subject.load_applied_rankings(day, package=e.package, raw_model=e.model)
+    assert seen == [day]
+    assert result['status'] == 'UNAVAILABLE' and result['error'] == 'ORIGINAL_HISTORICAL_BINDING_FAILURE'
+    assert all(leaf['rows'] == [] for leaf in result['strategies'].values())
+
+
+def test_current_rankings_keep_blocked_targets_unknown(current_ranking_evidence):
+    e = current_ranking_evidence
+    for sid in selected.STRATEGY_IDS:
+        e.package['strategies'][sid]['application'].update(status='BLOCKED', signal_date=None,
+            requested_signal_date=e.day, rows=[], target_cash_weight=None, reason='missing risk inputs')
+    result = subject.load_applied_rankings(e.day, package=e.package, raw_model=e.model,
+        history={'status': 'UNAVAILABLE', 'error': 'unrelated historical conflict'})
+    assert result['status'] == 'READY'
+    for sid in selected.STRATEGY_IDS:
+        leaf = result['strategies'][sid]
+        assert leaf['target_status'] == 'BLOCKED'
+        assert all(row['target_weight'] is None and row['selected'] is None for row in leaf['rows'])
+
+
+def test_current_rankings_recheck_hash_after_a_prior_success(current_ranking_evidence):
+    e = current_ranking_evidence
+    first = subject.load_applied_rankings(e.day, package=e.package, raw_model=e.model)
+    assert first['status'] == 'READY'
+    e.report_path.write_bytes(e.report_path.read_bytes() + b' ')
+    second = subject.load_applied_rankings(e.day, package=e.package, raw_model=e.model)
+    assert second['status'] == 'UNAVAILABLE' and 'HASH_MISMATCH' in second['error']
+
+
+def test_current_rankings_detect_source_changes_during_preparation(current_ranking_evidence, monkeypatch):
+    e = current_ranking_evidence
+    original = subject.prepare_applied_history
+    def prepare(*args, **kwargs):
+        result = original(*args, **kwargs)
+        e.report_path.write_bytes(e.report_path.read_bytes() + b' ')
+        return result
+    monkeypatch.setattr(subject, 'prepare_applied_history', prepare)
+    result = subject.load_applied_rankings(e.day, package=e.package, raw_model=e.model)
+    assert result['status'] == 'UNAVAILABLE' and 'SOURCE_CHANGED_DURING_READ' in result['error']
+
+
+def test_isolated_hgb_source_keeps_independent_active_stock_records(accepted_input_vintage,monkeypatch):
+    from apps.demo_console.adapters import workspace_reader as workspace, new_strategy_stock_history_reader as native
+    from apps.moomoo_trading_component.moomoo_component.strategy import ACTIVE_PAPER_STRATEGY_IDS
+    e=accepted_input_vintage
+    e.package['source_refs'].pop('history/'+e.day+'.json');e.package['source_hashes'].pop('history/'+e.day+'.json')
+    history=subject.prepare_applied_history(e.raw,e.package,'2026-09-24',isolate_shared_source=True)
+    history.update(_active_account_state={},_native_stock_sources={})
+    monkeypatch.setattr(workspace,'query_applied_stock_history',subject.query_applied_history)
+    monkeypatch.setattr(native,'query',lambda *args,**kwargs:{'note':'Synthetic recorded inputs','strategies':{
+        sid:{'daily':{e.day:{'research_weight':.05,'native_action':'BUY'}},'source_refs':{},'error':None}
+        for sid in ACTIVE_PAPER_STRATEGY_IDS[2:]}})
+    result=workspace.query_active_stock_history(history,'T01',e.day,e.day)
+    assert result['status']=='READY' and set(result['daily'][0]['strategies'])==set(ACTIVE_PAPER_STRATEGY_IDS)
+    assert result['daily'][0]['strategies']['RAW_A2']['model_rank']==2
+    assert result['daily'][0]['strategies']['HGB_DIAG_5']['score'] is None
+    assert all(result['daily'][0]['strategies'][sid]['research_weight']==.05 for sid in ACTIVE_PAPER_STRATEGY_IDS[2:])
+    assert result['source_refs']['a2']==e.raw['source_refs']['a2'] and e.day in result['score_source_errors']
+
+
+@pytest.mark.parametrize('fault',['source_missing','source_naive','source_after_capture','capture_after_package','package_future'])
+def test_input_vintage_knowledge_clock_is_independent_of_observation_day(accepted_input_vintage,fault):
+    from datetime import datetime,timezone,timedelta
+    e=accepted_input_vintage
+    if fault=='source_missing':e.report.pop('generated_at')
+    elif fault=='source_naive':e.report['generated_at']=e.day+'T20:45:00'
+    elif fault=='source_after_capture':e.report['generated_at']=e.day+'T21:00:00+00:00'
+    elif fault=='capture_after_package':e.snapshot['generated_at']='2026-09-26T20:00:00+00:00'
+    elif fault=='package_future':e.package['generated_at']=(datetime.now(timezone.utc)+timedelta(days=1)).isoformat()
+    e.write()
+    result=subject.prepare_applied_history(e.raw,e.package,'2026-09-24',isolate_shared_source=True)
+    assert result['status']=='READY' and e.day in result['_score_errors'] and e.day not in result['_scores']
+
+
+@pytest.fixture
+def input_repair_revision(accepted_input_vintage,monkeypatch):
+    """Exercise the real selection/repair branch; mock only unchanged snapshot validation."""
+    import hashlib
+    from scripts.research.a2.portfolio import selected_hgb as owner
+    e=accepted_input_vintage;folder=e.archive_path.parent
+    # The isolated test has no training artifact reads. Reader model/pool/input gates stay real.
+    # Restore the actual function saved from module code, rather than the base fixture stub.
+    import importlib.util
+    spec=importlib.util.spec_from_file_location('synthetic_repair_acceptance_owner',Path(owner.__file__))
+    authority=importlib.util.module_from_spec(spec);spec.loader.exec_module(authority)
+    feature_path=Path(e.report['selected_hgb_features']['path']);feature_path.write_bytes(b'synthetic frozen features')
+    e.report['selected_hgb_features']['sha256']=hashlib.sha256(feature_path.read_bytes()).hexdigest()
+    old_source_path=folder/'old_source.json'
+    old_source=deepcopy(e.report);old_source['generated_at']=e.day+'T20:35:00+00:00'
+    old_source_path.write_text(json.dumps(old_source),encoding='utf-8')
+    old_source_ref={'path':str(old_source_path),'sha256':hashlib.sha256(old_source_path.read_bytes()).hexdigest()}
+    old_snapshot=deepcopy(e.snapshot);old_snapshot['generated_at']=e.day+'T20:40:00+00:00'
+    old_snapshot['source_refs']['current/report.json']=old_source_ref
+    old_snapshot['snapshot_sha256']=authority._snapshot_hash(old_snapshot)
+    old_path=folder/(e.day+'.json');old_path.write_text(json.dumps(old_snapshot),encoding='utf-8')
+    old_ref={'path':str(old_path),'sha256':hashlib.sha256(old_path.read_bytes()).hexdigest()}
+    audit_path=folder/'input_repair.json'
+    audit={'schema':'A2_OFFLINE_INPUT_REPAIR_V1','network_requests_this_run':0,'status':'INPUTS_VERIFIED',
+        'target_date':e.day,'run_id':'synthetic-repair','model_fit_count':0,'parameter_search_count':0,
+        'old_date_keys_retained':True,'old_rows_unchanged':True,'unrelated_current_keys_unchanged':True,
+        'reason':'Synthetic late input repair','parent_inputs':[old_source_ref],'created_at':e.day+'T20:43:00+00:00'}
+    audit_path.write_text(json.dumps(audit),encoding='utf-8')
+    audit_ref={'path':str(audit_path),'sha256':hashlib.sha256(audit_path.read_bytes()).hexdigest()}
+    e.report.update(run_id=audit['run_id'],repair_lineage=audit_ref)
+    e.input_path.write_text(json.dumps(e.report),encoding='utf-8')
+    new_source_ref={'path':str(e.input_path),'sha256':hashlib.sha256(e.input_path.read_bytes()).hexdigest()}
+    e.snapshot['source_refs']['current/report.json']=new_source_ref
+    e.snapshot['snapshot_sha256']=authority._snapshot_hash(e.snapshot)
+    revision_path=folder/'revisions'/e.day/(e.snapshot['snapshot_sha256']+'.json');revision_path.parent.mkdir(parents=True)
+    revision_path.write_text(json.dumps(e.snapshot),encoding='utf-8')
+    reference={'path':str(revision_path),'sha256':hashlib.sha256(revision_path.read_bytes()).hexdigest()}
+    receipt={'schema_version':1,'kind':'INPUT_REPAIR','signal_date':e.day,'supersedes':old_ref,
+        'replacement':reference,'repair_lineage':audit_ref}
+    receipt_path=revision_path.with_suffix('.receipt.json');receipt_path.write_text(json.dumps(receipt),encoding='utf-8')
+    receipt_ref={'path':str(receipt_path),'sha256':hashlib.sha256(receipt_path.read_bytes()).hexdigest()}
+    for name,ref in [('history/'+e.day+'.json',reference),('history_revision/'+e.day+'.json',receipt_ref)]:
+        e.package['source_refs'][name]=ref;e.package['source_hashes'][name]=ref['sha256']
+    monkeypatch.setattr(authority,'_validate_snapshot',lambda value:value)
+    parsed=[];original_json=authority._json
+    def no_full_raw_report(path):
+        assert Path(path).resolve()!=e.input_path.resolve(),'acceptance chain decoded the full Raw report'
+        parsed.append(Path(path).resolve())
+        return original_json(path)
+    monkeypatch.setattr(authority,'_json',no_full_raw_report)
+    monkeypatch.setattr(owner,'_revision_selection',authority._revision_selection)
+    e.authority=authority;e.parsed=parsed;e.audit_path=audit_path;e.old_path=old_path
+    e.old_source_path=old_source_path;e.receipt_path=receipt_path;e.audit=audit
+    return e
+
+
+def test_input_repair_selection_uses_bounded_metadata_hook_and_full_hash_closure(input_repair_revision):
+    e=input_repair_revision
+    history=subject.prepare_applied_history(e.raw,e.package,'2026-09-24')
+    refs=history['_score_source_refs'][e.day]['verification_refs']
+    assert e.input_path.resolve() not in e.parsed
+    assert e.audit_path.resolve() in e.parsed and e.old_path.resolve() in e.parsed
+    assert refs['repair_lineage']['path']==str(e.audit_path)
+    assert refs['superseded_archive']['path']==str(e.old_path)
+    assert refs['parent/current/report.json']['path']==str(e.old_source_path)
+    assert subject._recheck_input_vintages(history) is history
+    assert history['_score_source_refs'][e.day]['knowledge_as_of']==e.package['generated_at']
+
+
+@pytest.mark.parametrize('target',['audit_path','old_path','old_source_path','receipt_path'])
+def test_cached_repair_closure_tamper_only_refuses_its_hgb_date(input_repair_revision,target):
+    e=input_repair_revision
+    history=subject.prepare_applied_history(e.raw,e.package,'2026-09-24')
+    getattr(e,target).write_text('{}',encoding='utf-8')
+    partial=subject._recheck_input_vintages(history)
+    assert partial['catalog']==history['catalog'] and e.day in partial['_score_errors']
+    assert e.day in partial['_targets']['RAW_A2'] and e.day not in partial['_targets']['HGB_DIAG_5']
+    assert subject._cutoff_applied_history(partial,'2026-01-02')['_score_errors']=={}
+
+
+def test_input_repair_default_report_loader_retains_original_behavior(input_repair_revision,monkeypatch):
+    e=input_repair_revision;owner=e.authority;calls=[]
+    original=owner._json
+    def default_report(path):
+        calls.append(Path(path).resolve())
+        if Path(path).resolve()==e.input_path.resolve():return e.report
+        return original(path)
+    monkeypatch.setattr(owner,'_json',default_report)
+    folder=e.old_path.parent
+    path,digest,receipt=owner._revision_selection(e.package,folder,e.day)
+    assert e.input_path.resolve() in calls and path.is_file() and digest and receipt
+
+
+def test_late_accepted_archive_uses_package_knowledge_not_observation_day(accepted_input_vintage):
+    e=accepted_input_vintage
+    e.snapshot['generated_at']='2026-01-06T20:50:00+00:00'
+    e.write()
+    history=subject.prepare_applied_history(e.raw,e.package,e.day)
+    assert history['as_of']==e.day and history['_score_errors']=={}
+    assert history['_score_source_refs'][e.day]['knowledge_as_of']==e.package['generated_at']
+    assert subject.query_applied_history(history,'T01',e.day,e.day)['daily'][0]['strategies']['HGB_DIAG_5']['raw_rank']==1

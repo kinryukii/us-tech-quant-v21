@@ -6,20 +6,28 @@ import json
 
 import streamlit as st
 
-from apps.demo_console.components.visuals import apply_style, sidebar_brand
+from apps.demo_console.components.visuals import apply_style
+from apps.demo_console.i18n import LANGUAGES, get_language, tr
 
 
 _ORIGIN = "http://127.0.0.1:8766"
-_PAGES = {"paper": ("模拟盘", ":material/science:"), "live": ("实盘", ":material/lock:")}
+_PAGES = {"paper": ("Paper trading", ":material/science:"), "live": ("Live trading", ":material/lock:")}
 _START_COMMAND = ('powershell -NoProfile -File '
-                  '"D:\\us-tech-quant\\apps\\moomoo_trading_component\\start.ps1"')
+                  '"D:\\us-tech-quant\\apps\\moomoo_trading_component\\start.ps1" -ManualDataUpdates -WithMoomooBest')
 
 
-def trading_url(mode: str, *, embed: bool = False) -> str:
-    """Only the two fixed local destinations may be embedded."""
+def trading_url(mode: str, *, embed: bool = False, language: str | None = None,
+                presentation: bool | None = None) -> str:
+    """Fixed local destinations with finite language and display-mode values."""
     if mode not in _PAGES:
         raise ValueError("Unknown trading workspace")
-    return f"{_ORIGIN}/{mode}" + ("?embed=1" if embed else "")
+    language = language or get_language()
+    language = language if language in LANGUAGES else "en"
+    if presentation is None:
+        presentation = st.session_state.get("presentation_mode", True)
+    view = "research" if presentation is False else "presentation"
+    query = f"embed=1&lang={language}&view={view}" if embed else f"lang={language}&view={view}"
+    return f"{_ORIGIN}/{mode}?{query}"
 
 
 def component_health() -> tuple[bool, str]:
@@ -52,42 +60,69 @@ def component_health() -> tuple[bool, str]:
 def render_trading_links(pages, *, include_research: bool = False) -> None:
     """Use the objects already registered with st.navigation."""
     if include_research:
-        st.page_link(pages["research"], label="研究工作台", icon=":material/monitoring:", width="stretch")
+        # A default callable page has the framework's empty root URL. Use its
+        # registered page identity for same-session navigation, avoiding a blank
+        # anchor resolving to the current /paper-trading or /live-trading URL.
+        if st.button(tr("Research workspace"), icon=":material/monitoring:", type="tertiary",
+                     key="trading_research_home", width="content"):
+            st.switch_page(pages["research"])
     if "strategies" in pages:
-        st.page_link(pages["strategies"], label="已应用策略 · 3", icon=":material/strategy:", width="stretch")
-    st.caption("交易工作台")
+        st.page_link(pages["strategies"], label=tr("Applied strategies") + " · 5", icon=":material/strategy:", width="stretch")
+    st.caption(tr("Trading workspace"))
     for mode, (label, icon) in _PAGES.items():
-        st.page_link(pages[mode], label=label, icon=icon, width="stretch")
+        st.page_link(pages[mode], label=tr(label), icon=icon, width="stretch")
 
 
-def render_trading_workspace(mode: str, pages) -> None:
-    url = trading_url(mode)
-    title, icon = _PAGES[mode]
-    apply_style(presentation=st.session_state.get("presentation_mode", True))
-    with st.sidebar:
-        sidebar_brand()
-        render_trading_links(pages, include_research=True)
-        st.divider()
-        st.caption("本机 DEMO · 独立交易工作台")
-        st.caption("三策略各自维护模拟现金、持仓与成交；共用冻结模型和信号日期。")
-
-    st.title(title, icon=icon)
+def render_trading_workspace(mode: str, pages=None) -> None:
+    """Only execution content; app.py owns brand, navigation and context."""
+    if mode not in _PAGES:
+        raise ValueError("Unknown trading workspace")
+    presentation = st.session_state.get("presentation_mode", True)
+    apply_style(presentation=presentation)
     if mode == "live":
-        st.warning("实盘未授权，交易已锁定。此页不解锁账户、不发送实盘订单。", icon=":material/lock:")
-    else:
-        st.caption("三套独立纸面账户，各 10,000 USD · 下一交易日开盘后按当时 MOOMOO 合格盘口执行")
-    with st.container(horizontal=True, vertical_alignment="center"):
-        st.link_button("独立窗口打开", url, icon=":material/open_in_new:")
-        st.button("重新检查连接", key=f"trading_connection_{mode}", icon=":material/refresh:")
-    st.caption("仅供运行此 DEMO 的同一台电脑使用，组件地址 127.0.0.1:8766。")
+        st.title(tr("Live trading"), icon=":material/lock:")
+        st.warning(tr("Live trading is not authorized and remains locked. This page does not unlock accounts or send live orders."), icon=":material/lock:")
+        return
+    st.caption(tr("The original broker simulation and paper accounts record cash, positions and fills separately."))
 
     ready, message = component_health()
+    # Translate presentation messages only; the bounded health protocol stays intact.
+    health_labels = {
+        "本机交易组件已连接": "Local trading component connected",
+        "交易组件暂不可用，或正在更新。": "The trading component is unavailable or updating.",
+        "本机端口的响应不符合交易组件协议。": "The local response does not match the trading component protocol.",
+        "交易组件版本或实盘锁定状态未通过检查，请更新后重试。": "The component version or live-trading lock could not be verified. Update and try again.",
+        "尚未连接到本机交易组件。": "The local trading component is not connected.",
+    }
+    message = tr(health_labels.get(message, message))
+    with st.expander(tr("Daily operation and connection"), expanded=not ready):
+        st.write(tr("Update the data once each trading afternoon, review the published target, then start the simulation within its execution window."))
+        st.caption(tr("Refresh reads account status. It does not update market history or generate a new strategy target."))
+        st.button(tr("Check connection again"), key="trading_connection_paper", icon=":material/refresh:")
+        st.caption(tr("Only available on the computer running this DEMO. Component address: 127.0.0.1:8766."))
+        if ready:
+            st.caption(message)
     if not ready:
         st.info(message)
         with st.container(border=True):
-            st.subheader("启动交易组件")
-            st.write("在本机 PowerShell 运行下方命令，保持终端打开，然后点击“重新检查连接”。")
+            st.subheader(tr("Start the trading component"))
+            st.write(tr("Run this command in local PowerShell, keep the terminal open, then select Check connection again."))
             st.code(_START_COMMAND, language="powershell")
-            st.caption("此命令只启动控制台，不会自动启动策略或解锁实盘。")
+            st.caption(tr("This command starts the console only. It does not automatically start strategies or unlock live trading."))
         return
-    st.iframe(trading_url(mode, embed=True), height=1650 if mode == "paper" else 1050, width="stretch")
+    # Cross-origin URLs cannot use content-height measurement. Keep the frame
+    # within the viewport and let its document own vertical scrolling.
+    st.html("""<style>
+    [data-testid="stLayoutWrapper"]:has(> .st-key-trading_component_frame) {
+        --trading-frame-height:clamp(520px,calc(100dvh - 230px),1050px);
+        height:var(--trading-frame-height)!important;
+        flex:0 0 var(--trading-frame-height)!important;
+        min-height:0!important;
+    }
+    .st-key-trading_component_frame {height:100%!important;min-height:0!important;overflow:hidden!important}
+    @media(max-width:620px){[data-testid="stLayoutWrapper"]:has(> .st-key-trading_component_frame) {
+        --trading-frame-height:clamp(440px,calc(100dvh - 230px),850px);
+    }}
+    </style>""")
+    with st.container(key="trading_component_frame", height="stretch", border=False, gap=None):
+        st.iframe(trading_url(mode, embed=True, presentation=presentation), height="stretch", width="stretch")

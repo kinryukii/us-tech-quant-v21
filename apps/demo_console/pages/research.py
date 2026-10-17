@@ -212,10 +212,11 @@ def _performance(summary, show_reference, show_gross, *, points, full_history_da
                     "observations": st.column_config.NumberColumn(tr("Recorded execution days"), format="%d"),
                 })
             st.caption(tr("Sharpe: daily mean / sample standard deviation × √252; risk-free rate = 0. Initial cash baseline excluded. Fewer than two returns or zero variance: unavailable. Descriptive, not evidence of statistical significance."))
-        with st.expander(tr("Inspect the A2 drawdown path"), expanded=False):
-            render_chart(drawdown_chart(summary), width="stretch", theme=None,
-                         key="research_drawdown_chart")
-            _drawdown_story(summary)
+        with st.expander(tr("Inspect the A2 drawdown path"), expanded=False, on_change="rerun", key="research_raw_drawdown") as raw_drawdown:
+            if raw_drawdown.open:
+                render_chart(drawdown_chart(summary), width="stretch", theme=None,
+                             key="research_drawdown_chart")
+                _drawdown_story(summary)
         render_benchmark_notes(markets, presentation=presentation)
         if hgb_comparison:
             _render_hgb_comparison(hgb_comparison)
@@ -287,35 +288,39 @@ def _consistency(summary, points, show_reference):
     positive = sum(period.net_return > 0 for period in valid_months)
     st.html(f'<div class="uq-research-observation"><strong>{text(tr("{positive} / {total} interior months had a positive net return", positive=positive, total=len(valid_months)))}</strong>'
             f'<p>{text(tr("Boundary and window-partial months are excluded from this count. A positive-month frequency is a historical observation, not a forecast or a skill probability."))}</p></div>')
-    with st.expander(tr("Inspect fixed 63-day windows"), expanded=False):
-        st.caption(tr("Each point compounds 63 recorded execution days ending on that date. Overlapping windows share observations; this is not a count of independent trials."))
-        windows = rolling_returns(summary)
-        if windows:
-            st.caption(tr("Rolling windows: {count} · End dates {start} → {end}",
-                          count=len(windows), start=windows[0].end_date, end=windows[-1].end_date))
-            render_chart(rolling_chart(windows, show_reference=show_reference),
-                         width="stretch", theme=None, key="research_rolling_chart")
-            reference_visible = show_reference and all(row.reference_net_return is not None for row in windows)
-            st.dataframe([{
-                "start_date": row.start_date, "end_date": row.end_date,
-                "observations": row.observations, "net_return": row.net_return,
-                "reference_net_return": row.reference_net_return,
-            } for row in windows], hide_index=True, width="stretch", height=220,
-                key="research_rolling_table", column_config={
-                    "start_date": st.column_config.TextColumn(tr("Window start date")),
-                    "end_date": st.column_config.TextColumn(tr("Window end date")),
-                    "observations": st.column_config.NumberColumn(tr("Recorded execution days"), format="%d"),
-                    "net_return": st.column_config.NumberColumn(tr("Raw A2 · Net"), format="percent"),
-                    "reference_net_return": (st.column_config.NumberColumn(tr("Frozen A control · Net"), format="percent")
-                                             if reference_visible else None),
-                })
-        else:
-            st.info(tr("Fewer than 63 execution records are included. No full rolling window is available."))
+    with st.expander(tr("Inspect fixed 63-day windows"), expanded=False, on_change="rerun", key="research_rolling_windows") as rolling_windows:
+        if rolling_windows.open:
+            st.caption(tr("Each point compounds 63 recorded execution days ending on that date. Overlapping windows share observations; this is not a count of independent trials."))
+            windows = rolling_returns(summary)
+            if windows:
+                st.caption(tr("Rolling windows: {count} · End dates {start} → {end}",
+                              count=len(windows), start=windows[0].end_date, end=windows[-1].end_date))
+                render_chart(rolling_chart(windows, show_reference=show_reference),
+                             width="stretch", theme=None, key="research_rolling_chart")
+                reference_visible = show_reference and all(row.reference_net_return is not None for row in windows)
+                st.dataframe([{
+                    "start_date": row.start_date, "end_date": row.end_date,
+                    "observations": row.observations, "net_return": row.net_return,
+                    "reference_net_return": row.reference_net_return,
+                } for row in windows], hide_index=True, width="stretch", height=220,
+                    key="research_rolling_table", column_config={
+                        "start_date": st.column_config.TextColumn(tr("Window start date")),
+                        "end_date": st.column_config.TextColumn(tr("Window end date")),
+                        "observations": st.column_config.NumberColumn(tr("Recorded execution days"), format="%d"),
+                        "net_return": st.column_config.NumberColumn(tr("Raw A2 · Net"), format="percent"),
+                        "reference_net_return": (st.column_config.NumberColumn(tr("Frozen A control · Net"), format="percent")
+                                                 if reference_visible else None),
+                    })
+            else:
+                st.info(tr("Fewer than 63 execution records are included. No full rolling window is available."))
 
 
 def _historical_comparisons(start_date, end_date, *, presentation):
     """Inspect the frozen evidence inside the selected window, without joining NAVs."""
-    with st.expander(tr("Historical research comparisons"), expanded=False):
+    with st.expander(tr("Historical research comparisons"), expanded=False,
+            on_change="rerun", key="research_historical_comparisons") as comparisons:
+        if not comparisons.open:
+            return
         st.caption(tr("Original frozen A2 / A and ETF references retain their own recorded basis. These paths are not joined to the updated portfolio."))
         benchmark_config = default_benchmarks_config()
         bindings = {item.symbol: item for item in benchmark_config.artifacts
@@ -388,14 +393,12 @@ def _method(history, *, presentation, updated=False):
     st.html('<div class="uq-research-evidence">' + ''.join(
         f'<article><span>{text(tr(label))}</span><strong>{text(tr(status))}</strong><p>{text(tr(detail))}</p></article>'
         for label, status, detail in evidence) + '</div>')
-    st.caption(tr("These are descriptive results from a retrospectively assembled frozen replay. Artifact integrity does not establish that this history was untouched during strategy selection."))
     with st.expander(tr("Calculation notes"), expanded=True):
         for source in (
             "Returns compound every included execution day, including the first observation. Fees are not removed from the net path.",
             "A selected window is rebased to 1 before its first return. The maximum drawdown is measured within that window; it is not necessarily the full-archive drawdown.",
             "Period returns retain all recorded days. Archive-edge periods and windows cut through recorded periods are labelled explicitly.",
             "The normalized cost amount uses the original initial capital, even when a shorter return window is selected.",
-            "Sharpe is a descriptive annualized ratio. No alpha, confidence interval, DSR, PBO or probability of skill is inferred from these observations.",
             "This view never extends beyond the execution linked to the selected decision. A custom range can end earlier. Later archive rows are excluded.",
         ):
             st.write(tr(source))
@@ -460,16 +463,35 @@ def _render_hgb_comparison(comparison):
     render_comparison_statistics(comparison, key_prefix="research_hgb")
 
 
+def _active_comparison(contexts, start, end):
+    """Compare accepted replay on a common window without deleting gap dates."""
+    available = {sid: view for sid, view in contexts.items() if view.get("history", {}).get("daily")}
+    if not available:
+        return None
+    start = max(start, *(view["history"]["daily"][0]["date"] for view in available.values()))
+    end = min(end, *(view["history"]["daily"][-1]["date"] for view in available.values()))
+    if start > end:
+        return None
+    windows = {view["label"]: _nav_window(view["history"]["daily"], start, end)
+               for view in available.values()}
+    if any(window is None for window in windows.values()):
+        return None
+    dates = tuple(row["execution_date"] for row in next(iter(windows.values()))["rows"])
+    if any(tuple(row["execution_date"] for row in window["rows"]) != dates for window in windows.values()):
+        return None
+    return {"windows": windows, "start": dates[0], "end": dates[-1], "days": len(dates),
+        "raw_requested": "RAW_A2" in available, "raw_matches": True, "same_batch": False,
+        "active_strategy_ids": tuple(contexts),
+        "strategy_ids": {view["label"]: sid for sid, view in available.items()}}
+
+
+
 def render_applied_performance(contexts, package, cutoff, *, key_prefix="applied", statistics=True):
-    """One interval controls all three ledgers, with no detail-focus dependency."""
+    """One interval controls accepted replay; paper fills retain a separate basis."""
     from apps.demo_console.pages.selected_strategies import (
         render_comparison_cards, render_comparison_paths, render_comparison_statistics, _comparison_summaries,
     )
-    from .selected_strategies import replay_basis_caption, replay_update_caption
-    st.caption(tr(replay_basis_caption(package)))
-    update_caption = replay_update_caption(package)
-    if update_caption:
-        st.caption(tr(update_caption))
+    active = bool(set(contexts) - {"RAW_A2", *selected_strategies_reader.STRATEGY_IDS})
     daily = contexts[selected_strategies_reader.STRATEGY_IDS[0]]["history"]["daily"]
     if not daily:
         render_comparison_cards(contexts, summaries={}, key=key_prefix + "_summary")
@@ -486,18 +508,21 @@ def render_applied_performance(contexts, package, cutoff, *, key_prefix="applied
     if not points:
         st.info(tr("No recorded HGB performance is available in this selected window."))
         return None
-    comparison = _hgb_comparison(package, points[0].execution_date, points[-1].execution_date,
-                                 contexts.get("RAW_A2", {}).get("history", {}).get("daily", []))
+    comparison = (_active_comparison(contexts, points[0].execution_date, points[-1].execution_date) if active
+        else _hgb_comparison(package, points[0].execution_date, points[-1].execution_date,
+            contexts.get("RAW_A2", {}).get("history", {}).get("daily", [])))
     if not comparison:
         st.info(tr("No comparable replay is available in this window."))
         return None
     with controls[2]:
         reference_symbol=st.selectbox(tr("Price reference"),("QQQ","SPY","None"), key="applied_benchmark",
             format_func=lambda value:tr(value),persist_state="session",label_visibility="collapsed")
-    if comparison["same_batch"] and reference_symbol != "None":
-        archive=package["strategies"][selected_strategies_reader.STRATEGY_IDS[0]]["daily"]
-        first=next(index for index,row in enumerate(archive) if row["date"]==comparison["start"])
-        baseline_date=archive[first-1]["date"] if first else None
+    if reference_symbol != "None":
+        baseline_date = None
+        if comparison["same_batch"]:
+            archive = package["strategies"][selected_strategies_reader.STRATEGY_IDS[0]]["daily"]
+            first = next(index for index, row in enumerate(archive) if row["date"] == comparison["start"])
+            baseline_date = archive[first - 1]["date"] if first else None
         references=read_updated_benchmarks(tuple(row["execution_date"] for row in next(iter(comparison["windows"].values()))["rows"]), baseline_date)
         matching=next((item for item in references.series if item.symbol==reference_symbol and not item.error),None)
         if matching:
@@ -505,15 +530,27 @@ def render_applied_performance(contexts, package, cutoff, *, key_prefix="applied
                 "rows":[{"execution_date":point.date,"value":point.equity} for point in matching.points],
                 "return":matching.total_return}
         else:
-            st.caption(tr("Price reference is unavailable for the complete interval."))
+            st.caption(tr("{symbol} has no complete verified open-price window through {date}; the strategy window is retained.",
+                symbol=reference_symbol, date=comparison["end"]))
     with controls[3]:
         st.caption(tr("Shared recorded window: {start} → {end} · {count} observations",
             start=comparison["start"], end=comparison["end"], count=comparison["days"]))
+    st.caption(tr("Exposed 2026 descriptive replay · Signals {signal} · Performance {execution} · Targets are not fills.",
+        signal=cutoff or "—", execution=comparison["end"]))
+    cutoffs = {item.get("history", {}).get("end") for item in contexts.values()
+               if item.get("history", {}).get("end")}
+    if len(cutoffs) > 1:
+        st.warning(tr("Strategy cutoffs differ; the chart uses their common recorded window."))
     render_comparison_paths(comparison, key_prefix=key_prefix)
+    if comparison.get("reference"):
+        reference = comparison["reference"]
+        st.caption(tr("{label}: {return_value} over these dates · RAW open-price reference, excluding dividends and fees. Strategy replay uses its recorded adjustment basis.",
+            label=reference["label"], return_value=f'{reference["return"]:.2%}'))
     render_comparison_cards(contexts, summaries=_comparison_summaries(comparison), key=key_prefix + "_summary")
-    if cutoff and cutoff > daily[-1]["date"]:
-        st.caption(tr("Replay through {end} · Signal snapshot {selected}. Later targets do not add returns.",
-            end=daily[-1]["date"], selected=cutoff))
+    if active:
+        missing = [tr(WORKSPACE_STRATEGIES[sid]) for sid in contexts if not contexts[sid].get("history", {}).get("daily")]
+        if missing:
+            st.caption(tr("Accepted replay unavailable: {names}. No returns are copied from another strategy.", names=" · ".join(missing)))
     if calendar_bounds:
         st.caption(tr("Calendar period: {start} → {end}. Only recorded execution dates within this period are included.",
             start=calendar_bounds[0], end=calendar_bounds[1]))
@@ -531,8 +568,11 @@ def _render_applied_research(model, strategy_id, *, presentation, package=None):
     cutoff = st.session_state.get("decision_date") or model.decision_date
     try:
         package = selected_strategies_reader.load_package() if package is None else package
+        sample = st.session_state.get("workspace_sample", "test_2026")
+        history_cutoff = workspace_reader.applied_history_cutoff(cutoff, raw_model=model, sample=sample)
+        history_options = {"history_cutoff": history_cutoff, "raw_model": model} if history_cutoff != cutoff else {}
         contexts = workspace_reader.load_applied_strategies(
-            cutoff, package=package, sample=st.session_state.get("workspace_sample", "test_2026"))
+            cutoff, package=package, sample=sample, **history_options)
         view = contexts[selected_strategies_reader.STRATEGY_IDS[0]]
         if view.get("error"):
             raise ValueError(view.get("debug_error") or view["error"])
@@ -542,13 +582,8 @@ def _render_applied_research(model, strategy_id, *, presentation, package=None):
         if not presentation:
             st.code(f"{type(exc).__name__}: {exc}", language="text")
         return
-    with st.expander(tr("Evidence & method"), expanded=False):
-        st.caption(tr("Three frozen strategies use the same cash-start ledger, execution dates, price inputs and 5 bp one-way fee. No model is refitted and no missing return is extended."))
-        from .selected_strategies import replay_basis_caption
-        st.caption(tr(replay_basis_caption(package)))
-        st.caption(tr("Window returns use the NAV immediately before the first included record. Cash values are historical replay weights, separate from the latest cash-start target."))
-        for name, digest in package["source_hashes"].items():
-            st.text(f'{name} · {digest[:12] + "…" if presentation else digest}')
+    from .selected_strategies import _source_details
+    _source_details(package, presentation=presentation, contexts=contexts)
     if strategy_id == "RAW_A2":
         details = st.expander(tr("Raw A2 details"), expanded=False, on_change="rerun", key="applied_raw_research_details")
         if details.open:
@@ -622,26 +657,6 @@ def _render_raw_research(model, *, presentation, selected_package=None, window_b
                           start=points[0].execution_date, end=points[-1].execution_date))
     summary = summarize_performance(points, initial_wealth=history.initial_nav,
                                     full_history_dates=history.available_dates)
-    rx_summary = None
-    if updated:
-        rx = rx_research_reader.read(model)
-        if rx.error:
-            st.caption(tr(rx.error))
-        else:
-            selected_dates = tuple(point.execution_date for point in points)
-            rx_points = tuple(point for point in rx.history.points if point.execution_date in set(selected_dates))
-            if tuple(point.execution_date for point in rx_points) == selected_dates:
-                rx_summary = summarize_performance(rx_points, initial_wealth=rx.history.initial_nav,
-                    full_history_dates=rx.history.available_dates)
-                st.caption(tr(rx_research_reader.LIMITATION))
-            else:
-                st.info(tr("RX performance ends on {cutoff} and does not fully cover this window. The original A2 and market window is unchanged.",
-                           cutoff=rx.history.effective_end_date or "—"))
-    offset = next(index for index, point in enumerate(history.points)
-                  if point.execution_date == points[0].execution_date)
-    baseline = history.points[offset - 1].execution_date if offset else history.baseline_date
-    benchmark_reader = read_updated_benchmarks if updated else read_benchmarks
-    markets = benchmark_reader(tuple(point.execution_date for point in points), baseline_date=baseline)
     window_label = "CUSTOM DATE RANGE" if custom_range is not None else "PERFORMANCE WINDOW"
     st.html(f'<div class="uq-history-range"><span>{text(tr(window_label))}</span>'
             f'<strong>{text(summary.start_date)} → {text(summary.end_date)}</strong>'
@@ -651,25 +666,53 @@ def _render_raw_research(model, *, presentation, selected_package=None, window_b
     if updated:
         st.caption(tr("After-cost returns · Valued at each execution open"))
     _readout(summary, updated=updated)
+    st.caption(tr("A complete trial history, independent out-of-sample protocol and selection-bias-adjusted evaluation are not available in this display."))
+    st.caption(tr("These are descriptive results from a retrospectively assembled frozen replay. Artifact integrity does not establish that this history was untouched during strategy selection."))
+    st.caption(tr("Sharpe is a descriptive annualized ratio. No alpha, confidence interval, DSR, PBO or probability of skill is inferred from these observations."))
     performance, recovery, consistency, method, execution = localized_tabs(
         ["Performance path", "Drawdown & recovery", "Consistency & concentration", "Evidence & method",
          "Execution frictions"], key="research_tabs")
-    with performance:
-        hgb_comparison = (_load_hgb_comparison(history, points[0].execution_date, points[-1].execution_date, selected_package)
-                          if updated and window_bounds is None and points[-1].execution_date >= "2026-01-01" else None)
-        _performance(summary, show_reference, show_gross, points=points,
-                     full_history_dates=history.available_dates, initial_nav=history.initial_nav,
-                     markets=markets, presentation=presentation, updated=updated, rx_summary=rx_summary,
-                     hgb_comparison=hgb_comparison)
-    with consistency:
-        _consistency(summary, points, show_reference)
-    with recovery:
-        with st.container(key="uq_drawdown_episodes"):
-            render_drawdown_episodes(points, presentation=presentation)
-        with st.container(key="uq_recovery_execution"):
-            st.caption(tr("Recovery describes the recorded net-return path. Inspect the execution ledger in Execution frictions for costs, cash and recorded simulation flags."))
-    with method:
-        _method(history, presentation=presentation, updated=updated)
-    with execution:
-        with st.container(key="uq_execution_quality"):
-            render_execution_quality(points, initial_nav=history.initial_nav)
+    if performance.open:
+        with performance:
+            rx_summary = None
+            if updated:
+                rx = rx_research_reader.read(model)
+                if rx.error:
+                    st.caption(tr(rx.error))
+                else:
+                    selected_dates = tuple(point.execution_date for point in points)
+                    rx_points = tuple(point for point in rx.history.points if point.execution_date in set(selected_dates))
+                    if tuple(point.execution_date for point in rx_points) == selected_dates:
+                        rx_summary = summarize_performance(rx_points, initial_wealth=rx.history.initial_nav,
+                            full_history_dates=rx.history.available_dates)
+                        st.caption(tr(rx_research_reader.LIMITATION))
+                    else:
+                        st.info(tr("RX performance ends on {cutoff} and does not fully cover this window. The original A2 and market window is unchanged.",
+                                   cutoff=rx.history.effective_end_date or "—"))
+            offset = next(index for index, point in enumerate(history.points)
+                          if point.execution_date == points[0].execution_date)
+            baseline = history.points[offset - 1].execution_date if offset else history.baseline_date
+            benchmark_reader = read_updated_benchmarks if updated else read_benchmarks
+            markets = benchmark_reader(tuple(point.execution_date for point in points), baseline_date=baseline)
+            hgb_comparison = (_load_hgb_comparison(history, points[0].execution_date, points[-1].execution_date, selected_package)
+                              if updated and window_bounds is None and points[-1].execution_date >= "2026-01-01" else None)
+            _performance(summary, show_reference, show_gross, points=points,
+                         full_history_dates=history.available_dates, initial_nav=history.initial_nav,
+                         markets=markets, presentation=presentation, updated=updated, rx_summary=rx_summary,
+                         hgb_comparison=hgb_comparison)
+    if consistency.open:
+        with consistency:
+            _consistency(summary, points, show_reference)
+    if recovery.open:
+        with recovery:
+            with st.container(key="uq_drawdown_episodes"):
+                render_drawdown_episodes(points, presentation=presentation)
+            with st.container(key="uq_recovery_execution"):
+                st.caption(tr("Recovery describes the recorded net-return path. Inspect the execution ledger in Execution frictions for costs, cash and recorded simulation flags."))
+    if method.open:
+        with method:
+            _method(history, presentation=presentation, updated=updated)
+    if execution.open:
+        with execution:
+            with st.container(key="uq_execution_quality"):
+                render_execution_quality(points, initial_nav=history.initial_nav)

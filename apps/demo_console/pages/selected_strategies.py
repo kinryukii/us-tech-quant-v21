@@ -1,4 +1,4 @@
-"""Three fixed strategies in one workbench: comparison, ranks and stock history."""
+"""Applied strategy presentation: verified comparison, ranks and stock history."""
 from __future__ import annotations
 
 import csv
@@ -18,12 +18,14 @@ from apps.demo_console.components.performance_stats import summarize_nav_window
 from apps.demo_console.components.visuals import apply_style
 from apps.demo_console.components.visuals import section_header, text
 from apps.demo_console.components.localized_tabs import localized_tabs
-from apps.demo_console.i18n import tr
+from apps.demo_console.i18n import catalog, tr
 
 
 _ACTION_LABELS = {"BUY": "买入 / 加仓", "SELL": "卖出 / 减仓", "HOLD": "保持"}
-WORKSPACE_STRATEGIES = {"RAW_A2": "Raw A2", "HGB_DIAG_5": "HGB + diagonal risk",
-                        "HGB_FACTOR_5": "HGB + factor / shrinkage risk"}
+from apps.demo_console.components.strategy_workbench import (
+    ACTIVE_PAPER_STRATEGY_IDS, APPLIED_STRATEGY_NAMES, WORKSPACE_STRATEGIES, LEGACY_STRATEGIES,
+    strategy_label, short_strategy_label,
+)
 
 
 def target_csv(strategy_id, strategy):
@@ -99,8 +101,27 @@ def nav_chart(package):
 
 def replay_basis_caption(package):
     if package["performance_period"]["price_basis"] == "PIT_FORWARD_REHAB_INDEX":
-        return "独立 PIT 三策略研究回放：按前向复权价格坐标、收盘信号和下一交易日开盘执行计算；原冻结 QFQ 回放保留。曲线是描述性研究结果，不是模拟账户绩效，也不是新的独立检验。"
-    return "HGB replay uses the corrected close-signal / next-session-open clock and QFQ price-coordinate proxies. These exposed 2026 outcomes are descriptive, not a new independent test."
+        return 'Separate PIT research replay for three strategies: forward-adjusted price coordinates, close signals and next-session-open execution. The original frozen QFQ replay is retained. The curves are descriptive research results, not simulated-account performance or a new independent test.'
+    return 'HGB replay uses the corrected close-signal / next-session-open clock and QFQ price-coordinate proxies. These exposed 2026 outcomes are descriptive, not a new independent test.'
+
+
+def replay_input_vintage_caption(package):
+    """Compare the current signal with its recorded research input vintage."""
+    scores = package.get("shared_scores", {})
+    current = scores.get("current", {})
+    day = current.get("signal_date")
+    if current.get("status") != "READY" or not day or not current.get("rows"):
+        return None
+    historical = [row for row in scores.get("historical", ()) if row.get("signal_date") == day]
+    if not historical:
+        return None
+    fields = ("ticker", "security_id", "raw_rank", "raw_score", "hgb_rank", "pred_hgb")
+    recorded = {tuple(row.get(field) for field in fields) for row in historical}
+    present = {tuple(row.get(field) for field in fields) for row in current["rows"]}
+    if recorded == present:
+        return None
+    return ("The research replay retains its accepted signal input version. Current targets / paper portfolios "
+            "use the completed inputs, so candidate lists may differ.")
 
 
 def replay_update_caption(package):
@@ -109,41 +130,81 @@ def replay_update_caption(package):
         return None
     end = package["performance_period"]["end"]
     if extension["status"] == "READY":
-        return "三策略图表已同步至 " + end + "。"
-    return ("三策略图表已验证至 " + end + "；本次请求更新至 " + extension["requested_end_date"]
-            + "，下一执行日 " + extension["blocked_next"]["execution_date"] + " 尚未通过："
-            + extension["blocked_next"]["reason"])
+        return tr('Original Raw A2 / HGB replay is synchronized through {end}.', end=end)
+    return tr('Original Raw A2 / HGB replay is verified through {end}; the update requested through {requested} is blocked because execution on {execution} has not passed verification: {reason}',
+        end=end, requested=extension["requested_end_date"],
+        execution=extension["blocked_next"]["execution_date"], reason=extension["blocked_next"]["reason"])
 
 
-def _source_details(package, *, presentation=False):
-    if presentation:
-        with st.expander(tr("Data sources")):
-            st.write(tr(replay_basis_caption(package)))
-            st.caption(tr("Historical return records and current target allocations have separate dates. Target weights do not represent executed trades."))
-            st.caption(tr("Source integrity") + " · " + package["package_sha256"][:12])
-        return
-    with st.expander("来源与适用范围"):
-        st.write("截图中的旧统计使用了未修正的决策时钟；本页显示修正后的收盘信号、下一交易日开盘执行回放，指标以本页数据包为准。")
+def replay_provenance_caption(note):
+    """Translate only these exact recorded MAIN notes; unknown provenance stays exact."""
+    sources = (
+        "Fixed MAIN descriptive research ledger: all-cash initialization on 2026-01-02, first execution on 01-05; 10 bp cost scenario. Original limitations on prices, corporate actions and historical information availability are retained; displayed separately from actual simulated-account fills.",
+        "Fixed MAIN research stock records; original actions, planned weights, research positions and research fills are retained separately. Stock model ranks and CUSIPs were not recorded in the original tables and remain unknown. These are not simulated-account fills.",
+    )
+    for source in sources:
+        if note == catalog().get(source, {}).get("zh"):
+            return tr(source)
+    return note
+
+
+def policy_caption(package):
+    if package.get("policy_id") == "HGB_TOP20_RISK_R1":
+        return "HGB signals define the Top20 candidates within Raw Top40. Each risk model controls weights and cash; holdings outside the candidates cannot increase."
+    if package.get("policy_id", "RAW_TOP20_FROZEN_LEGACY") == "RAW_TOP20_FROZEN_LEGACY":
+        return "Frozen HGB scores are used in the original Raw A2 Top20 allocation framework. The original risk models optimize weights with existing holdings, cash and costs; held stocks follow the original optimizer's rules."
+    return None
+
+
+def _source_details(package, *, presentation=False, contexts=None, expanded=False):
+    """Keep complete replay methods and recorded cutoffs in the existing detail."""
+    with st.expander(tr("Data sources"), expanded=expanded):
+        st.write(tr("Research curves retain each strategy's accepted replay source, price coordinates and cutoff. Simulated accounts show only actual execution and valuation records."))
         st.write(tr(replay_basis_caption(package)))
-        st.caption("选择依据：USER_SELECTED_AFTER_EXPOSURE · 已暴露结果后的用户选择，不能恢复独立留出检验状态。")
-        st.caption("数据包生成时间：" + package["generated_at"])
-        st.caption("数据包 SHA-256：" + package["package_sha256"])
-        st.dataframe(pd.DataFrame([{"来源工件": name, "SHA-256": digest}
-                                  for name, digest in package["source_hashes"].items()]),
+        rule = policy_caption(package)
+        if rule:
+            st.caption(tr("HGB · Diagonal") + " · " + tr(rule))
+        for note in (replay_input_vintage_caption(package), replay_update_caption(package)):
+            if note:
+                st.caption(tr(note))
+        if contexts:
+            for note in dict.fromkeys(
+                    item.get("provenance", {}).get("note") for item in contexts.values()
+                    if isinstance(item.get("provenance"), dict) and item["provenance"].get("note")):
+                st.caption(replay_provenance_caption(note))
+            st.caption(tr("Verified replay cutoffs: {dates}. A shared comparison stops at the latest common complete observation.",
+                dates=" · ".join(tr(strategy_label(sid)) + " " + (item.get("history", {}).get("end") or "—")
+                                 for sid, item in contexts.items())))
+        st.caption(tr("Historical return records and current target allocations have separate dates. Target weights do not represent executed trades."))
+        if presentation:
+            digest = package.get("package_sha256")
+            st.caption(tr("Source integrity") + " · " + (digest[:12] if digest else tr("N/A")))
+            return
+        if package.get("policy_id") == "HGB_TOP20_RISK_R1":
+            st.caption(tr("Selected by the user to align HGB signals and risk allocation. No policy was chosen by these backtest returns; 2026 remains an exposed descriptive evaluation."))
+        else:
+            st.caption(tr("Selection basis: USER_SELECTED_AFTER_EXPOSURE. User selection after exposure cannot restore independent holdout status."))
+        st.caption(tr("Package generated at: {timestamp}", timestamp=package["generated_at"]))
+        st.caption(tr("Package SHA-256: {sha256}", sha256=package["package_sha256"]))
+        st.dataframe(pd.DataFrame([{tr("Source artifact"): name, "SHA-256": digest}
+                                   for name, digest in package["source_hashes"].items()]),
                      hide_index=True, width="stretch")
 
 
-def render_selected_strategies(pages):
+def render_selected_strategies(pages, *, render=None):
     """Keep old bookmarks on the same workbench and observation context."""
     if st.session_state.get("workspace_strategy") not in WORKSPACE_STRATEGIES:
         previous = st.session_state.get("selected_hgb_strategy")
-        st.session_state["workspace_strategy"] = previous if previous in reader.STRATEGY_IDS else reader.STRATEGY_IDS[0]
+        st.session_state["workspace_strategy"] = previous if previous in WORKSPACE_STRATEGIES else "RAW_A2"
     st.session_state.pop("selected_hgb_strategy", None)
     st.session_state.pop("selected_hgb_history_date", None)
     st.session_state["workspace"] = "Overview"
     st.session_state["_applied_workspace_context"] = {
         key: st.session_state[key] for key in ("workspace_strategy", "decision_date", "workspace_sample")
         if key in st.session_state}
+    if render is not None:
+        render(pages)
+        return
     st.switch_page(pages["research"])
 
 
@@ -160,7 +221,7 @@ def _comparison_summaries(comparison):
 
 def render_comparison_cards(contexts, *, summaries=None, include_targets=True,
                             key="applied_summary_table"):
-    """Compatibility name for the single compact, always-three-strategy table."""
+    """One compact scorecard for every supplied strategy and evidence basis."""
     summaries = summaries if summaries is not None else {
         sid: summarize_nav_window(view["history"]["daily"], view["history"]["start"], view["history"]["end"])
         if view["history"]["daily"] else None for sid, view in contexts.items()}
@@ -171,7 +232,7 @@ def render_comparison_cards(contexts, *, summaries=None, include_targets=True,
               ("Historical average cash", "mean_cash", True))
     rows = [{tr("Strategy"): tr(label), **{tr(name): _display_number(
         (summaries.get(sid) or {}).get(field), percent=percent) for name, field, percent in fields}}
-        for sid, label in WORKSPACE_STRATEGIES.items()]
+        for sid, label in ((sid, strategy_label(sid)) for sid in contexts)]
     st.html('<section class="uq-strategy-scorecard" aria-label="' + text(tr("Applied strategies")) + '">'
         + ''.join('<article class="uq-strategy-score" data-strategy="' + text(sid)
             + '" style="--strategy-color:' + STRATEGY_COLORS[sid] + '">'
@@ -181,12 +242,12 @@ def render_comparison_cards(contexts, *, summaries=None, include_targets=True,
             + '</span><strong>' + text(row[tr("Period return")]) + '</strong></div>'
             + '<dl class="uq-strategy-metrics">' + ''.join('<div><dt>' + text(tr(name))
                 + '</dt><dd>' + text(row[tr(name)]) + '</dd></div>' for name, _, _ in fields[1:])
-            + '</dl></article>' for index, (sid, row) in enumerate(zip(WORKSPACE_STRATEGIES, rows), 1))
+            + '</dl></article>' for index, (sid, row) in enumerate(zip(contexts, rows), 1))
         + '</section>')
     # Keep one native table as an accessible, sortable alternative to the scorecard.
     # Both surfaces use exactly the same already formatted observations.
     with st.expander(tr("Quantitative comparison"), expanded=False, key=key + "_table"):
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=149, key=key,
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", height=min(380, 44 + 35 * len(rows)), key=key,
             column_config={tr("Strategy"): st.column_config.TextColumn(width=180),
                            **{tr(name): st.column_config.TextColumn(width=110) for name, _, _ in fields}})
 
@@ -195,7 +256,7 @@ def render_comparison_paths(comparison, *, key_prefix="applied"):
     if not comparison:
         st.caption(tr("No comparable replay is available in this window."))
         return
-    labels = {label: tr(WORKSPACE_STRATEGIES[comparison["strategy_ids"].get(label, "RAW_A2")])
+    labels = {label: tr(strategy_label(comparison["strategy_ids"].get(label, "RAW_A2")))
               for label in comparison["windows"]}
     colors = {labels[label]: STRATEGY_COLORS[comparison["strategy_ids"].get(label, "RAW_A2")]
               for label in labels}
@@ -216,10 +277,12 @@ def render_comparison_paths(comparison, *, key_prefix="applied"):
                 + '</span><strong>' + text(comparison["days"]) + '</strong><p>'
                 + text(tr("Historical return records and current target allocations have separate dates. Target weights do not represent executed trades."))
                 + '</p></div>')
-    with st.expander(tr("Drawdown comparison"), expanded=False, key=key_prefix + "_risk_path"):
-        render_chart(nav_comparison_chart({label: [{**row, "value": row["drawdown"]} for row in points]
-                     for label, points in series.items()}, baseline=0, title="Window drawdown", percent=True,
-                     colors=colors).properties(height=235, name=key_prefix + "_drawdown"), width="stretch", theme=None, key=key_prefix + "_drawdown")
+    with st.expander(tr("Drawdown comparison"), expanded=False, on_change="rerun",
+            key=key_prefix + "_risk_path") as risk_path:
+        if risk_path.open:
+            render_chart(nav_comparison_chart({label: [{**row, "value": row["drawdown"]} for row in points]
+                         for label, points in series.items()}, baseline=0, title="Window drawdown", percent=True,
+                         colors=colors).properties(height=235, name=key_prefix + "_drawdown"), width="stretch", theme=None, key=key_prefix + "_drawdown")
 
 
 def render_comparison_statistics(comparison, *, key_prefix="applied"):
@@ -256,7 +319,8 @@ def render_comparison_statistics(comparison, *, key_prefix="applied"):
         ("Account trade win rate", "account_win_rate", "percent"),
         ("Closed trade profit/loss ratio", "closed_trade_payoff", "number"),
         ("Recorded execution days", "days", "integer"))
-    labels = {"RAW_A2": tr("Raw A2"), "HGB_DIAG_5": tr("HGB · Diagonal"), "HGB_FACTOR_5": tr("HGB · Factor")}
+    labels = {sid: tr(short_strategy_label(sid)) for sid in comparison.get("active_strategy_ids",
+        ("RAW_A2", "HGB_DIAG_5", "HGB_FACTOR_5"))}
     rows = []
     for name, field, kind in fields:
         row = {tr("Metric"): tr(name)}
@@ -345,34 +409,36 @@ def _exact_signal_contexts(contexts, cutoff):
 def _workspace_allocation_comparison(contexts, *, compact=False):
     """A side-by-side union of exact-date targets, with explicit missing plans."""
     st.markdown("#### " + tr("Allocation comparison"))
-    ids = tuple(WORKSPACE_STRATEGIES)
+    ids = tuple(contexts)
     valid = {sid: contexts[sid]["target"]["kind"] != "UNAVAILABLE" for sid in ids}
-    labels = {"RAW_A2": tr("Raw A2"), "HGB_DIAG_5": tr("HGB · Diagonal"), "HGB_FACTOR_5": tr("HGB · Factor")}
+    labels = {sid: tr(short_strategy_label(sid)) for sid in ids}
     status = []
     raw_plan=contexts["RAW_A2"]["target"]
     for sid in ids:
         target = contexts[sid]["target"]
         ranked_weights=sorted((row["target_weight"] for row in target["rows"] if row["target_weight"]>0),reverse=True)
         plan_date=(raw_plan.get("execution_date") if raw_plan.get("signal_date")==target.get("signal_date") else target.get("execution_date"))
-        status.append({tr("Strategy"): tr(WORKSPACE_STRATEGIES[sid]),
+        status.append({tr("Strategy"): tr(strategy_label(sid)),
             tr("Target signal date"): target.get("signal_date") or "—",
             tr("Planned execution date"): plan_date or "—",
-            tr("Target securities"): sum(row["target_weight"] > 0 for row in target["rows"]) if valid[sid] else None,
+            tr("Target securities"): _display_number(
+                sum(row["target_weight"] > 0 for row in target["rows"]) if valid[sid] else None, precision=0),
             tr("Target cash allocation"): _display_number(target.get("target_cash_weight"), percent=True),
             tr("Maximum security weight"): _display_number(max(ranked_weights,default=0.) if valid[sid] else None,percent=True),
             tr("Top 5 concentration"): _display_number(sum(ranked_weights[:5]) if valid[sid] else None,percent=True),
-            tr("Weight record type"): tr("Raw rule target" if sid == "RAW_A2" else
-                "Empty-account target" if target.get("kind") in {"CURRENT_CASH_START_TARGET", "ARCHIVED_CASH_START_TARGET"} else "Historical signal target")
+            tr("Weight record type"): tr("Current account target" if target.get("kind") == "CURRENT_ACCOUNT_TARGET" else
+                "Raw rule target" if sid == "RAW_A2" else "Empty-account target" if target.get("kind") in
+                {"CURRENT_CASH_START_TARGET", "ARCHIVED_CASH_START_TARGET"} else "Historical signal target")
                 if valid[sid] else tr("Target unavailable")})
-    st.dataframe(status, hide_index=True, width="stretch", height=149, key="applied_target_status",
+    st.dataframe(status, hide_index=True, width="stretch", height=min(380, 44 + 35 * len(ids)), key="applied_target_status",
         column_config={tr("Strategy"):st.column_config.TextColumn(width=175),
             **{tr(name):st.column_config.TextColumn(width=105) for name in ("Target signal date","Planned execution date","Weight record type")},
             **{tr(name):st.column_config.TextColumn(width=85) for name in ("Target cash allocation","Maximum security weight","Top 5 concentration")},
-            tr("Target securities"):st.column_config.NumberColumn(width=65)})
+            tr("Target securities"):st.column_config.TextColumn(width=65)})
     for sid in ids:
         target = contexts[sid]["target"]
         if target.get("status") == "BLOCKED" and target.get("reason"):
-            st.caption(tr(WORKSPACE_STRATEGIES[sid]) + " · " + target["reason"])
+            st.caption(tr(strategy_label(sid)) + " · " + target["reason"])
     weights = {sid: {row["ticker"]: row["target_weight"] for row in contexts[sid]["target"]["rows"]} for sid in ids}
     names = set().union(*(set(values) for values in weights.values()))
     tickers = ["CASH", *sorted(names, key=lambda ticker: (-max(values.get(ticker, 0.) for values in weights.values()), ticker))]
@@ -382,14 +448,14 @@ def _workspace_allocation_comparison(contexts, *, compact=False):
     st.dataframe(rows, hide_index=True, width="stretch", height=285 if compact else 370,
                  key="workspace_hgb_target_comparison")
     st.caption(tr("These are same-date signal plans. Verified absent names have zero weight; a missing plan remains unavailable. Recorded Raw execution holdings are shown in details."))
-    downloads = st.columns(3, gap="small")
-    for column, sid in zip(downloads, ids):
+    downloads = st.container(horizontal=True)
+    for sid in ids:
         if not valid[sid]:
             continue
         target = contexts[sid]["target"]
         download_target = {**target, "cash_weight_before": (max(0., 1 - sum(row["weight_before"] for row in target["rows"]))
             if all(row.get("weight_before") is not None for row in target["rows"]) else None)}
-        column.download_button(tr("Download weights") + " · " + labels[sid],
+        downloads.download_button(tr("Download weights") + " · " + labels[sid],
             target_csv(sid, {"application": download_target}),
             file_name=f'{sid}_{target["signal_date"]}_targets.csv', mime="text/csv",
             key="workspace_hgb_comparison_csv_" + sid)
@@ -409,6 +475,8 @@ def _workspace_target(context, *, searchable=False):
         st.caption(tr("Target signal date: {date}", date=target["signal_date"]))
     if target["kind"] in {"CURRENT_CASH_START_TARGET", "ARCHIVED_CASH_START_TARGET"}:
         st.caption(tr("Cash-start account plan · Initial cash 100% · Target weights only."))
+    elif target["kind"] == "CURRENT_ACCOUNT_TARGET":
+        st.caption(tr("Current account target. Actual holdings and fills are recorded separately in the paper workspace."))
     else:
         st.caption(tr("Recorded historical signal targets. These are not executed account holdings."))
     stock_weight = sum(row["target_weight"] for row in target["rows"])
@@ -432,24 +500,6 @@ def _workspace_target(context, *, searchable=False):
         key="workspace_hgb_target_csv")
 
 
-def _workspace_model(context, package, *, presentation):
-    st.html(section_header(tr("Frozen HGB model and risk allocation"), tr("SELECTED STRATEGY")))
-    identity = context["model_identity"]
-    features, cutoff = st.columns(2)
-    features.metric(tr("Model input features"), identity["feature_count"])
-    cutoff.metric(tr("Training boundary"), "< " + identity["fit_cutoff_exclusive"])
-    st.write(tr("Prediction target: next-open to five-session-later-open absolute return."))
-    st.dataframe([
-        {tr("Feature family"): tr("Original A2 rank and standardized score"), tr("Feature count"): 2},
-        {tr("Feature family"): tr("Returns, volatility, volume and price position"), tr("Feature count"): 9},
-        {tr("Feature family"): tr("Ten observed close-return lags"), tr("Feature count"): 10},
-    ], hide_index=True, width="stretch")
-    st.caption(tr("These policies reuse frozen HGB and downside-quantile models with their selected risk optimizer. No model is fitted in DEMO."))
-    st.caption(tr("Both HGB policies share frozen Raw Top40 prediction scores. Portfolio weights are produced by their separate risk models; a model rank is not a weight rank."))
-    if not presentation:
-        st.json(identity)
-
-
 def _verified_raw_model(model, cutoff):
     """HGB detail focus must not replace the independent full-pool Raw source."""
     if workspace_reader.is_updated(model) and not model.error:
@@ -464,61 +514,110 @@ def _verified_raw_model(model, cutoff):
                                          reference=workspace_reader.source_reference(latest))
 
 
-def render_workspace(model, package, *, presentation=True, view="Overview"):
-    """Extend the original workbench with three always-visible fixed strategies."""
-    from apps.demo_console.pages.research import render_applied_performance, render_research
-    from apps.demo_console.components.top20_table import render_applied_rankings
-    from apps.demo_console.components.stock_history_search import render_applied_stock_history
+def render_workspace(model, package, *, presentation=True, view="Overview", account_state=None):
+    """Keep five applied strategies on the original verified workbench."""
+    from apps.demo_console.adapters import applied_account_reader as accounts
 
     strategy_id = st.session_state["workspace_strategy"]
     cutoff = st.session_state.get("decision_date") or model.decision_date
     apply_style(presentation=presentation)
     title = {"Overview": "Applied strategies", "Portfolio": "Decisions & portfolio",
-             "History": "Historical replay", "Research": "Performance & risk"}.get(view, view)
-    st.html('<section class="uq-workspace-lead"><div><span class="uq-eyebrow">US TECH QUANT / 03 STRATEGIES</span>'
+             "History": "Historical replay", "Research": "Performance & risk",
+             "Machine learning": "Machine learning studio"}.get(view, view)
+    st.html('<section class="uq-workspace-lead"><div><span class="uq-eyebrow">US TECH QUANT / 05 STRATEGIES</span>'
             + '<h1>' + text(tr(title)) + '</h1></div><div class="uq-workspace-observation"><span>'
             + text(tr("Observation date")) + '</span><strong>' + text(cutoff) + '</strong></div></section>')
-    if st.session_state.get("workspace_sample") == "historical":
+    sample = st.session_state.get("workspace_sample", "test_2026")
+    if view == "Machine learning":
+        from apps.demo_console.pages.machine_learning import render_machine_learning
+        workspace = workspace_reader.load_ml_workspace(strategy_id, cutoff, package=package,
+            sample=sample, raw_model=model if strategy_id == "RAW_A2" else None,
+            account_state=account_state)
+        render_machine_learning(model, presentation=presentation, workspace=workspace)
+        return
+    if sample == "historical":
         st.info(tr("The selected HGB policies have no published training-period replay here. Choose the 2026 sample or Raw A2."))
         return
     raw_model = _verified_raw_model(model, cutoff)
-    contexts = workspace_reader.load_applied_strategies(cutoff, package=package,
-        sample=st.session_state.get("workspace_sample", "test_2026"), raw_model=raw_model)
+    sample = st.session_state.get("workspace_sample", "test_2026")
+    history_cutoff = workspace_reader.applied_history_cutoff(cutoff, raw_model=raw_model, sample=sample)
+    history_options = {"history_cutoff": history_cutoff} if history_cutoff != cutoff else {}
+    # Targets, rankings and history share one capture and the original qualification.
+    account_state = accounts.load_state()
+    try:
+        roster = accounts.showcase_projection(account_state)
+        ids = tuple(roster["showcase_ids"])
+    except (OSError, ValueError, KeyError, TypeError):
+        st.warning(tr("The accepted showcase roster is unavailable. You can still inspect a method; browsing does not change the roster."))
+        ids = ("RAW_A2", "HGB_DIAG_5", strategy_id)
+        ids = tuple(dict.fromkeys(ids))
+    query_ids = ids if strategy_id in ids else (*ids, strategy_id)
+    contexts = workspace_reader.load_active_strategies(cutoff, package=package,
+        sample=sample, raw_model=raw_model, account_state=account_state,
+        strategy_ids=query_ids, **history_options)
     context = contexts[strategy_id]
-    blocked = [tr(WORKSPACE_STRATEGIES[sid]) for sid, item in contexts.items() if item.get("status") == "BLOCKED"]
+    blocked = [tr(strategy_label(sid)) for sid, item in contexts.items() if item.get("status") == "BLOCKED"]
     if blocked:
         st.warning(tr("Unavailable strategies: {names}", names=" · ".join(blocked)))
-    if view == "Research":
-        render_research(raw_model, presentation=presentation, selected_package=package)
-    elif view in ("Machine learning", "Evidence"):
-        _workspace_model(context, package, presentation=presentation)
-        if view == "Evidence":
-            _source_details(package, presentation=presentation)
-    else:
-        comparison = render_applied_performance(contexts, package, cutoff, key_prefix="applied", statistics=False)
-        with st.spinner(tr("Loading verified records…"), show_time=True):
-            stock_history = workspace_reader.load_applied_stock_history(package=package, raw_model=raw_model, as_of=cutoff)
-            snapshot = workspace_reader.load_applied_rankings(cutoff, package=package, raw_model=raw_model, history=stock_history)
-        # Reuse the existing localized navigation and shared snapshots. Business
-        # reads remain outside the display containers; changing a tab adds no source.
-        decision_tab, history_tab, statistics_tab = localized_tabs(
-            ("Decisions & portfolio", "Stock history across strategies", "Quantitative comparison"),
-            key="applied_workspace_tools")
-        with decision_tab:
-            render_applied_rankings(cutoff, package, raw_model, snapshot=snapshot)
-            _workspace_allocation_comparison(_exact_signal_contexts(contexts, cutoff), compact=view == "Overview")
-        with history_tab:
+    extension = package.get("performance_extension")
+    if extension and extension.get("status") != "READY":
+        st.warning(replay_update_caption(package))
+
+    if view == "Evidence":
+        # The original source detail below owns provenance and methods.
+        pass
+    elif view in ("Overview", "Research"):
+        from apps.demo_console.pages.research import render_applied_performance
+        render_applied_performance(contexts, package, cutoff, key_prefix="applied",
+                                   statistics=view == "Research")
+    elif view in ("Portfolio", "History"):
+        def render_stock_history():
+            from apps.demo_console.components.stock_history_search import render_applied_stock_history
+            with st.spinner(tr("Loading verified records…"), show_time=True):
+                stock_history = workspace_reader.load_active_stock_catalog(
+                    package=package, raw_model=raw_model, as_of=cutoff, account_state=account_state)
             render_applied_stock_history(raw_model, package, cutoff, history=stock_history)
-        with statistics_tab:
-            render_comparison_statistics(comparison, key_prefix="applied")
-        details = st.expander(tr("Selected strategy details") + " · " + tr(WORKSPACE_STRATEGIES[strategy_id]),
-            expanded=False, on_change="rerun", key="applied_strategy_details")
-        if details.open:
-            with details:
-                if strategy_id == "RAW_A2":
-                    from apps.demo_console.pages.overview import render_overview
-                    render_overview(raw_model, presentation=presentation, view="Portfolio" if view == "Portfolio" else "Overview")
-                else:
-                    _workspace_target(context)
-        _source_details(package, presentation=presentation)
-    st.caption(tr("Historical return records and current target allocations have separate dates. Target weights do not represent executed trades."))
+
+        if view == "History":
+            render_stock_history()
+        else:
+            decision_tab, history_tab = localized_tabs(
+                ("Decisions & portfolio", "Stock history across strategies"), key="applied_workspace_tools")
+            if decision_tab.open:
+                with decision_tab:
+                    from apps.demo_console.components.top20_table import render_applied_rankings
+                    with st.spinner(tr("Loading verified records…"), show_time=True):
+                        snapshot = workspace_reader.load_active_rankings(cutoff, package=package,
+                            raw_model=raw_model, account_state=account_state, strategy_ids=query_ids)
+                    render_applied_rankings(cutoff, package, raw_model, snapshot=snapshot)
+                    _workspace_allocation_comparison(_exact_signal_contexts(contexts, cutoff))
+                    details = st.expander(tr("Selected strategy details") + " · " + tr(strategy_label(strategy_id)),
+                        expanded=False, on_change="rerun", key="applied_strategy_details")
+                    if details.open:
+                        with details:
+                            if strategy_id == "RAW_A2":
+                                from apps.demo_console.pages.overview import render_overview
+                                render_overview(raw_model, presentation=presentation, view="Portfolio")
+                            else:
+                                _workspace_target(context)
+            if history_tab.open:
+                with history_tab:
+                    render_stock_history()
+    _source_details(package, presentation=presentation, contexts=contexts, expanded=view == "Evidence")
+    if view in ("Research", "Evidence"):
+        render_legacy_history(package, cutoff)
+
+
+def render_legacy_history(package, cutoff):
+    """The accepted two-policy package survives membership changes unchanged."""
+    with st.expander(tr("Retired strategy · Historical research replay"), on_change="rerun", key="retired_strategy_history") as history:
+        if not history.open:
+            return
+        context = reader.workspace_view("HGB_FACTOR_5", cutoff, package=package)
+        st.caption(tr("HGB factor / shrinkage is no longer active. Its accepted research replay and original paper records are retained."))
+        render_comparison_cards({"HGB_FACTOR_5": context}, key="retired_summary")
+        rows = context["history"]["daily"]
+        if rows:
+            from apps.demo_console.pages.research import _active_comparison
+            comparison = _active_comparison({"HGB_FACTOR_5": context}, rows[0]["date"], rows[-1]["date"])
+            render_comparison_paths(comparison, key_prefix="retired")

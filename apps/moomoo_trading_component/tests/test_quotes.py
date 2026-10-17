@@ -24,6 +24,10 @@ class Rows:
 class QuoteContext:
     def __init__(self, sdk):
         self.sdk, self.closed = sdk, False
+        self.connect_wait_settings = []
+
+    def set_sync_query_connect_timeout(self, seconds):
+        self.connect_wait_settings.append(seconds)
 
     def close(self):
         self.closed = True
@@ -609,6 +613,29 @@ class QuoteFeedTests(unittest.TestCase):
             self.feed.quotes(["US.AAPL"])
         self.assertEqual(self.sdk.calls, [])
 
+
+
+    def test_feed_configures_connect_wait_before_quotes_and_does_not_reset_it_on_reuse(self):
+        self.feed.quotes(['US.AAPL'])
+        context = self.sdk.context
+        self.assertEqual(context.connect_wait_settings, [12])
+        self.feed.quotes(['US.AAPL'], refresh=True)
+        self.assertIs(self.sdk.context, context)
+        self.assertEqual(context.connect_wait_settings, [12])
+
+    def test_feed_setter_missing_or_failure_returns_no_quotes_and_keeps_no_context(self):
+        from unittest.mock import patch
+        for capability in ('missing', 'raises'):
+            with self.subTest(capability=capability):
+                sdk = QuoteSDK(); feed = MoomooQuoteFeed(sdk=sdk, now=lambda: NOW, monotonic=lambda: self.mono)
+                change = (patch.object(QuoteContext, 'set_sync_query_connect_timeout', None) if capability == 'missing' else
+                    patch.object(QuoteContext, 'set_sync_query_connect_timeout', side_effect=RuntimeError('private sdk payload')))
+                with change:
+                    result = feed.quotes_partial(['US.AAPL'])
+                self.assertEqual(result['quotes'], {}); self.assertIn('US.AAPL', result['errors'])
+                self.assertNotIn('private sdk payload', result['errors']['US.AAPL'])
+                self.assertTrue(sdk.context.closed); self.assertIsNone(feed._quote)
+                self.assertEqual([name for name, args in sdk.calls], ['OpenQuoteContext'])
 
 if __name__ == "__main__":
     unittest.main()

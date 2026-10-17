@@ -69,13 +69,37 @@ def _charts(app):
                    for row in pa.ipc.open_stream(payload).read_all().to_pylist()]
         assert records, f"Missing serialized observations for {metric}"
         charts[metric] = (units, records)
-    assert set(charts) == {"signed_count", "turnover", "rank", "score", "ticker"}
+    assert set(charts) == {"ticker",
+        "turnover" if app.session_state.filtered_state.get("_localized_tabs:history_portfolio_tabs") == "Executed turnover" else "signed_count",
+        "score" if app.session_state.filtered_state.get("_localized_tabs:history_security_tabs") == "Model score" else "rank"}
     return charts
+
+
+def _select_history_tab(app, key, source):
+    from apps.demo_console.tests.test_localized_tabs import _switch_tab
+    from apps.demo_console.i18n import language_scope, tr
+    with language_scope(app.session_state.filtered_state.get("language", "en")):
+        label = tr(source, ticker=app.selectbox(key="history_ticker").value)
+    _switch_tab(app, label, key=key)
+    assert not app.exception and not app.error
+
+
+def _history_chart_records(app, metric):
+    key, source = {"rank": ("history_security_tabs", "Rank & holdings"),
+        "score": ("history_security_tabs", "Model score"),
+        "signed_count": ("history_portfolio_tabs", "Entries & exits"),
+        "turnover": ("history_portfolio_tabs", "Executed turnover")}[metric]
+    if metric not in _charts(app):
+        _select_history_tab(app, key, source)
+    return _charts(app)[metric][1]
 
 
 def _assert_cutoff(state, date):
     app = state.app
-    _assert_healthy(app)
+    from apps.demo_console.i18n import language_scope, tr
+    assert not app.exception and not app.error
+    with language_scope(app.session_state.filtered_state.get("language", "en")):
+        assert tr("NOT EXPOSED") in _content(app)
     assert app.radio(key="workspace").value == "History"
     assert app.selectbox(key="decision_date").value == date
     assert app.select_slider(key="replay_date").value == date
@@ -95,6 +119,8 @@ def _history_tables(app):
 
 
 def _security_table(app):
+    if app.session_state.filtered_state.get("_localized_tabs:history_log_tabs") != "{ticker} · Recorded observations":
+        _select_history_tab(app, "history_log_tabs", "{ticker} · Recorded observations")
     return next(table for table in _history_tables(app) if "Recorded rank" in table.columns)
 
 
@@ -193,7 +219,7 @@ def test_portfolio_only_security_uses_actual_inspector_identity_without_a_fake_t
     assert app.session_state["_research_case_ticker"] == canonical
     assert "<strong>SYNTH_PORTFOLIO_ONLY</strong>" in _case_context(app)
     for metric in ("rank", "score"):
-        assert all(row[metric] is None for row in _charts(app)[metric][1])
+        assert all(row[metric] is None for row in _history_chart_records(app, metric))
 
 
 def test_portfolio_controls_and_history_entry_preserve_date_without_duplicate_overview(history_app):
@@ -264,7 +290,7 @@ def test_portfolio_link_replay_slider_and_date_buttons_keep_security_and_cutoff(
     assert app.selectbox(key="history_ticker").value == "SYNTH_21"
     assert app.button(key="previous_date").disabled
     for metric in ("rank", "score"):
-        records = _charts(app)[metric][1]
+        records = _history_chart_records(app, metric)
         assert all(row[metric] is None for row in records)
         assert all(row["ranking_status"] == "Outside Top20" for row in records)
 
@@ -361,10 +387,10 @@ def test_history_coverage_gaps_remain_missing_in_tables_and_chart_payloads(histo
     assert all(pd.isna(early[column]) for column in ("Entered", "Exited", "Retained", "Executed turnover"))
     charts = _charts(app)
     for metric in ("signed_count", "turnover"):
-        records = [row for row in charts[metric][1] if row["decision_date"] == _DATES[0]]
+        records = [row for row in _history_chart_records(app, metric) if row["decision_date"] == _DATES[0]]
         assert records and all(row[metric] is None for row in records)
     for metric in ("rank", "score"):
-        records = [row for row in charts[metric][1] if row["decision_date"] == _DATES[0]]
+        records = [row for row in _history_chart_records(app, metric) if row["decision_date"] == _DATES[0]]
         assert records and all(row["held"] is None and row["status"] == "Unavailable" for row in records)
         assert all(row[metric] is None if missing == "ranking" else row[metric] == 2 for row in records)
     observation = _security_table(app).set_index("Decision date").loc[_DATES[0]]
@@ -381,13 +407,18 @@ def test_history_presentation_privacy_and_debug_provenance_do_not_change_observa
                *(digest for _, digest in model.provenance.artifact_hashes),
                model.provenance.raw_status, _DEBUG]
     private = [value for value in private if value]
-    before = [table.copy(deep=True) for table in _history_tables(app)]
+    before = {}
+    for source in ("Snapshot log", "{ticker} · Recorded observations"):
+        _select_history_tab(app, "history_log_tabs", source)
+        before[source] = _history_tables(app)[0].copy(deep=True)
     assert len(before) == 2
     assert all(value not in _content(app) for value in private)
     app.toggle(key="presentation_mode").set_value(False).run()
     _assert_cutoff(state, _DATES[-1])
     assert all(value in _content(app) for value in private)
-    for original, table in zip(before, _history_tables(app), strict=True):
+    for source, original in before.items():
+        _select_history_tab(app, "history_log_tabs", source)
+        table = _history_tables(app)[0]
         pd.testing.assert_frame_equal(original, table)
         content = " ".join(str(cell) for cell in table.to_numpy().flat)
         assert all(value not in content for value in private)
@@ -433,3 +464,41 @@ def test_snapshot_brief_distinguishes_missing_comparison_from_recorded_zero_chan
     assert "1 holdings · 1 retained · 0 entered · 0 exited" in recorded_zero
     invalid = snapshot_brief_html(replace(model, error="Synthetic verification failure"))
     assert "portfolio is unavailable" in invalid and "1 recorded holdings" not in invalid
+
+
+def test_history_only_builds_visible_charts_and_log_then_switches_without_losing_context(history_app, monkeypatch):
+    from apps.demo_console.pages import history as page
+    state, app = history_app, history_app.app
+    calls = []
+    portfolio, security = page.portfolio_chart, page.security_chart
+    def portfolio_plot(history, metric):
+        calls.append(metric)
+        return portfolio(history, metric)
+    def security_plot(history, ticker, metric):
+        calls.append(metric)
+        return security(history, ticker, metric)
+    monkeypatch.setattr(page, "portfolio_chart", portfolio_plot)
+    monkeypatch.setattr(page, "security_chart", security_plot)
+    _workspace_action(app, "History").run()
+    assert calls == ["changes", "rank"]
+    assert len(_history_tables(app)) == 1 and "Coverage" in _history_tables(app)[0].columns
+    ticker = app.selectbox(key="history_ticker").value
+    calls.clear()
+    _select_history_tab(app, "history_portfolio_tabs", "Executed turnover")
+    assert calls == ["turnover", "rank"]
+    calls.clear()
+    _select_history_tab(app, "history_security_tabs", "Model score")
+    assert calls == ["turnover", "score"]
+    calls.clear()
+    _select_history_tab(app, "history_log_tabs", "{ticker} · Recorded observations")
+    assert calls == ["turnover", "score"]
+    assert len(_history_tables(app)) == 1 and "Recorded rank" in _history_tables(app)[0].columns
+    _assert_cutoff(state, _DATES[-1])
+    assert app.selectbox(key="history_ticker").value == ticker
+    for language in ("zh", "ja", "en"):
+        app.selectbox(key="language").select(language).run()
+        _assert_cutoff(state, _DATES[-1])
+        assert app.session_state["_localized_tabs:history_portfolio_tabs"] == "Executed turnover"
+        assert app.session_state["_localized_tabs:history_security_tabs"] == "Model score"
+        assert app.session_state["_localized_tabs:history_log_tabs"] == "{ticker} · Recorded observations"
+        assert app.selectbox(key="history_ticker").value == ticker

@@ -17,6 +17,8 @@ def _updated_page():
     st.session_state.setdefault("_workspace_source_seen", workspace_reader.LATEST)
     st.session_state.setdefault("decision_date", "2025-12-03")
     st.session_state.setdefault("_source_date:frozen", "2025-06-03")
+    for key in ("research_raw_drawdown", "research_rolling_windows", "research_month_detail", "_research_month_detail_open"):
+        st.session_state.setdefault(key, True)
     archive = _synthetic_archive()
     points = tuple(replace(point, reference_nav=None, reference_net_return=None,
                            reference_gross_return=None, reference_transaction_cost=None)
@@ -31,7 +33,10 @@ def _updated_page():
             patch.object(research, "read_updated_benchmarks", return_value=BenchmarkHistory()), \
             patch.object(research, "_historical_comparisons") as reference:
         research.render_research(model, presentation=True)
-        assert reference.call_args.args == (points[0].execution_date if st.session_state.get("research_range") != "63 execution days" else points[-63].execution_date, points[-1].execution_date)
+        if st.session_state.get("_localized_tabs:research_tabs", "Performance path") == "Performance path":
+            assert reference.call_args.args == (points[0].execution_date if st.session_state.get("research_range") != "63 execution days" else points[-63].execution_date, points[-1].execution_date)
+        else:
+            reference.assert_not_called()
 
 
 def _cards(app):
@@ -40,7 +45,7 @@ def _cards(app):
 
 def test_updated_metrics_use_real_summary_and_keep_all_analytical_views():
     from streamlit.testing.v1 import AppTest
-    from apps.demo_console.tests.test_research_view import _charts
+    from apps.demo_console.tests.test_research_view import _charts, _select_research_tab
     app = AppTest.from_function(_updated_page, default_timeout=30).run()
     assert not app.exception and not app.error
     cards = _cards(app)
@@ -53,7 +58,12 @@ def test_updated_metrics_use_real_summary_and_keep_all_analytical_views():
     assert "research_reference" not in {toggle.key for toggle in app.toggle}
     assert "research_curve_focus" not in {control.key for control in app.get("button_group")}
     charts = _charts(app)
-    assert {"wealth", "month", "year", "distribution", "rolling", "execution", "episode"} <= set(charts)
+    assert set(charts) == {"wealth", "drawdown", "month", "year", "month_detail"}
+    for source, required in (("Drawdown & recovery", {"episode"}), ("Consistency & concentration", {"distribution", "rolling"}), ("Evidence & method", set()), ("Execution frictions", {"execution"})):
+        _select_research_tab(app, source)
+        assert set(_charts(app)) == required
+    original = _charts(app)["execution"][1]
+    _select_research_tab(app, "Performance path")
     assert max(row["execution_date"] for row in charts["wealth"][1]) == "2025-12-03"
     assert all(row.get("reference_net_wealth") is None for row in charts["wealth"][1])
     months = next(table for table in app.dataframe if "Period" in table.value.columns)
@@ -61,12 +71,13 @@ def test_updated_metrics_use_real_summary_and_keep_all_analytical_views():
     daily = next(table for table in app.dataframe if "reference_net_return" in table.value.columns
                  and "gross_return" in table.value.columns)
     assert json.loads(daily.proto.columns)["reference_net_return"]["hidden"] is True
-    original = charts["execution"][1]
+    _select_research_tab(app, "Execution frictions")
     app.selectbox(key="research_range").select("63 execution days").run()
     assert not app.exception and not app.error
     assert _charts(app)["execution"][1] == original[-63:]
     app.toggle(key="research_gross").set_value(True).run()
     assert not app.exception and not app.error
+    _select_research_tab(app, "Performance path")
     wealth = _charts(app)["wealth"]
     assert "gross_wealth" in json.dumps(wealth[0])
     assert all(row.get("reference_net_wealth") is None for row in wealth[1])
@@ -81,6 +92,7 @@ def _reference_page():
     from apps.demo_console.i18n import language_scope
     from apps.demo_console.adapters.benchmarks_reader import BenchmarkHistory, BenchmarkSeries, BenchmarkPoint
     from apps.demo_console.tests.test_research_view import _synthetic_archive
+    st.session_state.setdefault("research_historical_comparisons", True)
     archive = _synthetic_archive()
     st.session_state.setdefault("decision_date", "2026-09-22")
     st.session_state.setdefault("workspace_source", "A2_UPDATED_RESEARCH")
@@ -287,7 +299,8 @@ def _updated_2026_benchmarks_page():
             max_drawdown=0.0) for symbol in ("QQQ", "SPY")), baseline_date=baseline_date)
     with language_scope("en"), patch.object(workspace_reader, "read_performance", return_value=history), \
             patch.object(research, "read_updated_benchmarks", side_effect=benchmark), \
-            patch.object(research, "read_performance", side_effect=AssertionError("No old archive in 2026 sample")):
+            patch.object(research, "read_performance", side_effect=AssertionError("No old archive in 2026 sample")), \
+            patch.object(research, "_load_hgb_comparison", return_value=None):
         research.render_research(model, presentation=True)
 
 
@@ -309,7 +322,10 @@ def test_2026_primary_benchmarks_follow_sample_month_quarter_and_custom_dates():
     assert app.session_state["benchmark_baseline"] == "2025-12-31"
     assert all(day.startswith("2026-") for day in app.session_state["benchmark_dates"])
     assert any("excluding cash dividends" in item.value for item in app.caption)
+    from apps.demo_console.tests.test_research_view import _select_research_tab
+    _select_research_tab(app, "Evidence & method")
     assert any("QQQ / SPY price references" in item.proto.body for item in app.get("html"))
+    _select_research_tab(app, "Performance path")
     def check(expected, baseline):
         assert not app.exception and not app.error
         assert app.session_state["benchmark_dates"] == expected
@@ -381,3 +397,32 @@ def test_random_window_handles_one_or_two_observations_without_inventing_dates()
     from apps.demo_console.pages.research import _random_window
     assert _random_window(("2026-01-02",)) == ("2026-01-02", "2026-01-02")
     assert _random_window(("2026-01-02", "2026-01-05")) == ("2026-01-02", "2026-01-05")
+
+
+def _lazy_historical_reference_page():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    import streamlit as st
+    from apps.demo_console.pages import research
+    calls = []
+    st.session_state["lazy_reference_calls"] = calls
+    def config():
+        calls.append("config")
+        return SimpleNamespace(artifacts=())
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Missing reference may not read any price or model")
+    with patch.object(research, "default_benchmarks_config", config), \
+            patch.object(research, "read_performance", forbidden), patch.object(research, "read_benchmarks", forbidden):
+        research._historical_comparisons("2026-01-02", "2026-01-09", presentation=True)
+
+
+def test_closed_historical_reference_does_not_load_metadata_and_open_retains_missing_status():
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_function(_lazy_historical_reference_page, default_timeout=15).run()
+    assert not app.exception and not app.error
+    assert app.session_state["lazy_reference_calls"] == []
+    app.session_state["research_historical_comparisons"] = True
+    app.run()
+    assert not app.exception and not app.error
+    assert app.session_state["lazy_reference_calls"] == ["config"]
+    assert any("historical QQQ / SPY reference window is unavailable" in item.value for item in app.info)

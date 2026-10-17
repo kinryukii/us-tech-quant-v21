@@ -11,12 +11,13 @@ def text(value) -> str:
 
 
 def styles() -> str:
-    return Path(__file__).with_name("console.css").read_text(encoding="utf-8")
+    shared = Path(__file__).resolve().parents[2] / "shared_ui" / "theme.css"
+    return shared.read_text(encoding="utf-8") + "\n" + Path(__file__).with_name("console.css").read_text(encoding="utf-8")
 
 
 def apply_style(*, presentation: bool) -> None:
-    sizing = ("--uq-text:15px;--uq-small:13px;--uq-row:43px" if presentation
-              else "--uq-text:14px;--uq-small:12px;--uq-row:40px")
+    sizing = ("--uq-text:16px;--uq-small:14px;--uq-row:44px;--uq-heading:38px" if presentation
+              else "--uq-text:14px;--uq-small:12px;--uq-row:36px;--uq-heading:30px")
     st.html(f'<style>{styles()}\n:root{{{sizing}}}</style>')
 
 

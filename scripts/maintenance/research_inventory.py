@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 from pathlib import Path
 import re
 import tempfile
@@ -41,13 +42,29 @@ def load_registry(repo_root: Path):
     if spec is None or spec.loader is None:
         raise ValueError("REGISTRY_MODULE_UNAVAILABLE")
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    config_path = repo_root / "config" / "research_registry.json"
+    missing = object()
+    previous = sys.modules.get(spec.name, missing)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        return module, _registry_root(repo_root, module.SCHEMA_VERSION)
+    except BaseException:
+        if previous is missing:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous
+        raise
+
+
+
+def _registry_root(repo_root: Path, schema_version: int = 1) -> Path:
+    """Resolve the compact root config without importing or reading a registry."""
+    config_path = repo_root / "config/research_registry.json"
     config = json.loads(config_path.read_text(encoding="utf-8-sig"))
-    if config.get("schema_version") != module.SCHEMA_VERSION:
+    if not isinstance(config, dict) or config.get("schema_version") != schema_version:
         raise ValueError("CONFIG_SCHEMA_VERSION_INVALID")
     root = Path(config["registry_root"])
-    return module, root if root.is_absolute() else (config_path.parent / root).resolve()
+    return root if root.is_absolute() else (config_path.parent / root).resolve()
 
 
 def _retired_catalog(repo_root: Path) -> dict[str, Any]:
@@ -422,20 +439,195 @@ def retired_source_matches(repo: Path, needle: str) -> list[dict[str, str]]:
     return sorted(matches, key=lambda entry: entry["path"])
 
 
+
+class _RetirementMetadataReader:
+    """Project only retirement navigation fields from a binary JSON stream.
+
+    Unselected values receive lexical/structural validation only. Their numbers
+    are never converted and their strings are never decoded or materialized.
+    This private reader has no registry, outcome or identity authority.
+    """
+    _FIELDS = {
+        "root": {"schema_version": "version", "entries": "entries"},
+        "entry": {"path": "text", "study_terms": "terms",
+                  "research_status": "text", "registry_entity_id": "text",
+                  "source_index": "sources"},
+        "source": {"file": "text", "source_url": "text", "sha256": "text"},
+    }
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.next = stream.read(1)
+
+    def _fail(self):
+        raise ValueError("RETIREMENT_RECORD_JSON_OR_METADATA_INVALID")
+
+    def _pop(self):
+        if not self.next:
+            self._fail()
+        value, self.next = self.next, self.stream.read(1)
+        return value
+
+    def _space(self):
+        while self.next in (b" ", b"\t", b"\r", b"\n"):
+            self._pop()
+
+    def _expect(self, value):
+        if self.next != value:
+            self._fail()
+        self._pop()
+
+    def _string(self, capture):
+        self._expect(b'"')
+        raw = bytearray(b'"') if capture else None
+
+        def take():
+            value = self._pop()
+            if raw is not None:
+                raw.extend(value)
+            return value[0]
+
+        while True:
+            byte = take()
+            if byte == 34:
+                return json.loads(bytes(raw)) if capture else None
+            if byte < 32:
+                self._fail()
+            if byte == 92:
+                escape = take()
+                if escape == 117:
+                    for _ in range(4):
+                        if take() not in b"0123456789abcdefABCDEF":
+                            self._fail()
+                elif escape not in b'"\\/bfnrt':
+                    self._fail()
+            elif byte >= 128:
+                # Validate UTF-8 bytes without decoding an unselected string.
+                if 194 <= byte <= 223:
+                    ranges = ((128, 191),)
+                elif 224 <= byte <= 239:
+                    ranges = ((160 if byte == 224 else 128,
+                               159 if byte == 237 else 191), (128, 191))
+                elif 240 <= byte <= 244:
+                    ranges = ((144 if byte == 240 else 128,
+                               143 if byte == 244 else 191), (128, 191), (128, 191))
+                else:
+                    self._fail()
+                for low, high in ranges:
+                    if not low <= take() <= high:
+                        self._fail()
+
+    def _number(self):
+        raw = bytearray()
+        while self.next and self.next[0] in b"-+0123456789.eE":
+            raw.extend(self._pop())
+        if not re.fullmatch(rb"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?", raw):
+            self._fail()
+        return bytes(raw)
+
+    def _array(self, kind, depth):
+        self._expect(b"[")
+        self._space()
+        values = [] if kind else None
+        if self.next == b"]":
+            self._pop()
+            return values
+        while True:
+            if kind == "terms":
+                value = self._string(True)
+            elif kind:
+                value = self._object("entry" if kind == "entries" else "source", depth + 1)
+            else:
+                value = self._skip(depth + 1)
+            if values is not None:
+                values.append(value)
+            self._space()
+            if self.next == b"]":
+                self._pop()
+                return values
+            self._expect(b",")
+            self._space()
+
+    def _object(self, scope, depth):
+        if depth > 128:
+            self._fail()
+        self._expect(b"{")
+        self._space()
+        result = {} if scope else None
+        fields = self._FIELDS.get(scope, {})
+        if self.next == b"}":
+            self._pop()
+            return result
+        while True:
+            key = self._string(bool(scope))
+            self._space()
+            self._expect(b":")
+            self._space()
+            kind = fields.get(key)
+            if kind:
+                if key in result:
+                    self._fail()
+                if kind == "text":
+                    value = self._string(True)
+                elif kind == "version":
+                    if self._number() != b"1":
+                        raise ValueError("RETIREMENT_RECORD_SCHEMA_INVALID")
+                    value = 1
+                else:
+                    value = self._array(kind, depth + 1)
+                result[key] = value
+            else:
+                self._skip(depth + 1)
+            self._space()
+            if self.next == b"}":
+                self._pop()
+                return result
+            self._expect(b",")
+            self._space()
+
+    def _skip(self, depth):
+        if depth > 128:
+            self._fail()
+        self._space()
+        if self.next == b"{":
+            self._object(None, depth)
+        elif self.next == b"[":
+            self._array(None, depth)
+        elif self.next == b'"':
+            self._string(False)
+        elif self.next in (b"t", b"f", b"n"):
+            literal = {b"t": b"true", b"f": b"false", b"n": b"null"}[self.next]
+            for byte in literal:
+                self._expect(bytes([byte]))
+        else:
+            self._number()
+
+    def read(self):
+        self._space()
+        record = self._object("root", 0)
+        self._space()
+        if self.next:
+            self._fail()
+        if record.get("schema_version") != 1 or "entries" not in record:
+            raise ValueError("RETIREMENT_RECORD_SCHEMA_INVALID")
+        for entry in record["entries"]:
+            if "path" not in entry or "study_terms" not in entry:
+                raise ValueError("RETIREMENT_RECORD_ENTRY_INVALID")
+        return record["entries"]
+
+
+def _retirement_metadata(path: Path) -> list[dict[str, Any]]:
+    with path.open("rb") as stream:
+        return _RetirementMetadataReader(stream).read()
+
+
 def retired_artifact_matches(registry_root: Path, needle: str) -> list[dict[str, Any]]:
-    """Search the registry's cleanup record without reading deleted outcomes."""
+    """Search only cleanup navigation fields; skip all unselected JSON values."""
     path = registry_root / RETIREMENT_RECORD
     if not path.is_file():
         return []
-    record = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(record, dict) or record.get("schema_version") != 1 or not isinstance(record.get("entries"), list):
-        raise ValueError("RETIREMENT_RECORD_SCHEMA_INVALID")
     matches = []
-    for entry in record["entries"]:
-        if (not isinstance(entry, dict) or not isinstance(entry.get("path"), str)
-                or not isinstance(entry.get("study_terms"), list)
-                or any(not isinstance(term, str) for term in entry["study_terms"])):
-            raise ValueError("RETIREMENT_RECORD_ENTRY_INVALID")
+    for entry in _retirement_metadata(path):
         searchable = " ".join([entry["path"], *entry["study_terms"]])
         source_hits = [source for source in entry.get("source_index", [])
                        if isinstance(source, dict) and _matches(
@@ -457,10 +649,22 @@ def retired_artifact_matches(registry_root: Path, needle: str) -> list[dict[str,
 
 def query(args: argparse.Namespace) -> dict[str, Any]:
     repo = args.repo_root.resolve()
-    registry, root = load_registry(repo)
     needle = args.text or args.alias or args.entity_id
     if not needle:
         raise ValueError("QUERY_TEXT_ALIAS_OR_ENTITY_ID_REQUIRED")
+    if getattr(args, "retired_only", False):
+        retired_artifacts = retired_artifact_matches(_registry_root(repo), needle)
+        return {
+            "status": "FOUND_REVIEW_REQUIRED" if retired_artifacts else "NOT_FOUND_REQUIRES_REVIEW",
+            "query_scope": "RETIRED_ARTIFACT_METADATA_ONLY",
+            "registry_head_sha256": None, "entities": [],
+            "source_name_matches": [], "source_search_roots": [],
+            "retired_source_matches": [], "retired_artifact_matches": retired_artifacts,
+            "repo_root_file_names_searched": False,
+            "new_research_authorized": False,
+            "next_step": "Review these retained metadata references under the applicable contract; this scoped query does not search accepted identities or authorize new research.",
+        }
+    registry, root = load_registry(repo)
     try:
         result = registry.query_registry(root, entity_id=args.entity_id, alias=args.alias)
     except registry.RegistryError as error:
@@ -501,6 +705,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     search.add_argument("--text")
     search.add_argument("--entity-id")
     search.add_argument("--alias")
+    search.add_argument("--retired-only", action="store_true", help="Project cleanup metadata only; skip accepted registries and source searches")
     args = parser.parse_args(argv)
     try:
         result = refresh(args) if args.command == "refresh" else query(args)

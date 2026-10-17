@@ -28,10 +28,18 @@ SQ_TRANSPORT_ALIAS = {
 }
 
 
+REVIEWED_TRANSPORT_ALIASES = {"SQ": SQ_TRANSPORT_ALIAS,
+    'BGNE': {'logical_ticker': 'BGNE', 'source_ticker': 'ONC', 'provider_code': 'US.ONC', 'security_id': '07725L102', 'rule': 'REGISTERED_CUSIP_AND_ISSUER_TICKER_CHANGE', 'evidence_url': 'https://ir.beonemedicines.com/news/beigene-to-change-nasdaq-ticker-symbol-to-onc-on-january-2-present-at-43rd-annual/4ea694a5-c75a-4b13-b9d8-effb5fbe17a6', 'identity_evidence_url': 'https://www.sec.gov/Archives/edgar/data/1263508/000110465926044411/xslSCHEDULE_13D_X02/primary_doc.xml', 'symbol_effective_from': '2025-01-02'},
+    'BLDE': {'logical_ticker': 'BLDE', 'source_ticker': 'SRTA', 'provider_code': 'US.SRTA', 'security_id': '092667104', 'rule': 'REGISTERED_CUSIP_AND_ISSUER_TICKER_CHANGE', 'evidence_url': 'https://ir.stratacritical.com/news-events/press-releases/detail/124/blade-air-mobility-sets-timing-for-name-change-to-strata', 'identity_evidence_url': 'https://ir.stratacritical.com/sec-filings/all-sec-filings/content/0001104659-25-106398/0001104659-25-106398.pdf', 'symbol_effective_from': '2025-08-29'},
+    'BSIG': {'logical_ticker': 'BSIG', 'source_ticker': 'AAMI', 'provider_code': 'US.AAMI', 'security_id': '10948W103', 'rule': 'REGISTERED_CUSIP_AND_ISSUER_TICKER_CHANGE', 'evidence_url': 'https://www.sec.gov/Archives/edgar/data/1748824/000174882424000041/bsig-20240930.htm', 'identity_evidence_url': 'https://www.sec.gov/Archives/edgar/data/1317195/000121465925016619/xslSCHEDULE_13G_X01/primary_doc.xml', 'symbol_effective_from': '2025-01-02'},
+}
+
+
 def validate_explicit_alias(proof, ticker, code, security_ids):
-    """Validate the one reviewed issuer/registry alias; never infer code aliases."""
-    if (proof != SQ_TRANSPORT_ALIAS or ticker != "SQ" or code != "US.XYZ"
-            or not security_ids or set(security_ids) != {"852234103"}):
+    """Validate exact reviewed issuer/CUSIP bindings; never infer code aliases."""
+    expected = REVIEWED_TRANSPORT_ALIASES.get(ticker)
+    if (expected is None or proof != expected or code != expected["provider_code"]
+            or not security_ids or set(security_ids) != {expected["security_id"]}):
         raise ValueError("NATIVE_EXPLICIT_TRANSPORT_ALIAS_INVALID")
     return proof["source_ticker"]
 
@@ -215,7 +223,7 @@ def build_current_native_features(universe, target, sessions, acquisitions, stor
             if not rehab or pd.Timestamp(rehab["fetched_at"]) < close:
                 raise ValueError("NATIVE_LATEST_REHAB_MISSING_OR_PREDATES_CLOSE")
             factors = _rehab_frame(rehab["path"], rehab["sha256"], code, rehab["row_count"], native_cache.verify)
-            alias = dict(SQ_TRANSPORT_ALIAS) if ticker == "SQ" else None
+            alias = dict(REVIEWED_TRANSPORT_ALIASES[ticker]) if ticker in REVIEWED_TRANSPORT_ALIASES else None
             if alias is not None:
                 validate_explicit_alias(alias, ticker, code, security_ids)
             raw, native_proof = _native_raw(store, ticker, code, target, native_cache, alias)
@@ -225,8 +233,8 @@ def build_current_native_features(universe, target, sessions, acquisitions, stor
             gap_dates = [day.strftime("%Y-%m-%d") for day in required
                          if raw.trade_date.min() <= day <= raw.trade_date.max() and day not in raw_dates]
             if raw.trade_date.max() < pd.Timestamp(target) or gap_dates:
-                # Keep immutable provider tickers intact. Only the reviewed SQ
-                # alias may use XYZ; each candidate still passes the full gate.
+                # Keep immutable provider tickers intact. Reviewed aliases
+                # retain exact CUSIP/code bindings and the full provider gate.
                 candidates = []
                 for provider_ticker in [ticker] + ([alias["source_ticker"]] if alias else []):
                     candidate = massive.get(provider_ticker)

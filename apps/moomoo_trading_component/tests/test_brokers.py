@@ -15,6 +15,10 @@ class FakeContext:
     def __init__(self, sdk, kind):
         self.sdk, self.kind = sdk, kind
         self.closed = False
+        self.connect_wait_settings = []
+
+    def set_sync_query_connect_timeout(self, seconds):
+        self.connect_wait_settings.append(seconds)
 
     def close(self):
         self.closed = True
@@ -832,6 +836,12 @@ class BrokerTests(unittest.TestCase):
         self.sdk.quotes['US.SPY']['update_time'] = '2026-09-24 16:00:00'
         self.sdk.positions = [{'code': 'US.SPY', 'qty': 2, 'can_sell_qty': 2,
                                'market_val': 200, 'position_side': 'LONG', 'currency': 'USD'}]
+        # The public snapshot still reads and reports an unrelated bad holding.
+        state = self.broker.snapshot_partial(['US.AAPL'])
+        self.assertEqual(set(state['quote_errors']), {'US.SPY'})
+        self.assertEqual(sum(name == 'get_order_book' for name, _ in self.sdk.calls), 2)
+        self.assertEqual(sum(name == 'get_market_snapshot' for name, _ in self.sdk.calls), 2)
+        self.sdk.calls.clear()
         result = self.broker.submit(self.order, 'qualified-only', allow_partial_quotes=True,
                                    execution_deadline_utc=(NOW + timedelta(minutes=10)).isoformat())
         self.assertEqual(result['status'], 'SUBMITTED')
@@ -839,6 +849,76 @@ class BrokerTests(unittest.TestCase):
         self.assertEqual(len(submitted), 1)
         self.assertEqual(submitted[0]['code'], 'US.AAPL')
         self.assertEqual(submitted[0]['trd_env'], 'SIMULATE')
+        self.assertEqual([args['code'] for name, args in self.sdk.calls
+                          if name == 'get_order_book'], ['US.AAPL'])
+        self.assertEqual([args['code_list'] for name, args in self.sdk.calls
+                          if name == 'get_market_snapshot'], [['US.AAPL']])
+        self.assertEqual(sum(name == 'get_acc_list' for name, _ in self.sdk.calls), 1)
+        for method in ('accinfo_query', 'position_list_query', 'order_list_query'):
+            reads = [args for name, args in self.sdk.calls if name == method]
+            self.assertEqual(len(reads), 1)
+            self.assertEqual(reads[0]['acc_id'], 222)
+            self.assertEqual(reads[0]['trd_env'], 'SIMULATE')
+            self.assertTrue(reads[0]['refresh_cache'])
+            self.assertNotIn('code', reads[0])  # Full account, including other holdings/orders.
+
+    def test_partial_submit_refreshes_candidate_despite_valid_cached_quote(self):
+        for value in ('invalid', '2026-09-25 10:59:00', '2026-09-25 11:00:16'):
+            with self.subTest(source_time=value):
+                sdk = FakeSDK()
+                broker = MoomooBroker(account_id='222', sdk=sdk, now=lambda: NOW)
+                broker.snapshot_partial(['US.AAPL'])
+                sdk.calls.clear()
+                sdk.quotes['US.AAPL']['update_time'] = value
+                with self.assertRaises(BrokerOrderNotSent):
+                    broker.submit(self.order, 'candidate-refresh', allow_partial_quotes=True,
+                        execution_deadline_utc=(NOW + timedelta(minutes=10)).isoformat())
+                self.assertEqual([args['code_list'] for name, args in sdk.calls
+                                  if name == 'get_market_snapshot'], [['US.AAPL']])
+                self.assertEqual([args['code'] for name, args in sdk.calls
+                                  if name == 'get_order_book'], ['US.AAPL'])
+                self.assertFalse(any(name == 'place_order' for name, _ in sdk.calls))
+                self.assertNotIn('candidate-refresh', broker._attempted)
+
+    def test_partial_submit_still_rejects_fresh_account_and_other_holding_errors(self):
+        cases = [('account', 'trd_env', 'REAL'), ('fund', 'us_cash', 0),
+                 ('fund', 'total_assets', float('nan')),
+                 ('position', 'position_side', 'SHORT'), ('position', 'currency', 'HKD'),
+                 ('position', 'acc_id', 999), ('position', 'can_sell_qty', 3),
+                 ('position', 'market_val', None), ('order', 'order_status', 'UNKNOWN')]
+        for section, field, value in cases:
+            with self.subTest(section=section, field=field, value=value):
+                sdk = FakeSDK()
+                sdk.add_quote('US.SPY')
+                sdk.positions = [{'code': 'US.SPY', 'qty': 2, 'can_sell_qty': 2,
+                                  'market_val': 200, 'position_side': 'LONG', 'currency': 'USD'}]
+                broker = MoomooBroker(account_id='222', sdk=sdk, now=lambda: NOW)
+                broker.snapshot_partial(['US.AAPL'])  # Prior valid account cannot authorize a send.
+                sdk.calls.clear()
+                if section == 'order':
+                    sdk.orders = [{'code': 'US.SPY', 'order_id': 'unknown-held', field: value}]
+                else:
+                    row = {'account': sdk.accounts[1], 'fund': sdk.funds[0],
+                           'position': sdk.positions[0]}[section]
+                    row[field] = value
+                with self.assertRaises(BrokerOrderNotSent):
+                    broker.submit(self.order, 'fresh-account', allow_partial_quotes=True,
+                        execution_deadline_utc=(NOW + timedelta(minutes=10)).isoformat())
+                self.assertTrue(any(name == 'get_acc_list' for name, _ in sdk.calls))
+                self.assertTrue(all(args['refresh_cache'] for name, args in sdk.calls
+                                    if name in {'accinfo_query', 'position_list_query', 'order_list_query'}))
+                self.assertFalse(any(name == 'place_order' for name, _ in sdk.calls))
+                self.assertNotIn('fresh-account', broker._attempted)
+
+    def test_partial_submit_keeps_full_account_security_limit(self):
+        self.sdk.positions = [{'code': f'US.T{index:03d}', 'qty': 1, 'can_sell_qty': 1,
+                               'market_val': 100, 'position_side': 'LONG', 'currency': 'USD'}
+                              for index in range(100)]
+        with self.assertRaisesRegex(BrokerOrderNotSent, '合计超过 100'):
+            self.broker.submit(self.order, 'too-many-held', allow_partial_quotes=True,
+                execution_deadline_utc=(NOW + timedelta(minutes=10)).isoformat())
+        self.assertFalse(any(name == 'place_order' for name, _ in self.sdk.calls))
+        self.assertNotIn('too-many-held', self.broker._attempted)
 
     def test_partial_bad_quote_is_definitely_unsent_and_can_recover(self):
         self.sdk.quotes['US.AAPL']['update_time'] = '2026-09-24 16:00:00'
@@ -860,16 +940,32 @@ class BrokerTests(unittest.TestCase):
     def test_partial_deadline_is_rechecked_after_long_account_rpc(self):
         current = [NOW]
         self.broker._now = lambda: current[0]
-        original = self.broker.snapshot_partial
-        def delayed_read(codes):
-            state = original(codes)
+        original = self.broker._snapshot_read
+        def delayed_read(codes, **kwargs):
+            state = original(codes, **kwargs)
             current[0] += timedelta(seconds=6)
             return state
-        with patch.object(self.broker, 'snapshot_partial', side_effect=delayed_read):
+        with patch.object(self.broker, '_snapshot_read', side_effect=delayed_read):
             with self.assertRaisesRegex(BrokerOrderNotSent, '执行窗口已结束'):
                 self.broker.submit(self.order, 'expired-during-read', allow_partial_quotes=True,
                     execution_deadline_utc=(NOW + timedelta(seconds=5)).isoformat())
         self.assertNotIn('expired-during-read', self.broker._attempted)
+        self.assertFalse(any(name == 'place_order' for name, _ in self.sdk.calls))
+
+    def test_partial_market_quote_age_is_rechecked_after_cash_capacity_rpc(self):
+        current = [NOW]
+        self.broker._now = lambda: current[0]
+        context = self.broker._trade_context()
+        original = context.acctradinginfo_query
+        def delayed_capacity(**kwargs):
+            rows = original(**kwargs)
+            current[0] += timedelta(seconds=16)  # Source was already 15 seconds old.
+            return rows
+        with patch.object(context, 'acctradinginfo_query', side_effect=delayed_capacity):
+            with self.assertRaisesRegex(BrokerOrderNotSent, '最终盘口行情已过期'):
+                self.broker.submit(self.order, 'expired-after-capacity', allow_partial_quotes=True,
+                    order_type='MARKET', execution_deadline_utc=(NOW + timedelta(minutes=10)).isoformat())
+        self.assertNotIn('expired-after-capacity', self.broker._attempted)
         self.assertFalse(any(name == 'place_order' for name, _ in self.sdk.calls))
 
     def test_partial_final_spread_and_missing_deadline_cannot_send(self):
@@ -913,6 +1009,166 @@ class BrokerTests(unittest.TestCase):
                                execution_deadline_utc=expiry)
         self.assertNotIsInstance(unknown.exception, BrokerOrderNotSent)
         self.assertIn('send-timeout', self.broker._attempted)
+
+
+    def test_public_connect_wait_is_set_once_on_all_contexts_before_reuse(self):
+        contexts = [self.broker._trade_context(), self.broker._quote_context(), self.broker._feed()._context()]
+        self.assertEqual([context.connect_wait_settings for context in contexts], [[12], [12], [12]])
+        self.assertIs(self.broker._trade_context(), contexts[0])
+        self.assertIs(self.broker._quote_context(), contexts[1])
+        self.assertIs(self.broker._feed()._context(), contexts[2])
+        self.assertEqual([context.connect_wait_settings for context in contexts], [[12], [12], [12]])
+        self.assertTrue(all(name in {'OpenSecTradeContext', 'OpenQuoteContext'} for name, args in self.sdk.calls))
+
+    def test_missing_or_failed_connect_wait_setter_closes_and_never_caches_any_context(self):
+        from unittest.mock import patch
+        for route in ('trade', 'legacy_quote', 'feed'):
+            for capability in ('missing', 'raises'):
+                with self.subTest(route=route, capability=capability):
+                    sdk = FakeSDK(); broker = MoomooBroker(account_id='222', sdk=sdk, now=lambda: NOW)
+                    getter = broker._trade_context if route == 'trade' else broker._quote_context if route == 'legacy_quote' else broker._feed()._context
+                    change = (patch.object(FakeContext, 'set_sync_query_connect_timeout', None) if capability == 'missing' else
+                        patch.object(FakeContext, 'set_sync_query_connect_timeout', side_effect=RuntimeError('private-account-sdk-payload')))
+                    with change, self.assertRaises(BrokerError) as caught: getter()
+                    self.assertNotIn('private-account', str(caught.exception))
+                    self.assertIn('有界连接等待', str(caught.exception))
+                    self.assertTrue(sdk.contexts[-1].closed)
+                    cached = broker._trade if route == 'trade' else broker._quote if route == 'legacy_quote' else broker._quote_feed._quote
+                    self.assertIsNone(cached); self.assertEqual(broker._attempted, set())
+                    self.assertTrue(all(name in {'OpenSecTradeContext', 'OpenQuoteContext'} for name, args in sdk.calls))
+
+    def test_failed_setter_cleanup_error_still_rejects_without_sdk_payload(self):
+        from unittest.mock import patch
+        with patch.object(FakeContext, 'set_sync_query_connect_timeout', side_effect=RuntimeError('private setter payload')), \
+                patch.object(FakeContext, 'close', side_effect=RuntimeError('private close payload')) as closing:
+            with self.assertRaises(BrokerError) as caught: self.broker._trade_context()
+        closing.assert_called_once_with(); self.assertIsNone(self.broker._trade)
+        self.assertNotIn('private', str(caught.exception))
+
+    def test_context_close_and_rebuild_keep_unknown_order_attempt_guards(self):
+        self.broker._attempted.add('unknown-client')
+        self.broker._reprice_attempted.add(('unknown-order', 1, 'intent'))
+        previous = self.broker._trade_context(); self.broker.close()
+        current = self.broker._trade_context()
+        self.assertTrue(previous.closed); self.assertIsNot(current, previous)
+        self.assertEqual(current.connect_wait_settings, [12])
+        self.assertEqual(self.broker._attempted, {'unknown-client'})
+        self.assertEqual(self.broker._reprice_attempted, {('unknown-order', 1, 'intent')})
+
+
+class CompetitionBrokerTests(unittest.TestCase):
+    """Separate competition adapters must never change the ordinary SIM scope."""
+
+    def setUp(self):
+        self.sdk = FakeSDK()
+        self.name = "2026 美股模拟交易比赛"
+        self.competition = dict(acc_id=444, trd_env="SIMULATE",
+            sim_acc_type="COMPETITION", acc_type="MARGIN", acc_status="ACTIVE",
+            trdmarket_auth=["US"], competition_acc_name=self.name, security_firm="N/A")
+        self.sdk.accounts.extend([
+            deepcopy(self.competition),
+            {**self.competition, "acc_id": 555, "trd_env": "REAL"},
+            {**self.competition, "acc_id": 777, "competition_acc_name": "另一个比赛"},
+        ])
+
+    def competition_broker(self, **kwargs):
+        options = dict(account_scope="competition", expected_account_id="444",
+            expected_competition_name=self.name, sdk=self.sdk, now=lambda: NOW)
+        options.update(kwargs)
+        return MoomooBroker(**options)
+
+    def test_ordinary_discovery_remains_unchanged_with_competition_accounts(self):
+        ordinary = MoomooBroker(sdk=self.sdk)
+        self.assertEqual(ordinary.probe()["accounts"],
+            [{"account_id": "222", "market": "US", "environment": "SIMULATE"}])
+        self.assertEqual([name for name, _ in self.sdk.calls],
+            ["OpenSecTradeContext", "get_acc_list"])
+        unscoped = MoomooBroker(account_id="444", sdk=self.sdk)
+        with self.assertRaises(BrokerError):
+            unscoped.snapshot([], include_quotes=False)
+        self.assertFalse(any(name == "accinfo_query" for name, _ in self.sdk.calls))
+
+    def test_competition_probe_preserves_identity_and_is_metadata_only(self):
+        broker = self.competition_broker()
+        self.assertEqual(self.sdk.calls, [])
+        result = broker.probe()
+        self.assertEqual(result["accounts"], [dict(account_id="444", market="US",
+            environment="SIMULATE", sim_acc_type="COMPETITION",
+            competition_acc_name=self.name, acc_type="MARGIN", acc_status="ACTIVE",
+            trdmarket_auth=["US"], security_firm="N/A")])
+        self.assertEqual([name for name, _ in self.sdk.calls],
+            ["OpenSecTradeContext", "get_acc_list"])
+        discovery = MoomooBroker(account_scope="competition", sdk=self.sdk)
+        self.assertEqual([row["account_id"] for row in discovery.probe()["accounts"]],
+            ["444", "777"])
+
+    def test_expected_identity_requires_exact_name_and_account(self):
+        for options in ({"expected_account_id": "222"},
+                        {"expected_competition_name": "另一个比赛"},
+                        {"expected_competition_name": self.name + " "}):
+            with self.subTest(options=options):
+                self.assertEqual(self.competition_broker(**options).probe()["accounts"], [])
+        ordinary = MoomooBroker(expected_account_id="222", sdk=self.sdk)
+        self.assertEqual([row["account_id"] for row in ordinary.probe()["accounts"]], ["222"])
+
+    def test_competition_metadata_drift_blocks_funds_and_submission(self):
+        broker = self.competition_broker(account_id="444")
+        self.assertEqual(len(broker.probe()["accounts"]), 1)
+        mutations = [
+            {"trd_env": "REAL"}, {"sim_acc_type": "STOCK_AND_OPTION"},
+            {"acc_status": "DISABLED"}, {"trdmarket_auth": ["HK"]},
+            {"acc_id": 778}, {"competition_acc_name": "另一个比赛"},
+            {"competition_acc_name": "N/A"},
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.sdk.accounts[3] = {**self.competition, **mutation}
+                self.sdk.calls.clear()
+                with self.assertRaises(BrokerError):
+                    broker.snapshot([], include_quotes=False)
+                with self.assertRaises(BrokerError):
+                    broker.submit(dict(code="US.AAPL", side="BUY", qty=1,
+                        limit_price=100.01), "competition-drift")
+                self.assertTrue(all(name == "get_acc_list" for name, _ in self.sdk.calls))
+        self.sdk.accounts[3] = deepcopy(self.competition)
+        self.sdk.accounts.append(deepcopy(self.competition))
+        self.sdk.calls.clear()
+        with self.assertRaises(BrokerError):
+            broker.snapshot([], include_quotes=False)
+        self.assertEqual([name for name, _ in self.sdk.calls], ["get_acc_list"])
+
+    def test_two_scoped_instances_query_only_their_account_and_use_cash(self):
+        competition = self.competition_broker(account_id="444")
+        ordinary = MoomooBroker(account_id="222", sdk=self.sdk, now=lambda: NOW)
+        for broker, account_id in ((competition, 444), (ordinary, 222)):
+            with self.subTest(account_id=account_id):
+                self.sdk.calls.clear()
+                result = broker.snapshot([], include_quotes=False)
+                self.assertEqual(result["cash"], 900)
+                self.assertEqual(result["funds_source"], "usd_net_cash_power_bounded_by_us_cash")
+                account_reads = [args for name, args in self.sdk.calls
+                    if name in {"accinfo_query", "position_list_query", "order_list_query"}]
+                self.assertTrue(account_reads)
+                self.assertTrue(all(args["acc_id"] == account_id
+                    and args["trd_env"] == "SIMULATE" for args in account_reads))
+                self.assertFalse(any(name in {"place_order", "modify_order", "unlock_trade"}
+                    for name, _ in self.sdk.calls))
+
+    def test_invalid_scope_or_conflicting_binding_fails_before_sdk_use(self):
+        invalid = [
+            {"account_scope": "SIMULATE"}, {"account_scope": True},
+            {"expected_account_id": "0"}, {"expected_account_id": True},
+            {"account_id": "222", "expected_account_id": "444"},
+            {"expected_competition_name": self.name},
+            {"account_scope": "competition", "expected_competition_name": ""},
+            {"account_scope": "competition", "expected_competition_name": "N/A"},
+            {"account_scope": "competition", "expected_competition_name": 123},
+            {"account_scope": "competition", "expected_competition_name": "bad\nname"},
+        ]
+        for options in invalid:
+            with self.subTest(options=options), self.assertRaises(BrokerError):
+                MoomooBroker(sdk=self.sdk, **options)
+        self.assertEqual(self.sdk.calls, [])
 
 
 if __name__ == "__main__":

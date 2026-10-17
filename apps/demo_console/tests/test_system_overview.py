@@ -40,8 +40,19 @@ def _wealth(app):
 
 
 def _drawdown(app):
+    if not any((rows := _records(element)) and set(rows[0]) == {"execution_date", "drawdown"} for element in app.get("vega_lite_chart")):
+        app.session_state["system_drawdown_path"] = True
+        app.run()
+        assert not app.exception and not app.error
     return next(element for element in app.get("vega_lite_chart")
                 if (rows := _records(element)) and set(rows[0]) == {"execution_date", "drawdown"})
+
+
+def _mechanism_button(app, key):
+    if not any(node.key == key for node in app.button):
+        from apps.demo_console.tests.test_localized_tabs import _open_expander
+        _open_expander(app, "system_mechanisms")
+    return app.button(key=key)
 
 
 def _context(app):
@@ -245,7 +256,7 @@ def test_result_basis_stays_with_metrics_before_charts_and_cutoff_does_not_follo
     action_index = next(index for index, node in enumerate(nodes) if getattr(node, "key", None) == "system_start_tour")
     assert action_index < context_index < wealth_index < drawdown_index
     assert app.button(key="system_start_tour").proto.type == "primary"
-    assert app.button(key="system_trace").proto.type != "primary"
+    assert _mechanism_button(app, "system_trace").proto.type != "primary"
     assert app.button(key="system_risk").proto.type != "primary"
     assert app.button(key="system_focus_trace").proto.type != "primary"
     app.selectbox(key="system_inspect_execution").select("2024-12-31").run()
@@ -280,8 +291,9 @@ def test_focused_decision_opens_comparison_with_same_security_and_cutoff(system_
     app.session_state["ml_primary"] = "SYNTH_BETA"
     app.session_state["ml_secondary"] = "SYNTH_GAMMA"
     app.selectbox(key="system_focus_ticker").select("SYNTH_GAMMA").run()
+    comparison_button = _mechanism_button(app, "system_focus_compare")
     landing_calls = len(state.landing_calls)
-    app.button(key="system_focus_compare").click().run()
+    comparison_button.click().run()
     assert not app.exception and not app.error
     assert app.radio(key="workspace").value == "Machine learning"
     assert app.session_state["ml_section"] == "Compare outputs"
@@ -385,7 +397,7 @@ def test_unavailable_or_out_of_cutoff_path_has_no_canvas_but_retains_verified_de
     assert not any('class="uq-result-context"' in element.proto.body for element in app.get("html"))
     assert not any(element.key == "system_inspect_execution" for element in app.selectbox)
     assert app.session_state["_system_chart_key"] is None
-    assert "SYNTH_ALPHA" in _content(app) and not app.button(key="system_trace").disabled
+    assert "SYNTH_ALPHA" in _content(app) and not _mechanism_button(app, "system_trace").disabled
     assert _PRIVATE not in _content(app)
     if mode == "error":
         app.toggle(key="presentation_mode").set_value(False).run()
@@ -410,7 +422,7 @@ def test_ambiguous_ranked_names_disable_case_actions_without_hiding_verified_por
                    for item in app.get("html"))
     assert any("A verified Top20 record is required" in item.value for item in app.info)
     case_actions = ("system_start_tour", "system_focus_trace", "system_trace", "system_focus_compare")
-    assert all(app.button(key=key).disabled for key in case_actions)
+    assert all(_mechanism_button(app, key).disabled for key in case_actions)
     assert not app.button(key="system_risk").disabled
     assert _assert_canvas(state) == original_path
     assert app.selectbox(key="decision_date").value == "2025-12-02"
@@ -419,7 +431,7 @@ def test_ambiguous_ranked_names_disable_case_actions_without_hiding_verified_por
     state.performance_transform = lambda history: replace(history, points=())
     app.run()
     assert not app.exception and not app.error and _wealth(app) is None
-    assert all(app.button(key=key).disabled for key in case_actions)
+    assert all(_mechanism_button(app, key).disabled for key in case_actions)
     assert 'The recorded case remains available.' not in _content(app)
     assert any('Frozen performance is unavailable.' in item.value for item in app.info)
 
@@ -428,7 +440,7 @@ def test_ambiguous_ranked_names_disable_case_actions_without_hiding_verified_por
     app.run()
     assert not app.exception and not app.error
     assert app.selectbox(key="system_focus_ticker").value == "SYNTH_ALPHA"
-    assert all(not app.button(key=key).disabled for key in case_actions)
+    assert all(not _mechanism_button(app, key).disabled for key in case_actions)
     assert _assert_canvas(state) == original_path
 
 
@@ -465,3 +477,24 @@ def test_selection_callback_rejects_stale_malformed_or_out_of_window_payloads(mo
     system_overview._select_execution(("2025-12-01", "2025-12-02"), "current")
     assert state["system_inspect_execution"] == "2025-12-01"
     assert state["decision_date"] == "2025-12-03"
+
+
+def test_collapsed_system_details_build_no_hidden_chart_or_controls_and_open_remains_available(system_app, monkeypatch):
+    from apps.demo_console.components import system_overview as page
+    from apps.demo_console.tests.test_localized_tabs import _open_expander
+    state, app = system_app, system_app.app
+    calls = []
+    original = page._render_secondary_tools
+    def tools(*args, **kwargs):
+        calls.append("tools")
+        return original(*args, **kwargs)
+    monkeypatch.setattr(page, "_render_secondary_tools", tools)
+    app.run()
+    assert calls == []
+    assert not any(node.key == "system_trace" for node in app.button)
+    assert not any((rows := _records(node)) and set(rows[0]) == {"execution_date", "drawdown"} for node in app.get("vega_lite_chart"))
+    _open_expander(app, "system_mechanisms")
+    assert calls == ["tools"] and app.button(key="system_trace")
+    _open_expander(app, "system_drawdown_path")
+    assert _records(_drawdown(app))
+    assert app.selectbox(key="decision_date").value == "2025-12-02"

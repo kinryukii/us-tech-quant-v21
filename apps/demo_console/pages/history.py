@@ -177,45 +177,51 @@ def render_history(model: DecisionOverview, *, presentation: bool) -> None:
         with st.container(key="uq_history_portfolio"):
             st.html(section_header(tr("Portfolio evolution"), tr("ACROSS RECORDED SNAPSHOTS")))
             changes_tab, turnover_tab = localized_tabs(["Entries & exits", "Executed turnover"], key="history_portfolio_tabs")
-            with changes_tab:
-                render_chart(portfolio_chart(history, "changes"), width="stretch", height=290,
-                                theme=None, key="history_changes_chart")
-            with turnover_tab:
-                render_chart(portfolio_chart(history, "turnover"), width="stretch", height=290,
-                                theme=None, key="history_turnover_chart")
+            if changes_tab.open:
+                with changes_tab:
+                    render_chart(portfolio_chart(history, "changes"), width="stretch", height=290,
+                                    theme=None, key="history_changes_chart")
+            if turnover_tab.open:
+                with turnover_tab:
+                    render_chart(portfolio_chart(history, "turnover"), width="stretch", height=290,
+                                    theme=None, key="history_turnover_chart")
             st.caption(tr("Holdings changes and turnover describe subsequent replay execution. They are not RX actions or decision-time inputs."))
     with security:
         with st.container(key="uq_history_security"):
             st.html(section_header(tr("{ticker} · Security trajectory", ticker=ticker), tr("ORIGINAL RECORDS"), tr("Rank 1 is highest")))
             rank_tab, score_tab = localized_tabs(["Rank & holdings", "Model score"], key="history_security_tabs")
-            with rank_tab:
-                render_chart(security_chart(history, ticker, "rank"), width="stretch", height=290,
-                                theme=None, key="history_rank_chart")
-            with score_tab:
-                render_chart(security_chart(history, ticker, "score"), width="stretch", height=290,
-                                theme=None, key="history_score_chart")
+            if rank_tab.open:
+                with rank_tab:
+                    render_chart(security_chart(history, ticker, "rank"), width="stretch", height=290,
+                                    theme=None, key="history_rank_chart")
+            if score_tab.open:
+                with score_tab:
+                    render_chart(security_chart(history, ticker, "score"), width="stretch", height=290,
+                                    theme=None, key="history_score_chart")
             st.caption(tr("A missing Top20 rank is left blank. Model scores are not returns, probabilities or portfolio weights."))
     with st.container(key="uq_holding_matrix"):
         render_holding_matrix(history, tuple(row.ticker for row in model.ranking))
     snapshots_tab, security_tab = localized_tabs(
         ["Snapshot log", "{ticker} · Recorded observations"], key="history_log_tabs",
         format_func=lambda source: tr(source, ticker=ticker))
-    with snapshots_tab:
-        st.caption(tr("Most recent first · Select a replay date above to inspect the corresponding portfolio in Overview."))
-        st.dataframe([{
-            tr("Decision date"): snapshot.decision_date,
-            tr("Execution date"): snapshot.provenance.execution_date,
-            tr("Entered"): len(snapshot.entered) if snapshot.entered is not None else None,
-            tr("Exited"): len(snapshot.exited) if snapshot.exited is not None else None,
-            tr("Retained"): len(snapshot.retained) if snapshot.retained is not None else None,
-            tr("Executed turnover"): f"{snapshot.turnover:.2%}" if snapshot.turnover is not None else None,
-            tr("Coverage"): tr("Ranking unavailable" if snapshot.error else "Portfolio unavailable" if not snapshot.holdings else "Recorded"),
-        } for snapshot in reversed(history)], width="stretch", hide_index=True, height=330, key="snapshot_history_table")
-    with security_tab:
-        st.caption(tr("Outside Top20 means no rank was recorded in that selection. Symbols are displayed as recorded; historical issuer identities are not reconstructed."))
-        st.dataframe([{
-            tr("Decision date"): row["decision_date"], tr("Execution date"): row["execution_date"],
-            tr("Recorded rank"): row["rank"], tr("Model score"): score_label(row["score"]),
-            tr("Ranking coverage"): tr(row["ranking_status"]), tr("Holdings status"): tr(row["status"]),
-        } for row in reversed(records)], width="stretch", hide_index=True, height=330, key="security_history_table")
+    if snapshots_tab.open:
+        with snapshots_tab:
+            st.caption(tr("Most recent first · Select a replay date above to inspect the corresponding portfolio in Overview."))
+            st.dataframe([{
+                tr("Decision date"): snapshot.decision_date,
+                tr("Execution date"): snapshot.provenance.execution_date,
+                tr("Entered"): len(snapshot.entered) if snapshot.entered is not None else None,
+                tr("Exited"): len(snapshot.exited) if snapshot.exited is not None else None,
+                tr("Retained"): len(snapshot.retained) if snapshot.retained is not None else None,
+                tr("Executed turnover"): f"{snapshot.turnover:.2%}" if snapshot.turnover is not None else None,
+                tr("Coverage"): tr("Ranking unavailable" if snapshot.error else "Portfolio unavailable" if not snapshot.holdings else "Recorded"),
+            } for snapshot in reversed(history)], width="stretch", hide_index=True, height=330, key="snapshot_history_table")
+    if security_tab.open:
+        with security_tab:
+            st.caption(tr("Outside Top20 means no rank was recorded in that selection. Symbols are displayed as recorded; historical issuer identities are not reconstructed."))
+            st.dataframe([{
+                tr("Decision date"): row["decision_date"], tr("Execution date"): row["execution_date"],
+                tr("Recorded rank"): row["rank"], tr("Model score"): score_label(row["score"]),
+                tr("Ranking coverage"): tr(row["ranking_status"]), tr("Holdings status"): tr(row["status"]),
+            } for row in reversed(records)], width="stretch", hide_index=True, height=330, key="security_history_table")
     replay.render_replay_timer()

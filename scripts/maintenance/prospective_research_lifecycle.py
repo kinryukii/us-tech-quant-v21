@@ -13,6 +13,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -152,7 +153,18 @@ def _registry_module(repo: Path):
     if module_spec is None or module_spec.loader is None:
         raise LifecycleError(f"AUTHORITATIVE_REGISTRY_UTILITY_UNAVAILABLE:{source}")
     module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
+    # Registry consumers may resolve their own module during execution.
+    # Match Python import semantics and preserve a prior binding on failure.
+    previous = sys.modules.get(module_spec.name)
+    sys.modules[module_spec.name] = module
+    try:
+        module_spec.loader.exec_module(module)
+    except BaseException:
+        if previous is None:
+            sys.modules.pop(module_spec.name, None)
+        else:
+            sys.modules[module_spec.name] = previous
+        raise
     return module
 
 
@@ -397,6 +409,9 @@ def validate_completion_receipt(
         raise LifecycleError("COMPLETION_RECEIPT_RESEARCH_ID_MISMATCH")
     if str(receipt["mechanism_key"]) != mechanism_key(spec):
         raise LifecycleError("COMPLETION_RECEIPT_MECHANISM_KEY_MISMATCH")
+    for field in ("hypothesis", "config_reference", "data_reference"):
+        if _canonical_json(receipt[field]) != _canonical_json(spec[field]):
+            raise LifecycleError(f"COMPLETION_RECEIPT_SPEC_MISMATCH:{field}")
     final_status = str(receipt["final_status"]).strip().upper()
     if final_status not in TERMINAL_COMPLETION_STATUSES:
         raise LifecycleError(f"COMPLETION_RECEIPT_STATUS_NOT_TERMINAL:{final_status}")
@@ -575,9 +590,8 @@ def apply_registry_completion(
     repo: Path, spec: Mapping[str, Any], receipt: Mapping[str, Any],
     receipt_path: Path, *, reviewer: str,
 ) -> dict[str, Any]:
-    """Append one reviewed compact knowledge row to the existing registry."""
-    registry = _registry_module(repo)
-    root = _registry_root(repo)
+    """Record reviewed completion knowledge; this never authorizes promotion."""
+    receipt = validate_completion_receipt(receipt, spec)
     receipt_path = _absolute_lexical(receipt_path)
     task_root = _absolute_lexical(Path(spec["task_root"]))
     if not _is_within(receipt_path, task_root) or receipt_path == task_root:
@@ -586,7 +600,23 @@ def apply_registry_completion(
         raise LifecycleError(f"COMPLETION_RECEIPT_REPARSE_REQUIRED_REVIEW:{receipt_path}")
     if not receipt_path.is_file():
         raise LifecycleError(f"COMPLETION_RECEIPT_MISSING:{receipt_path}")
-    receipt_sha256 = _sha256_file(receipt_path)
+    try:
+        with receipt_path.open("rb") as stream:
+            receipt_bytes = stream.read(262_145)
+        if len(receipt_bytes) > 262_144:
+            raise LifecycleError(f"SMALL_JSON_BUDGET_EXCEEDED:{receipt_path}")
+        stored_receipt = json.loads(receipt_bytes)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise LifecycleError(
+            f"SMALL_JSON_UNREADABLE:{receipt_path}:{type(exc).__name__}"
+        ) from exc
+    if not isinstance(stored_receipt, dict):
+        raise LifecycleError(f"JSON_OBJECT_REQUIRED:{receipt_path}")
+    if _canonical_json(stored_receipt) != _canonical_json(receipt):
+        raise LifecycleError("COMPLETION_RECEIPT_CONTENT_MISMATCH")
+    receipt_sha256 = hashlib.sha256(receipt_bytes).hexdigest()
+    registry = _registry_module(repo)
+    root = _registry_root(repo)
     try:
         query = registry.query_registry(root, entity_id=str(spec["research_id"]))
     except registry.RegistryError as exc:
@@ -594,7 +624,7 @@ def apply_registry_completion(
             raise
         query = {"count": 0, "entities": [], "head_sha256": registry.GENESIS}
     key = mechanism_key(spec)
-    final_status = str(receipt["final_status"]).upper()
+    final_status = str(receipt["final_status"]).strip().upper()
     receipt_reference = f"receipt://sha256/{receipt_sha256}"
     terminal_status = "SUPERSEDED" if final_status == "SUPERSEDED" else "CLOSED"
     completion_metadata = {

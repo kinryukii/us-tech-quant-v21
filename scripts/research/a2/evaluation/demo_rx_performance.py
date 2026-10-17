@@ -142,7 +142,7 @@ def select_rx(rankings,prices,calendar,r5,rx):
         'feature_extraction':'HASH_PINNED_ORIGINAL_AST_TRAILING_ONLY','future_label_columns_computed':False}
 
 
-def qualified_feature_prices(paths,historical_path,tickers,end,current_report_path=None):
+def qualified_feature_prices(paths,historical_path,tickers,end,current_report_path=None,*,recommendation_reports=()):
     """Rehydrate only historical feature-qualified OHLCV, never open-only supplements."""
     hist=base.read(historical_path);ref=hist['price_manifest'];inputs=base.read(base.verified(ref))
     from scripts.daily_recommendation_prices import _adapter,COVERAGE_PATH,COVERAGE_SHA
@@ -156,6 +156,22 @@ def qualified_feature_prices(paths,historical_path,tickers,end,current_report_pa
     if current_report_path is not None:
         current,_=price_reader._current_entries(current_report_path,Path(historical_path).resolve(),base.digest(historical_path),checked)
         entries.extend(current)
+    # Latest eligibility can omit a previously ranked new 13F member. Recover
+    # only absent names from the parent's verified signal-source lineage.
+    absent=set(tickers)-{entry['ticker'] for entry in entries}
+    latest={}
+    if absent:
+        for reference in recommendation_reports:
+            source=checked(reference['path'],reference['sha256'])
+            observed,report=price_reader._current_entries(source,Path(historical_path).resolve(),base.digest(historical_path),checked)
+            if str(report['data_date'])>str(end):
+                raise ValueError('RX_FEATURE_SOURCE_AFTER_REQUESTED_END')
+            for entry in observed:
+                if entry['ticker'] in absent:
+                    order=(str(report['data_date']),str(source))
+                    if entry['ticker'] not in latest or order>latest[entry['ticker']][0]:
+                        latest[entry['ticker']]=(order,entry)
+        entries.extend(item[1] for item in latest.values())
     by_ticker={}
     for entry in entries:
         if entry['ticker'] not in tickers:continue
@@ -225,6 +241,13 @@ def refresh_rx_performance(paths,historical_path,current_report_path,parent_a2_m
         parent=base.read(parent_path)
         if parent['status'] not in {'READY','PARTIAL'} or parent['ranking_manifest']['sha256']!=base.digest(historical_path):
             raise ValueError('RX_PARENT_A2_HISTORY_MISMATCH')
+        # The pinned graph fits KMeans anew for each signal; cluster IDs
+        # affect CAP3 selection. Real 2026 preprocessing fits are prohibited.
+        # Stop before imports/prices; omitting this dependency is not equivalent.
+        if str(parent.get('ranking_end_date', '')) >= '2026-01-01':
+            raise ValueError('RX_2026_CLUSTER_FIT_PROHIBITED')
+        # Verify frozen source availability before any large price materialization.
+        r5,rx=authority()
         parent_contract=base.read(base.verified(parent['evaluation_contract']))
         if parent_contract['current_report']['sha256']!=base.digest(current_report_path):
             raise ValueError('RX_PARENT_A2_CURRENT_REPORT_MISMATCH')
@@ -232,9 +255,9 @@ def refresh_rx_performance(paths,historical_path,current_report_path,parent_a2_m
         from scripts.research.a2.inference.historical_top40 import load_sessions
         rankings,coverage,ranking_refs=parent_rankings(parent)
         sessions,calendar_ref=load_sessions(paths);calendar=pd.DatetimeIndex(pd.to_datetime(sessions))
-        prices,feature_refs,gaps=qualified_feature_prices(paths,historical_path,set(rankings.ticker),str(rankings.target_date.max()),current_report_path)
+        prices,feature_refs,gaps=qualified_feature_prices(paths,historical_path,set(rankings.ticker),str(rankings.target_date.max()),current_report_path,recommendation_reports=parent.get('recommendation_reports',()))
         validate_signal_price_dates(rankings,prices,calendar)
-        r5,rx=authority();signals,decisions,selection_audit=select_rx(rankings,prices,calendar,r5,rx)
+        signals,decisions,selection_audit=select_rx(rankings,prices,calendar,r5,rx)
         parent_positions=pd.read_parquet(base.verified(parent['outputs']['positions']))
         selected=execution_tickers(signals,rankings,parent_positions)
         execution=price_reader.load_execution_prices(paths,historical_path,current_report_path=current_report_path,tickers=selected)

@@ -64,11 +64,13 @@ def test_ui_captions_explain_basis_and_partial_boundary():
     tree = ast.parse((Path(__file__).parents[3] / "apps/demo_console/pages/selected_strategies.py").read_text(encoding="utf-8"))
     names = {"replay_basis_caption", "replay_update_caption"}
     body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
-    namespace = {}
+    from apps.demo_console.i18n import tr, language_scope
+    namespace = {"tr": tr}
     exec(compile(ast.Module(body=body, type_ignores=[]), "captions", "exec"), namespace)
     p = pit_package()
     assert "PIT" in namespace["replay_basis_caption"](p)
-    assert "不是模拟账户绩效" in namespace["replay_basis_caption"](p)
+    with language_scope("zh"):
+        assert "不是模拟账户绩效" in tr(namespace["replay_basis_caption"](p))
     assert "2026-01-06" in namespace["replay_update_caption"](p)
     p["performance_extension"].update(status="PARTIAL", requested_end_date="2026-01-08",
         blocked_next={"execution_date": "2026-01-07", "reason": "MISSING_HELD_PRICE"})

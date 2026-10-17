@@ -1,4 +1,92 @@
 {
+  "Paper trading": {
+    "zh": "模拟盘",
+    "ja": "ペーパートレード"
+  },
+  "Live trading": {
+    "zh": "实盘",
+    "ja": "実取引"
+  },
+  "Research workspace": {
+    "zh": "研究工作台",
+    "ja": "研究ワークスペース"
+  },
+  "Trading workspace": {
+    "zh": "交易工作台",
+    "ja": "取引ワークスペース"
+  },
+  "Local DEMO · Separate trading workspace": {
+    "zh": "本机 DEMO · 独立交易工作台",
+    "ja": "ローカル DEMO · 独立した取引ワークスペース"
+  },
+  "The original broker simulation and paper accounts record cash, positions and fills separately.": {
+    "zh": "原券商模拟账户与纸面账户的现金、持仓和成交分别记录。",
+    "ja": "元のブローカーシミュレーションとペーパー口座の現金・保有・約定は別々に記録されます。"
+  },
+  "Live trading is not authorized and remains locked. This page does not unlock accounts or send live orders.": {
+    "zh": "实盘未授权，交易已锁定。此页不解锁账户、不发送实盘订单。",
+    "ja": "実取引は未許可でロックされています。このページは口座を解除せず、実取引の注文も送信しません。"
+  },
+  "**Paper trading** · Original broker account and separate paper accounts": {
+    "zh": "**模拟盘** · 原券商账户与独立纸面账户",
+    "ja": "**ペーパートレード** · 元のブローカー口座と独立したペーパー口座"
+  },
+  "Open in a separate window": {
+    "zh": "独立窗口打开",
+    "ja": "別ウィンドウで開く"
+  },
+  "Check connection again": {
+    "zh": "重新检查连接",
+    "ja": "接続を再確認"
+  },
+  "Connection details": {
+    "zh": "连接信息",
+    "ja": "接続情報"
+  },
+  "Only available on the computer running this DEMO. Component address: 127.0.0.1:8766.": {
+    "zh": "仅供运行此 DEMO 的同一台电脑使用，组件地址 127.0.0.1:8766。",
+    "ja": "この DEMO を実行する同じコンピューターでのみ利用できます。コンポーネントのアドレス：127.0.0.1:8766。"
+  },
+  "Start the trading component": {
+    "zh": "启动交易组件",
+    "ja": "取引コンポーネントを起動"
+  },
+  "Run this command in local PowerShell, keep the terminal open, then select Check connection again.": {
+    "zh": "在本机 PowerShell 运行下方命令，保持终端打开，然后点击“重新检查连接”。",
+    "ja": "ローカル PowerShell で下記コマンドを実行し、端末を開いたまま「接続を再確認」を選択してください。"
+  },
+  "This command starts the console only. It does not automatically start strategies or unlock live trading.": {
+    "zh": "此命令只启动控制台，不会自动启动策略或解锁实盘。",
+    "ja": "このコマンドはコンソールだけを起動します。戦略の自動開始や実取引の解除は行いません。"
+  },
+  "Local trading component connected": {
+    "zh": "本机交易组件已连接",
+    "ja": "ローカル取引コンポーネントに接続済み"
+  },
+  "The trading component is unavailable or updating.": {
+    "zh": "交易组件暂不可用，或正在更新。",
+    "ja": "取引コンポーネントは利用不可、または更新中です。"
+  },
+  "The local response does not match the trading component protocol.": {
+    "zh": "本机端口的响应不符合交易组件协议。",
+    "ja": "ローカルの応答が取引コンポーネントのプロトコルと一致しません。"
+  },
+  "The component version or live-trading lock could not be verified. Update and try again.": {
+    "zh": "交易组件版本或实盘锁定状态未通过检查，请更新后重试。",
+    "ja": "コンポーネントの版または実取引ロックを確認できませんでした。更新後に再試行してください。"
+  },
+  "The local trading component is not connected.": {
+    "zh": "尚未连接到本机交易组件。",
+    "ja": "ローカル取引コンポーネントに未接続です。"
+  },
+  "Reload published cache": {
+    "zh": "载入最新缓存",
+    "ja": "公開済みキャッシュを再読込"
+  },
+  "The research replay retains its accepted signal input version. Current targets / paper portfolios use the completed inputs, so candidate lists may differ.": {
+    "zh": "研究回放保留当时已接受的信号输入版本；当前目标／模拟仓采用补齐后的输入，候选名单可能不同。",
+    "ja": "研究リプレイは当時受理したシグナル入力版を保持します。現在の目標配分／ペーパーポートフォリオは補完後の入力を使用するため、候補銘柄が異なる場合があります。"
+  },
   "Raw A2 details": {
     "zh": "Raw A2 详细记录",
     "ja": "Raw A2 の詳細記録"
@@ -5711,361 +5799,2383 @@
     "ja": "Sharpe is a descriptive annualized ratio. No alpha, confidence interval, DSR, PBO or probability of skill is inferred from these observations."
   },
   "3 fixed strategies · Compare together": {
-    "zh": "三项既定策略 · 同页对照"
+    "zh": "三项既定策略 · 同页对照",
+    "ja": "3つの固定戦略 · 同時比較"
   },
   "3 applied strategies": {
-    "zh": "三项已应用策略"
+    "zh": "三项已应用策略",
+    "ja": "3つの適用済み戦略"
   },
   "Detail focus only. All three strategies remain in the main comparison.": {
-    "zh": "仅选择详情焦点，主页面始终保留三个策略的对照。"
+    "zh": "仅选择详情焦点，主页面始终保留三个策略的对照。",
+    "ja": "詳細の表示対象だけを選択します。主比較には3戦略すべてを保持します。"
   },
   "Replay through {end} · Signal snapshot {selected}. Later targets do not add returns.": {
-    "zh": "绩效截至 {end} · 信号快照 {selected}；后续目标不延长收益曲线。"
+    "zh": "绩效截至 {end} · 信号快照 {selected}；后续目标不延长收益曲线。",
+    "ja": "リプレイは {end} まで · シグナルのスナップショットは {selected}。後日の目標によって収益期間は延長しません。"
   },
   "Three frozen strategies use the same cash-start ledger, execution dates, price inputs and 5 bp one-way fee. No model is refitted and no missing return is extended.": {
-    "zh": "三个冻结策略采用同批空仓起始账本、执行日期、价格输入及单边 5 bp 费用；模型不重新训练，缺失收益不补齐。"
+    "zh": "三个冻结策略采用同批空仓起始账本、执行日期、价格输入及单边 5 bp 费用；模型不重新训练，缺失收益不补齐。",
+    "ja": "3つの凍結済み戦略は、同じ全額現金開始の台帳、執行日、価格入力、片道5bpの費用を使用します。モデルの再学習や欠損収益の補完は行いません。"
   },
   "Quantitative comparison": {
-    "zh": "量化指标对照"
+    "zh": "量化指标对照",
+    "ja": "定量指標の比較"
   },
   "Portfolio growth": {
-    "zh": "组合净值"
+    "zh": "组合净值",
+    "ja": "ポートフォリオ純資産の推移"
   },
   "Drawdown comparison": {
-    "zh": "回撤对照"
+    "zh": "回撤对照",
+    "ja": "ドローダウンの比較"
   },
   "Annualized compound return": {
-    "zh": "年化复合收益率"
+    "zh": "年化复合收益率",
+    "ja": "年率複利収益率"
   },
   "Annualized volatility": {
-    "zh": "年化波动率"
+    "zh": "年化波动率",
+    "ja": "年率ボラティリティ"
   },
   "Sortino · Target return 0": {
-    "zh": "Sortino · 目标收益 0"
+    "zh": "Sortino · 目标收益 0",
+    "ja": "ソルティノ比率 · 目標収益率0"
   },
   "Calmar · Selected window": {
-    "zh": "Calmar · 所选区间"
+    "zh": "Calmar · 所选区间",
+    "ja": "カルマー比率 · 選択期間"
   },
   "Longest underwater period · Records": {
-    "zh": "最长未创新高 · 记录日数"
+    "zh": "最长未创新高 · 记录日数",
+    "ja": "最長の高値未回復期間 · 記録数"
   },
   "Recovery date": {
-    "zh": "恢复日期"
+    "zh": "恢复日期",
+    "ja": "回復日"
   },
   "Positive return days": {
-    "zh": "正收益日占比"
+    "zh": "正收益日占比",
+    "ja": "収益がプラスの日の割合"
   },
   "Positive return months": {
-    "zh": "正收益月占比"
+    "zh": "正收益月占比",
+    "ja": "収益がプラスの月の割合"
   },
   "Best daily net return": {
-    "zh": "最佳单日净收益"
+    "zh": "最佳单日净收益",
+    "ja": "日次純収益率の最大値"
   },
   "Historical average exposure": {
-    "zh": "历史平均股票仓位"
+    "zh": "历史平均股票仓位",
+    "ja": "過去の平均エクスポージャー"
   },
   "Average recorded securities": {
-    "zh": "平均持仓数量"
+    "zh": "平均持仓数量",
+    "ja": "記録された保有銘柄数の平均"
   },
   "Cumulative turnover · Times": {
-    "zh": "累计换手 · 倍数"
+    "zh": "累计换手 · 倍数",
+    "ja": "累積売買回転率 · 倍"
   },
   "Average daily turnover": {
-    "zh": "平均每日换手"
+    "zh": "平均每日换手",
+    "ja": "日次売買回転率の平均"
   },
   "Simulated fees / Window initial NAV": {
-    "zh": "回放费用 / 区间初始净值"
+    "zh": "回放费用 / 区间初始净值",
+    "ja": "リプレイ費用 / 選択期間の期首NAV"
   },
   "Gross period return": {
-    "zh": "区间毛收益"
+    "zh": "区间毛收益",
+    "ja": "期間総収益率（費用控除前）"
   },
   "Gross/net return difference · pp": {
-    "zh": "毛净收益差 · 百分点"
+    "zh": "毛净收益差 · 百分点",
+    "ja": "費用控除前後の収益率差 · パーセントポイント"
   },
   "HGB · Diagonal": {
-    "zh": "HGB · 对角风险"
+    "zh": "HGB · 对角风险",
+    "ja": "HGB · 対角リスク"
   },
   "HGB · Factor": {
-    "zh": "HGB · 因子风险"
+    "zh": "HGB · 因子风险",
+    "ja": "HGB · 因子リスク"
   },
   "Metric": {
-    "zh": "指标"
+    "zh": "指标",
+    "ja": "指標"
   },
   "Daily observations · 252 sessions/year · Sample standard deviation · Sharpe risk-free return 0 · Sortino target return 0. Annualized values below one year are estimates.": {
-    "zh": "按每日记录计算：每年 252 交易日，样本标准差，Sharpe 无风险收益为 0，Sortino 目标收益为 0；不足一年的年化值为推算值。"
+    "zh": "按每日记录计算：每年 252 交易日，样本标准差，Sharpe 无风险收益为 0，Sortino 目标收益为 0；不足一年的年化值为推算值。",
+    "ja": "日次記録に基づき、年間252取引日、標本標準偏差、シャープ比率の無リスク収益率0、ソルティノ比率の目標収益率0で計算します。1年未満の年率換算値は推計値です。"
   },
   "Fees and turnover use the selected daily ledger only. Missing execution fields remain unavailable; research NAV is not account P&L.": {
-    "zh": "费用与换手仅来自所选区间账本；缺失字段显示 —。研究净值与账户盈亏分别记录。"
+    "zh": "费用与换手仅来自所选区间账本；缺失字段显示 —。研究净值与账户盈亏分别记录。",
+    "ja": "費用と売買回転率は、選択した日次台帳だけに基づきます。執行項目に欠損がある場合は不明のまま表示します。研究NAVは口座損益ではありません。"
   },
   "Monthly return comparison": {
-    "zh": "月度收益对照"
+    "zh": "月度收益对照",
+    "ja": "月次収益率の比較"
   },
   "* Archive-edge or selected-window month may be incomplete.": {
-    "zh": "* 档案边界或区间边界的月份可能不完整。"
+    "zh": "* 档案边界或区间边界的月份可能不完整。",
+    "ja": "* アーカイブまたは選択期間の境界にある月は、記録が不完全な場合があります。"
   },
   "These are same-date signal plans. Verified absent names have zero weight; a missing plan remains unavailable. Recorded Raw execution holdings are shown in details.": {
-    "zh": "这里对照同日信号目标。完整目标中未出现的股票权重为 0，目标缺失显示 —；Raw 已执行持仓可在详情中查看。"
+    "zh": "这里对照同日信号目标。完整目标中未出现的股票权重为 0，目标缺失显示 —；Raw 已执行持仓可在详情中查看。",
+    "ja": "同じ日付のシグナル目標を比較します。検証済みの完全な目標に含まれない銘柄の比率は0ですが、目標自体が欠損している場合は不明です。Rawの記録済み執行保有は詳細に表示します。"
   },
   "Download weights": {
-    "zh": "下载权重"
+    "zh": "下载权重",
+    "ja": "比率をダウンロード"
   },
   "Unavailable strategies: {names}": {
-    "zh": "数据暂不可用：{names}"
+    "zh": "数据暂不可用：{names}",
+    "ja": "利用できない戦略：{names}"
   },
   "Both HGB policies share frozen Raw Top40 prediction scores. Portfolio weights are produced by their separate risk models; a model rank is not a weight rank.": {
-    "zh": "两套 HGB 共享冻结模型在 Raw Top40 范围内的预测评分；各自风险模型生成组合权重，评分排名与权重排序分别显示。"
+    "zh": "两套 HGB 共享冻结模型在 Raw Top40 范围内的预测评分；各自风险模型生成组合权重，评分排名与权重排序分别显示。",
+    "ja": "両HGB方策は、凍結済みモデルによるRaw Top40内の予測スコアを共有します。それぞれのリスクモデルがポートフォリオ比率を生成します。モデル順位と比率順位は別です。"
   },
   "Daily rankings and allocations": {
-    "zh": "当日排名与组合"
+    "zh": "当日排名与组合",
+    "ja": "日次ランキングと配分"
   },
   "Observation date: {date}. The two HGB strategies share model scores and ranking; their risk models produce different allocations. Scores across different models are not directly comparable.": {
-    "zh": "观察日：{date}。两套 HGB 共享评分与排名，风险模型产生不同配置；不同模型的分数不能直接比较。"
+    "zh": "观察日：{date}。两套 HGB 共享评分与排名，风险模型产生不同配置；不同模型的分数不能直接比较。",
+    "ja": "観測日：{date}。2つのHGB戦略はモデルスコアと順位を共有しますが、リスクモデルによる配分は異なります。異なるモデルのスコアは直接比較できません。"
   },
   "Show rows": {
-    "zh": "显示行数"
+    "zh": "显示行数",
+    "ja": "表示行数"
   },
   "Ticker or company": {
-    "zh": "代码或公司"
+    "zh": "代码或公司",
+    "ja": "銘柄コードまたは会社名"
   },
   "Search all available rows": {
-    "zh": "搜索全部可用记录"
+    "zh": "搜索全部可用记录",
+    "ja": "利用可能な全行を検索"
   },
   "Score ranking": {
-    "zh": "评分排名"
+    "zh": "评分排名",
+    "ja": "スコア順位"
   },
   "Portfolio weight": {
-    "zh": "组合权重"
+    "zh": "组合权重",
+    "ja": "ポートフォリオ比率"
   },
   "Selected only": {
-    "zh": "仅看入选"
+    "zh": "仅看入选",
+    "ja": "採用銘柄のみ"
   },
   "Score date: {score} · Weight date: {weight}": {
-    "zh": "评分日：{score} · 权重日：{weight}"
+    "zh": "评分日：{score} · 权重日：{weight}",
+    "ja": "スコア日：{score} · 比率日：{weight}"
   },
   "Verified full pool": {
-    "zh": "已验证全池"
+    "zh": "已验证全池",
+    "ja": "検証済み全銘柄プール"
   },
   "Raw Top40 scoring scope": {
-    "zh": "Raw Top40 评分范围"
+    "zh": "Raw Top40 评分范围",
+    "ja": "Raw Top40のスコア対象範囲"
   },
   "Recorded Top40 only": {
-    "zh": "仅有 Top40 记录"
+    "zh": "仅有 Top40 记录",
+    "ja": "記録済みTop40のみ"
   },
   "Recorded Top20 only": {
-    "zh": "仅有 Top20 记录"
+    "zh": "仅有 Top20 记录",
+    "ja": "記録済みTop20のみ"
   },
   "No verified rows match these filters.": {
-    "zh": "没有符合筛选条件的已验证记录。"
+    "zh": "没有符合筛选条件的已验证记录。",
+    "ja": "この条件に一致する検証済み行はありません。"
   },
   "No verified ranking is available for this date.": {
-    "zh": "这一天没有已验证排名。"
+    "zh": "这一天没有已验证排名。",
+    "ja": "この日付の検証済みランキングはありません。"
   },
   "Recorded model rank; 1 is best. Sorting by weight does not change this rank.": {
-    "zh": "记录中的模型排名，1 为最高；按权重排序不改变模型排名。"
+    "zh": "记录中的模型排名，1 为最高；按权重排序不改变模型排名。",
+    "ja": "記録されたモデル順位で、1が最上位です。比率順に並べ替えてもこの順位は変わりません。"
   },
   "Selection status": {
-    "zh": "入选状态"
+    "zh": "入选状态",
+    "ja": "採用状況"
   },
   "Select one row to inspect the stock below. Search runs before the row limit; an unavailable target is not an unselected stock.": {
-    "zh": "勾选一条排名记录，即可在下方查看个股。搜索先于行数限制；目标缺失不等于未入选。"
+    "zh": "勾选一条排名记录，即可在下方查看个股。搜索先于行数限制；目标缺失不等于未入选。",
+    "ja": "行を1つ選択すると、下に銘柄詳細が表示されます。検索は表示行数の制限前に行います。目標の不明と銘柄の非採用は別です。"
   },
   "Recorded holding": {
-    "zh": "已记录持仓"
+    "zh": "已记录持仓",
+    "ja": "記録済み保有"
   },
   "Selected target": {
-    "zh": "目标入选"
+    "zh": "目标入选",
+    "ja": "採用された目標"
   },
   "Outside allocation candidates": {
-    "zh": "不在配置候选范围"
+    "zh": "不在配置候选范围",
+    "ja": "配分候補の範囲外"
   },
   "Not selected": {
-    "zh": "未入选"
+    "zh": "未入选",
+    "ja": "非採用"
   },
   "Recorded executed book": {
-    "zh": "已记录执行组合"
+    "zh": "已记录执行组合",
+    "ja": "記録済み執行ポートフォリオ"
   },
   "Raw rule target": {
-    "zh": "Raw 规则目标"
+    "zh": "Raw 规则目标",
+    "ja": "Rawルールによる目標"
   },
   "Empty-account target": {
-    "zh": "空仓账户目标"
+    "zh": "空仓账户目标",
+    "ja": "保有なしの口座目標"
   },
   "Historical signal target": {
-    "zh": "历史信号目标"
+    "zh": "历史信号目标",
+    "ja": "履歴に記録されたシグナル目標"
   },
   "Outside Raw Top40": {
-    "zh": "不在 Raw Top40"
+    "zh": "不在 Raw Top40",
+    "ja": "Raw Top40の対象外"
   },
   "Score unavailable": {
-    "zh": "评分数据缺失"
+    "zh": "评分数据缺失",
+    "ja": "スコアを利用できません"
   },
   "Verified target": {
-    "zh": "已验证目标"
+    "zh": "已验证目标",
+    "ja": "検証済みの目標"
   },
   "Target blocked": {
-    "zh": "目标生成受阻"
+    "zh": "目标生成受阻",
+    "ja": "目標はブロックされています"
   },
   "No recorded target": {
-    "zh": "没有目标记录"
+    "zh": "没有目标记录",
+    "ja": "記録された目標なし"
   },
   "Verified price and institutional sources are unavailable for this query.": {
-    "zh": "本次查询缺少已验证的价格与机构持仓来源。"
+    "zh": "本次查询缺少已验证的价格与机构持仓来源。",
+    "ja": "この照会で利用できる検証済みの価格・機関投資家情報はありません。"
   },
   "Stock history across strategies": {
-    "zh": "个股跨策略历史"
+    "zh": "个股跨策略历史",
+    "ja": "戦略別の銘柄履歴"
   },
   "Search every verified stock, including names outside the current ranking or allocation. The query interval ends no later than {date} and leaves the workbench observation date unchanged.": {
-    "zh": "可搜索全部已验证股票，包括当前榜单或组合之外的个股。查询区间最晚到 {date}，不改变工作台观察日。"
+    "zh": "可搜索全部已验证股票，包括当前榜单或组合之外的个股。查询区间最晚到 {date}，不改变工作台观察日。",
+    "ja": "現在の順位表や配分に含まれない銘柄も含め、検証済みの全銘柄を検索します。照会期間の終了日は {date} 以前となり、ワークスペースの観測日は変わりません。"
   },
   "No verified stock history exists on or before the observation date.": {
-    "zh": "观察日及之前没有已验证个股历史。"
+    "zh": "观察日及之前没有已验证个股历史。",
+    "ja": "観測日以前の検証済み銘柄履歴はありません。"
   },
   "Raw ranks cover the verified full pool; HGB ranks cover the recorded Raw Top40. Selection counts use only dates with verified weights. Missing targets are unknown, not unselected.": {
-    "zh": "Raw 排名覆盖已验证全池；HGB 排名限于记录中的 Raw Top40。入选统计仅以权重已验证的日期为分母；目标缺失表示未知。"
+    "zh": "Raw 排名覆盖已验证全池；HGB 排名限于记录中的 Raw Top40。入选统计仅以权重已验证的日期为分母；目标缺失表示未知。",
+    "ja": "Rawの順位は検証済みの全銘柄群、HGBの順位は記録されたRaw Top40が対象です。選択回数は重みが検証済みの日付だけを数えます。目標が欠落している場合は不明として扱い、非選択とはみなしません。"
   },
   "Selected / verified weight dates": {
-    "zh": "入选天数 / 有效权重天数"
+    "zh": "入选天数 / 有效权重天数",
+    "ja": "選択日数 / 重みの検証済み日数"
   },
   "Ranked days": {
-    "zh": "有排名天数"
+    "zh": "有排名天数",
+    "ja": "順位記録のある日数"
   },
   "Stock snapshot date": {
-    "zh": "个股快照日期"
+    "zh": "个股快照日期",
+    "ja": "銘柄スナップショット日"
   },
   "Weight date": {
-    "zh": "权重日期"
+    "zh": "权重日期",
+    "ja": "重みの記録日"
   },
   "Weight record type": {
-    "zh": "权重记录类型"
+    "zh": "权重记录类型",
+    "ja": "重みの記録種別"
   },
   "Rank history": {
-    "zh": "排名轨迹"
+    "zh": "排名轨迹",
+    "ja": "順位の履歴"
   },
   "Allocation history": {
-    "zh": "权重轨迹"
+    "zh": "权重轨迹",
+    "ja": "配分の履歴"
   },
   "Signal / record date": {
-    "zh": "信号／记录日期"
+    "zh": "信号／记录日期",
+    "ja": "シグナル日 / 記録日"
   },
   "Model rank": {
-    "zh": "模型排名"
+    "zh": "模型排名",
+    "ja": "モデル順位"
   },
   "No verified weights in this interval.": {
-    "zh": "这个区间没有已验证权重。"
+    "zh": "这个区间没有已验证权重。",
+    "ja": "この期間に検証済みの重みはありません。"
   },
   "Lines stop at missing observations. Target allocations and recorded holdings retain their own dates and record types.": {
-    "zh": "曲线在记录缺失处断开；目标配置与已记录持仓保留各自日期和记录类型。"
+    "zh": "曲线在记录缺失处断开；目标配置与已记录持仓保留各自日期和记录类型。",
+    "ja": "欠測箇所では線を途切れさせます。目標配分と記録済み保有には、それぞれ固有の日付と記録種別を保持します。"
   },
   "Daily ranking and allocation records": {
-    "zh": "每日排名与权重记录"
+    "zh": "每日排名与权重记录",
+    "ja": "日次の順位・配分記録"
   },
   "In verified pool": {
-    "zh": "在已验证股票池"
+    "zh": "在已验证股票池",
+    "ja": "検証済み銘柄群に含まれる"
   },
   "Score coverage": {
-    "zh": "评分覆盖状态"
+    "zh": "评分覆盖状态",
+    "ja": "スコアの記録範囲"
   },
   "Weight coverage": {
-    "zh": "权重覆盖状态"
+    "zh": "权重覆盖状态",
+    "ja": "重みの記録範囲"
   },
   "All": {
-    "zh": "全部"
+    "zh": "全部",
+    "ja": "すべて"
   },
   "Sort by": {
-    "zh": "排序依据"
+    "zh": "排序依据",
+    "ja": "並べ替え"
   },
   "Start": {
-    "zh": "开始"
+    "zh": "开始",
+    "ja": "開始"
   },
   "End": {
-    "zh": "结束"
+    "zh": "结束",
+    "ja": "終了"
   },
   "Raw score coverage: {scored} / {mapped} mapped securities · {excluded} without a verified score.": {
-    "zh": "Raw 评分覆盖：已映射 {mapped} 只中 {scored} 只有评分 · {excluded} 只缺少已验证评分。"
+    "zh": "Raw 评分覆盖：已映射 {mapped} 只中 {scored} 只有评分 · {excluded} 只缺少已验证评分。",
+    "ja": "Rawスコアの記録範囲：対応付け済み {mapped} 銘柄のうち {scored} 銘柄・検証済みスコアなし {excluded} 銘柄。"
   },
   "Drawdown peak date": {
-    "zh": "回撤峰值日期"
+    "zh": "回撤峰值日期",
+    "ja": "ドローダウン前のピーク日"
   },
   "Drawdown trough date": {
-    "zh": "回撤谷值日期"
+    "zh": "回撤谷值日期",
+    "ja": "ドローダウンの底を記録した日"
   },
   "Peak-to-recovery · Records": {
-    "zh": "峰值至恢复 · 记录日数"
+    "zh": "峰值至恢复 · 记录日数",
+    "ja": "ピークから回復まで・記録数"
   },
   "Best recorded month": {
-    "zh": "最佳记录月份收益"
+    "zh": "最佳记录月份收益",
+    "ja": "記録上の最良月"
   },
   "Worst recorded month": {
-    "zh": "最差记录月份收益"
+    "zh": "最差记录月份收益",
+    "ja": "記録上の最悪月"
   },
   "Skipped buy observations": {
-    "zh": "跳过买入记录数"
+    "zh": "跳过买入记录数",
+    "ja": "買付見送りの観測回数"
   },
   "Blocked sell observations": {
-    "zh": "阻止卖出记录数"
+    "zh": "阻止卖出记录数",
+    "ja": "売却が制限された観測回数"
   },
   "Stale mark observations": {
-    "zh": "陈旧估值记录数"
+    "zh": "陈旧估值记录数",
+    "ja": "古い評価価格を使用した観測回数"
   },
   "Benchmark beta": {
-    "zh": "基准 Beta"
+    "zh": "基准 Beta",
+    "ja": "ベンチマーク・ベータ"
   },
   "Tracking error": {
-    "zh": "跟踪误差"
+    "zh": "跟踪误差",
+    "ja": "トラッキングエラー"
   },
   "Information ratio": {
-    "zh": "信息比率"
+    "zh": "信息比率",
+    "ja": "情報レシオ"
   },
   "Account trade win rate": {
-    "zh": "账户交易胜率"
+    "zh": "账户交易胜率",
+    "ja": "口座取引の勝率"
   },
   "Closed trade profit/loss ratio": {
-    "zh": "闭合交易盈亏比"
+    "zh": "闭合交易盈亏比",
+    "ja": "決済済み取引の損益比"
   },
   "Historical cash comparison": {
-    "zh": "历史现金仓位对照"
+    "zh": "历史现金仓位对照",
+    "ja": "履歴上の現金比較"
   },
   "21-record rolling net return": {
-    "zh": "21 个记录日滚动净收益"
+    "zh": "21 个记录日滚动净收益",
+    "ja": "21記録のローリング純収益率"
   },
   "This interval has fewer than 21 return records.": {
-    "zh": "这个区间少于 21 个收益记录。"
+    "zh": "这个区间少于 21 个收益记录。",
+    "ja": "この期間の収益率の記録は21件未満です。"
   },
   "Daily return correlation": {
-    "zh": "每日收益相关性"
+    "zh": "每日收益相关性",
+    "ja": "日次収益率の相関"
   },
   "Price reference": {
-    "zh": "价格参考"
+    "zh": "价格参考",
+    "ja": "価格参照"
   },
   "None": {
-    "zh": "无"
+    "zh": "无",
+    "ja": "なし"
   },
   "Price reference is unavailable for the complete interval.": {
-    "zh": "完整区间的价格参考暂不可用。"
+    "zh": "完整区间的价格参考暂不可用。",
+    "ja": "期間全体をカバーする価格参照は利用できません。"
   },
   "Benchmark beta, tracking error and information ratio require a matching return basis. Account trade ratios require a connected account and closed trades; unavailable values remain —.": {
-    "zh": "Beta、跟踪误差、信息比率需要口径匹配的基准。账户胜率与盈亏比需要账户及闭合交易记录；当前缺失项显示 —。"
+    "zh": "Beta、跟踪误差、信息比率需要口径匹配的基准。账户胜率与盈亏比需要账户及闭合交易记录；当前缺失项显示 —。",
+    "ja": "ベンチマーク・ベータ、トラッキングエラー、情報レシオには、収益率の計算基準を揃える必要があります。口座の取引比率には、接続された口座と決済済み取引が必要です。利用できない値は「—」のまま表示します。"
   },
   "* Archive-edge or selected-window month may be incomplete. Positive-month statistics include these partial periods.": {
-    "zh": "* 档案或所选区间边界的月份可能不完整；正收益月比例包含这些记录月度段。"
+    "zh": "* 档案或所选区间边界的月份可能不完整；正收益月比例包含这些记录月度段。",
+    "ja": "* アーカイブの端、または選択期間の端にある月は、月全体を含まない場合があります。プラス収益月の統計には、これらの部分期間も含みます。"
   },
   "Gross returns compound gross daily returns on the recorded holdings path; the gross/net difference includes compounding and is not the cumulative fee amount.": {
-    "zh": "毛收益按原持仓路径的毛日收益复利计算；毛净差包含复利影响，不等于累计费用金额。"
+    "zh": "毛收益按原持仓路径的毛日收益复利计算；毛净差包含复利影响，不等于累计费用金额。",
+    "ja": "グロス収益率は、記録された保有経路の日次グロス収益率を複利計算したものです。グロスとネットの差には複利効果が含まれ、手数料の累計額とは異なります。"
   },
   "{label}: {return_value} over these dates · RAW open-price reference, excluding dividends and fees. QFQ replay remains a separate return basis.": {
-    "zh": "{label}：同期 {return_value} · RAW 开盘价参考，不含股息和费用，与 QFQ 回放分别保留口径。"
+    "zh": "{label}：同期 {return_value} · RAW 开盘价参考，不含股息和费用，与 QFQ 回放分别保留口径。",
+    "ja": "{label}：この期間の収益率は {return_value}・RAWの始値を参照し、配当と手数料を含みません。QFQリプレイは別の収益率基準です。"
+  },
+  "{label}: {return_value} over these dates · RAW open-price reference, excluding dividends and fees. Strategy replay uses its recorded adjustment basis.": {
+    "zh": "{label}：同期 {return_value} · RAW 开盘价参考，不含股息和费用；策略回放分别沿用各自记录的价格调整口径。",
+    "ja": "{label}：この期間の収益率は {return_value}・RAWの始値を参照し、配当と手数料を含みません。戦略リプレイは各記録の価格調整基準を使用します。"
   },
   "Maximum security weight": {
-    "zh": "最大单票权重"
+    "zh": "最大单票权重",
+    "ja": "単一銘柄の最大配分比率"
   },
   "Top 5 concentration": {
-    "zh": "前五集中度"
+    "zh": "前五集中度",
+    "ja": "上位5銘柄の集中度"
   },
   "Planned execution date": {
-    "zh": "计划执行日期"
+    "zh": "计划执行日期",
+    "ja": "予定執行日"
   },
   "Loading verified records…": {
     "zh": "正在核对并载入记录…",
     "ja": "検証済み記録を読み込み中…"
+  },
+  "Frozen HGB scores are used in the original Raw A2 Top20 allocation framework. The original risk models optimize weights with existing holdings, cash and costs; held stocks follow the original optimizer's rules.": {
+    "zh": "冻结 HGB 分数用于原 Raw A2 Top20 分配框架；原风险方案结合现有持仓、现金和成本优化仓位，已有持仓仍按原冻结优化器规则处理。",
+    "ja": "凍結 HGB スコアを元の Raw A2 Top20 配分枠組みで使用します。元のリスクモデルは既存保有・現金・コストを考慮して配分を最適化し、既存保有には元の凍結済み最適化ルールを適用します。"
+  },
+  "HGB signals define the Top20 candidates within Raw Top40. Each risk model controls weights and cash; holdings outside the candidates cannot increase.": {
+    "zh": "HGB 信号从原 Raw Top40 中确定 Top20 候选；两种风控分别管理仓位和现金，候选外旧持仓只能减仓、不能加仓。",
+    "ja": "HGB シグナルが元の Raw Top40 内の Top20 候補を決定します。各リスクモデルが配分と現金を管理し、候補外の既存保有は増やしません。"
+  },
+  "Selected by the user to align HGB signals and risk allocation. No policy was chosen by these backtest returns; 2026 remains an exposed descriptive evaluation.": {
+    "zh": "选择依据：用户指定 HGB 信号与风险仓位对齐；没有按本次回测收益挑选规则，2026 年仍为已暴露的描述性评价。",
+    "ja": "選択根拠：ユーザー指定の HGB シグナルとリスク配分の整合。本回放の収益によるルール選択はなく、2026 年は既に観測された記述的評価です。"
+  },
+  "Signal snapshot through {signal} · Recorded execution performance through {execution}.": {
+    "zh": "信号截至 {signal} ／ 执行绩效截至 {execution}。",
+    "ja": "シグナルは {signal} まで ／ 記録済み執行成績は {execution} まで。"
+  },
+  "{symbol} has no complete verified open-price window through {date}; the strategy window is retained.": {
+    "zh": "{symbol} 的合格开盘价格尚未完整覆盖至 {date}；策略绩效保留原区间。",
+    "ja": "{symbol} の検証済み寄付価格は {date} までの全期間をカバーしていません。戦略成績の期間は保持します。"
+  },
+  "Ranking data failed verification. This does not mean this date has no rankings.": {
+    "zh": "排名数据未通过校验，不能据此判断当天没有排名。",
+    "ja": "ランキングデータの検証に失敗しました。この日のランキングが存在しないという意味ではありません。"
+  },
+  "Ranking unavailable until verification passes.": {
+    "zh": "排名校验未通过，暂不可展示。",
+    "ja": "検証が完了するまでランキングを表示できません。"
+  },
+  "Historical stock records failed verification. Current-day rankings are verified separately.": {
+    "zh": "个股历史记录未通过校验；当日排名采用独立校验。",
+    "ja": "個別銘柄の履歴データは検証に失敗しました。当日のランキングは個別に検証します。"
+  },
+  "Verification details": {
+    "zh": "校验详情",
+    "ja": "検証の詳細"
+  },
+  "Detail focus only. All five strategies remain in the main comparison.": {
+    "zh": "仅切换详情焦点；主比较始终保留五套策略。",
+    "ja": "詳細の表示対象のみ切り替えます。主比較には5戦略が表示されます。"
+  },
+  "5 applied strategies": {
+    "zh": "5 套已应用策略",
+    "ja": "適用済みの5戦略"
+  },
+  "5 fixed strategies · Compare together": {
+    "zh": "五项既定策略 · 同页对照",
+    "ja": "5つの固定戦略 · 同じ画面で比較"
+  },
+  "Current account target": {
+    "zh": "当前模拟账户目标",
+    "ja": "現在の模擬口座の目標"
+  },
+  "Current account target. Actual holdings and fills are recorded separately in the paper workspace.": {
+    "zh": "当前模拟账户目标方案；实际持仓与成交在模拟盘中分别记录。",
+    "ja": "現在の模擬口座の目標計画です。実際の保有と約定は模擬取引画面に別途記録されます。"
+  },
+  "Recorded frozen model inputs": {
+    "zh": "已记录冻结模型输入",
+    "ja": "記録済みの固定モデル入力"
+  },
+  "Observation date: {date}. Each strategy shows its recorded model scores and target allocations. Scores across different models are not directly comparable.": {
+    "zh": "观察日期：{date}。各策略展示其已记录模型输出和目标仓位；不同模型的分数不可直接比较。",
+    "ja": "観測日：{date}。各戦略の記録済みモデル出力と目標配分を表示します。異なるモデルのスコアは直接比較できません。"
+  },
+  "Frozen model and allocation": {
+    "zh": "冻结模型与仓位规则",
+    "ja": "固定モデルと配分ルール"
+  },
+  "Verified model metadata is unavailable for this observation.": {
+    "zh": "本观察日没有可核验的模型元数据。",
+    "ja": "この観測日の検証済みモデル情報はありません。"
+  },
+  "The paper component owns frozen inference. DEMO only displays recorded plans; no model is fitted here.": {
+    "zh": "模拟组件负责冻结推断；DEMO 只展示已记录计划，不训练模型。",
+    "ja": "模擬取引コンポーネントが固定モデルの推論を担当します。DEMO は記録済み計画を表示し、モデルを学習しません。"
+  },
+  "Accepted replay unavailable: {names}. No returns are copied from another strategy.": {
+    "zh": "已接受回放暂不可用：{names}。不会复制其他策略的收益。",
+    "ja": "受理済みリプレイは利用できません：{names}。他の戦略の収益は転用しません。"
+  },
+  "Retired strategy · Historical research replay": {
+    "zh": "退出活动策略 · 历史研究回放",
+    "ja": "非稼働の戦略 · 過去の研究リプレイ"
+  },
+  "HGB factor / shrinkage is no longer active. Its accepted research replay and original paper records are retained.": {
+    "zh": "HGB 因子／收缩风险已退出活动；原研究回放和模拟账户记录继续保留。",
+    "ja": "HGB 因子／縮小リスクは稼働対象外です。受理済み研究リプレイと元の模擬口座記録は保持されます。"
+  },
+  "Verified replay cutoffs: {dates}. A shared comparison stops at the latest common complete observation.": {
+    "zh": "已核验回放截止：{dates}。共同对照止于各策略共有的最近完整观测。",
+    "ja": "検証済みリプレイの最終日：{dates}。共同比較は各戦略に共通する最新の完全な観測日までです。"
+  },
+  "Raw input rank": {
+    "zh": "Raw 输入排名",
+    "ja": "Raw 入力順位"
+  },
+  "Raw input score": {
+    "zh": "Raw 输入分数",
+    "ja": "Raw 入力スコア"
+  },
+  "Native action score": {
+    "zh": "原模型动作分数",
+    "ja": "元モデルの行動スコア"
+  },
+  "Recorded model action": {
+    "zh": "已记录模型动作",
+    "ja": "記録済みモデル行動"
+  },
+  "Rows follow recorded Raw input ranks for these action models. Native action scores do not define a stock ranking.": {
+    "zh": "动作模型的行顺序采用已记录 Raw 输入排名；原模型动作分数不构成股票排名。",
+    "ja": "行動モデルの行は記録済み Raw 入力順位に従います。元モデルの行動スコアは銘柄順位を定義しません。"
+  },
+  "Recorded research signal plan": {
+    "zh": "原研究信号计划",
+    "ja": "元の研究シグナル計画"
+  },
+  "Some native research stock records failed verification: {names}": {
+    "zh": "部分原研究逐股记录未通过校验：{names}",
+    "ja": "一部の元研究の銘柄記録を検証できませんでした：{names}"
+  },
+  "Recorded research holding weight": {
+    "zh": "已记录研究持仓权重",
+    "ja": "記録済み研究保有比率"
+  },
+  "Recorded research holding history": {
+    "zh": "原研究实际持仓路径",
+    "ja": "元の研究の記録済み保有履歴"
+  },
+  "Original MAIN stock actions, holdings and research fills": {
+    "zh": "原 MAIN 逐股动作、持仓与研究成交",
+    "ja": "元の MAIN 銘柄行動・保有・研究約定"
+  },
+  "Original research fractional shares": {
+    "zh": "研究账本原股数（小数）",
+    "ja": "元研究帳簿の株数（端数あり）"
+  },
+  "Original mark date": {
+    "zh": "原标价日期",
+    "ja": "元の評価日"
+  },
+  "Research accounting qualified": {
+    "zh": "研究会计核验状态",
+    "ja": "研究会計検証状態"
+  },
+  "Original research order records": {
+    "zh": "原研究委托记录",
+    "ja": "元の研究注文記録"
+  },
+  "Original research fill records": {
+    "zh": "原研究成交记录",
+    "ja": "元の研究約定記録"
+  },
+  "Native ledger identity scope": {
+    "zh": "原账本身份范围",
+    "ja": "元帳簿の識別範囲"
+  },
+  "Some HGB historical inputs failed verification. Their rankings and targets remain unavailable on those dates.": {
+    "zh": "部分 HGB 历史输入未通过核验，对应日期的排名与目标暂不可用。",
+    "ja": "一部のHGB履歴入力は検証できませんでした。該当日の順位と目標は利用できません。"
+  },
+  "Raw ranks use the latest verified coverage. HGB historical inputs and selections retain their accepted signal source version; later coverage updates can change a same-day Raw rank.": {
+    "zh": "Raw 排名使用最新已核验的覆盖范围。HGB 历史输入与选股保留当时已接受的信号来源版本；后续覆盖更新可能改变同日 Raw 名次。",
+    "ja": "Raw順位は最新の検証済み対象範囲を使用します。HGBの履歴入力と選定は受け入れ済みのシグナル時点のソース版を保持し、後の対象範囲更新で同日のRaw順位が変わる場合があります。"
+  },
+  "HGB original Raw input rank": {
+    "zh": "HGB 原始 Raw 输入排名",
+    "ja": "HGBの元のRaw入力順位"
+  },
+  "Observation dates limit recorded sessions; accepted later source revisions do not establish availability at the original decision time.": {
+    "zh": "观察日期只限定记录日期；已接受的后续来源修订不表示当时已经可得。",
+    "ja": "観測日は記録対象日を制限します。後で受け入れたソース修正は、元の意思決定時点で利用可能だったことを示しません。"
+  },
+  "Separate PIT research replay for three strategies: forward-adjusted price coordinates, close signals and next-session-open execution. The original frozen QFQ replay is retained. The curves are descriptive research results, not simulated-account performance or a new independent test.": {
+    "zh": "独立 PIT 三策略研究回放：按前向复权价格坐标、收盘信号和下一交易日开盘执行计算；原冻结 QFQ 回放保留。曲线是描述性研究结果，不是模拟账户绩效，也不是新的独立检验。",
+    "ja": "3戦略の独立したPIT研究リプレイ：前方調整価格の座標、終値時点のシグナル、翌取引日の寄り付き執行で計算します。元の凍結済みQFQリプレイを保持します。曲線は記述的な研究結果であり、模擬口座の運用成績でも、新たな独立検証でもありません。"
+  },
+  "Original Raw A2 / HGB replay is synchronized through {end}.": {
+    "zh": "原 Raw A2 / HGB 回放已同步至 {end}。",
+    "ja": "元の Raw A2 / HGB リプレイは {end} まで同期済みです。"
+  },
+  "Original Raw A2 / HGB replay is verified through {end}; the update requested through {requested} is blocked because execution on {execution} has not passed verification: {reason}": {
+    "zh": "原 Raw A2 / HGB 回放已验证至 {end}；本次请求更新至 {requested}，下一执行日 {execution} 尚未通过：{reason}",
+    "ja": "元の Raw A2 / HGB リプレイは {end} まで検証済みです。今回 {requested} までの更新を要求しましたが、次の執行日 {execution} は検証を通過していません：{reason}"
+  },
+  "Fixed MAIN descriptive research ledger: all-cash initialization on 2026-01-02, first execution on 01-05; 10 bp cost scenario. Original limitations on prices, corporate actions and historical information availability are retained; displayed separately from actual simulated-account fills.": {
+    "zh": "固定 MAIN 描述性研究账本：2026-01-02 空仓初始化，01-05 起执行；10bp 费用情景。保留原价格、公司行动及历史信息可得性限制；与模拟账户实际成交分开展示。",
+    "ja": "固定MAINの記述的研究台帳：2026-01-02に全額現金で初期化し、01-05から執行。費用シナリオは10bpです。元の価格・企業行動・過去情報の利用可能性に関する制約を保持し、模擬口座の実際の約定とは分けて表示します。"
+  },
+  "Recorded MAIN research records": {
+    "zh": "已记录的 MAIN 研究记录",
+    "ja": "記録済みの MAIN 研究記録"
+  },
+  "Recorded MAIN research signal. This is not a current PAPER account target.": {
+    "zh": "已记录的 MAIN 研究信号，不是当前 PAPER 账户目标。",
+    "ja": "記録済みの MAIN 研究シグナルです。現在の PAPER 口座の目標ではありません。"
+  },
+  "Latest PAPER target signal: {date}. The selected-date research record is shown separately.": {
+    "zh": "最近的 PAPER 目标信号日：{date}。所选日期的研究记录单独展示。",
+    "ja": "最新の PAPER 目標シグナル日：{date}。選択日の研究記録は分けて表示します。"
+  },
+  "No stock ranking or model score was recorded in this research ledger.": {
+    "zh": "该研究账本未记录股票排名或模型评分。",
+    "ja": "この研究台帳には銘柄順位やモデルスコアは記録されていません。"
+  },
+  "Research signal date: {date}": {
+    "zh": "研究信号日：{date}",
+    "ja": "研究シグナル日：{date}"
+  },
+  "Research order target weight": {
+    "zh": "研究委托目标权重",
+    "ja": "研究注文の目標比率"
+  },
+  "Policy weight (research action)": {
+    "zh": "策略权重（研究动作）",
+    "ja": "方策比率（研究アクション）"
+  },
+  "Recorded HOLD units": {
+    "zh": "HOLD 原记录数量",
+    "ja": "記録済みHOLD数量"
+  },
+  "Recorded order semantic": {
+    "zh": "已记录委托语义",
+    "ja": "記録済み注文の意味"
+  },
+  "Research records failed verification. Other strategy records are shown independently.": {
+    "zh": "研究记录未通过核验；其他策略的记录独立展示。",
+    "ja": "研究記録は検証を通過していません。他戦略の記録は個別に表示します。"
+  },
+  "Fixed MAIN research stock records; original actions, planned weights, research positions and research fills are retained separately. Stock model ranks and CUSIPs were not recorded in the original tables and remain unknown. These are not simulated-account fills.": {
+    "zh": "固定 MAIN 研究逐股记录；原动作、计划权重、研究持仓和研究成交分别保留。原表未记录股票模型排名和 CUSIP，因此保持未知；不是模拟账户成交。",
+    "ja": "固定MAINの銘柄別研究記録です。元のアクション、計画比率、研究上の保有と約定を分けて保持します。元の表に銘柄モデル順位とCUSIPの記録がないため、不明のまま表示します。模擬口座の約定ではありません。"
+  },
+  "Research curves retain each strategy's accepted replay source, price coordinates and cutoff. Simulated accounts show only actual execution and valuation records.": {
+    "zh": "研究曲线保留各策略已接受的回放来源、价格坐标与截止日；模拟账户只显示实际执行及估值记录。",
+    "ja": "研究曲線は、各戦略で受け入れ済みのリプレイソース、価格座標、終了日を保持します。模擬口座には実際の執行と評価の記録のみを表示します。"
+  },
+  "Selection basis: USER_SELECTED_AFTER_EXPOSURE. User selection after exposure cannot restore independent holdout status.": {
+    "zh": "选择依据：USER_SELECTED_AFTER_EXPOSURE · 已暴露结果后的用户选择，不能恢复独立留出检验状态。",
+    "ja": "選択根拠：USER_SELECTED_AFTER_EXPOSURE。結果開示後のユーザー選択によって、独立ホールドアウト検証の状態は回復しません。"
+  },
+  "Package generated at: {timestamp}": {
+    "zh": "数据包生成时间：{timestamp}",
+    "ja": "データパッケージ生成日時：{timestamp}"
+  },
+  "Package SHA-256: {sha256}": {
+    "zh": "数据包 SHA-256：{sha256}",
+    "ja": "データパッケージ SHA-256：{sha256}"
+  },
+  "Source artifact": {
+    "zh": "来源工件",
+    "ja": "ソース成果物"
+  },
+  "Recorded Top40 ranking history through {date}. Missing ranks and scores are not filled in.": {
+    "zh": "本次 Top40 排名历史截至 {date}；缺失排名与分数不补造。",
+    "ja": "記録済みTop40順位履歴は {date} までです。欠けている順位やスコアは補完しません。"
+  },
+  "The selected stocks come from the current ranking scope. Their individual paths do not measure full-universe predictive skill.": {
+    "zh": "所选股票来自当前排名范围。个股路径不代表完整股票池的预测能力。",
+    "ja": "選択された銘柄は現在のランキング範囲内にあります。個別銘柄の推移は、全銘柄プールに対する予測能力を示すものではありません。"
+  },
+  "Published cache could not be verified. The existing display is retained.": {
+    "zh": "无法核验已发布缓存，保留当前显示。",
+    "ja": "公開済みキャッシュを検証できませんでした。現在の表示を保持します。"
+  },
+  "Published cache changed; displayed records retain their original verification checks.": {
+    "zh": "已发布缓存有变化；页面继续按原核验规则显示记录。",
+    "ja": "公開済みキャッシュが変更されました。表示記録には従来の検証条件を適用します。"
+  },
+  "Published cache checked. No changed source binding was detected.": {
+    "zh": "已检查发布缓存，未发现来源绑定变化。",
+    "ja": "公開済みキャッシュを確認しました。参照元の変更はありません。"
+  },
+  "Exposed 2026 descriptive replay · Signals {signal} · Performance {execution} · Targets are not fills.": {
+    "zh": "已公开的 2026 描述性回放 · 信号 {signal} · 绩效 {execution} · 目标不代表成交。",
+    "ja": "公開済みの2026年の記述的リプレイ · シグナル {signal} · 運用記録 {execution} · 目標は約定を示しません。"
+  },
+  "Strategy cutoffs differ; the chart uses their common recorded window.": {
+    "zh": "策略记录截止日不同，图表采用共同的已记录区间。",
+    "ja": "戦略ごとの記録終了日が異なるため、グラフには共通の記録期間を使用します。"
+  },
+  "A published source is unavailable. Records must pass their original verification checks before use.": {
+    "zh": "发布来源暂不可用。记录必须通过原有核验后才能使用。",
+    "ja": "公開済みの参照元を利用できません。記録の利用には従来の検証条件を満たす必要があります。"
+  },
+  "Rows per strategy": {
+    "zh": "每策略行数",
+    "ja": "戦略ごとの行数"
+  },
+  "{count} rows per strategy": {
+    "zh": "每策略{count}行",
+    "ja": "各戦略{count}行"
+  },
+  "All rows per strategy": {
+    "zh": "每策略全部",
+    "ja": "各戦略の全行"
+  },
+  "Strategies": {
+    "zh": "策略",
+    "ja": "戦略"
+  },
+  "Recorded action": {
+    "zh": "记录动作",
+    "ja": "記録されたアクション"
+  },
+  "Research target weight": {
+    "zh": "研究目标%",
+    "ja": "研究目標比率"
+  },
+  "Account target weight": {
+    "zh": "账户目标%",
+    "ja": "口座目標比率"
+  },
+  "Record type": {
+    "zh": "记录类型",
+    "ja": "記録種別"
+  },
+  "Recorded action code": {
+    "zh": "原动作代码",
+    "ja": "元のアクションコード"
+  },
+  "Original recorded weight": {
+    "zh": "原记录权重",
+    "ja": "元の記録比率"
+  },
+  "Source and coverage": {
+    "zh": "来源与覆盖范围",
+    "ja": "ソースと記録範囲"
+  },
+  "Selected record details": {
+    "zh": "所选记录详情",
+    "ja": "選択した記録の詳細"
+  },
+  "Selected record: {strategy} · {ticker}": {
+    "zh": "所选记录：{strategy} · {ticker}",
+    "ja": "選択した記録：{strategy} · {ticker}"
+  },
+  "Current PAPER targets unavailable: {names}. Research records are shown separately.": {
+    "zh": "当前PAPER目标不可用：{names}。研究记录单独标识。",
+    "ja": "現在のPAPER目標は利用できません：{names}。研究記録は別種別として表示します。"
+  },
+  "Five strategies share one table. Research signals and account targets retain separate weights and dates.": {
+    "zh": "五套策略在同一表中对照；研究信号与账户目标的权重、日期分别保留。",
+    "ja": "5戦略を同じ表で比較します。研究シグナルと口座目標の比率・日付は別に保持します。"
+  },
+  "Record dates: {dates}.": {
+    "zh": "记录日期：{dates}。",
+    "ja": "記録日：{dates}。"
+  },
+  "Buy": {
+    "zh": "买入",
+    "ja": "買い"
+  },
+  "Sell": {
+    "zh": "卖出",
+    "ja": "売り"
+  },
+  "Buy / add": {
+    "zh": "买入／加仓",
+    "ja": "買い／積み増し"
+  },
+  "Strategy ID": {
+    "zh": "策略ID",
+    "ja": "戦略ID"
+  },
+  "Record type code": {
+    "zh": "原记录类型代码",
+    "ja": "元の記録種別コード"
+  },
+  "Strategies & targets": {
+    "zh": "策略与目标",
+    "ja": "戦略と目標"
+  },
+  "Simulated execution": {
+    "zh": "模拟执行",
+    "ja": "シミュレーション執行"
+  },
+  "Research observation date": {
+    "zh": "研究观察日",
+    "ja": "研究の観察日"
+  },
+  "Research dates appear after verified records are opened. Account snapshots keep their own time.": {
+    "zh": "打开已核验研究记录后可选择观察日；账户快照保留自身时间。",
+    "ja": "検証済み研究記録を開くと観察日を選べます。口座スナップショットには固有の時刻を表示します。"
+  },
+  "Data updates": {
+    "zh": "数据更新",
+    "ja": "データ更新"
+  },
+  "Research data is updated manually each afternoon. Browsing uses published records and caches.": {
+    "zh": "研究数据每天下午手动更新，日常浏览使用已发布记录和缓存。",
+    "ja": "研究データは毎日午後に手動更新します。通常の閲覧には公開済み記録とキャッシュを使用します。"
+  },
+  "After the manual update finishes, reload the published cache here.": {
+    "zh": "手动更新完成后，在此重新加载已发布缓存。",
+    "ja": "手動更新の完了後、ここで公開済みキャッシュを再読込します。"
+  },
+  "Comparison settings": {
+    "zh": "比较设置",
+    "ja": "比較設定"
+  },
+  "Descriptive research replay after the data update, using the original fixed holdings and cost rules; this is not a live account.": {
+    "zh": "更新数据后的描述性研究回放，使用原既定持仓与费用规则；不是实盘账户。",
+    "ja": "データ更新後の記述的な研究リプレイで、元の固定保有・費用ルールを使用します。実取引口座ではありません。"
+  },
+  "Rankings, actual simulated holdings and execution-day performance are read separately; pending signals have no executed holdings or returns.": {
+    "zh": "排名、实际模拟持仓和执行日绩效分别读取；待执行信号不具有已执行持仓或收益。",
+    "ja": "ランキング、実際のシミュレーション保有、執行日の成績は別々に読み取ります。未執行シグナルに執行済み保有や収益はありません。"
+  },
+  "Securities with insufficient coverage do not enter these rankings. Historical price-adjustment event snapshots do not represent the publication snapshot at every historical point in time.": {
+    "zh": "覆盖不足的证券不进入本次排名，历史复权事件快照不代表每个历史时点的发布快照。",
+    "ja": "カバレッジ不足の銘柄は今回のランキングに入りません。過去の株価調整イベントのスナップショットは、過去の各時点の公表時点スナップショットを表すものではありません。"
+  },
+  "2023–2025 annual models are reconstructed with fixed rules; 2026 uses the original pre-2026 frozen model. This performance replay does not train or tune models.": {
+    "zh": "2023–2025 使用固定规则重建年度模型，2026 使用原 pre-2026 冻结模型；本次绩效回放不训练或调参。",
+    "ja": "2023–2025年は固定ルールで年次モデルを再構築し、2026年は元のpre-2026凍結モデルを使用します。今回の成績リプレイでは学習やチューニングを行いません。"
+  },
+  "Performance is the valuation of holdings after next-day open execution. The first signal day is a cash baseline; this is not same-day closing NAV.": {
+    "zh": "绩效为次日开盘执行后的持仓估值，首信号日为现金基线；不是当日收盘净值。",
+    "ja": "成績は翌日寄り付きでの執行後の保有評価額です。最初のシグナル日は現金ベースラインであり、当日終値の純資産価額ではありません。"
+  },
+  "Frozen HGB cross-sectional scoring baseline.": {
+    "zh": "冻结 HGB 横截面评分基线。",
+    "ja": "凍結HGBによるクロスセクション評価の基準。"
+  },
+  "Stock scores and ranks, not portfolio weights.": {
+    "zh": "股票评分与排名，不直接输出资金权重。",
+    "ja": "銘柄スコアと順位であり、資金配分比率ではありません。"
+  },
+  "Original Raw candidate and holding rules form targets.": {
+    "zh": "沿用 Raw 候选与持仓规则形成目标。",
+    "ja": "元のRaw候補・保有ルールで目標を形成。"
+  },
+  "Raw A2 keeps the frozen A2_HGB model identity. Scores feed the original candidate and holding rules; execution remains a separate step.": {
+    "zh": "Raw A2 保留冻结 A2_HGB 模型身份。评分输入原候选与持仓规则，执行仍是独立步骤。",
+    "ja": "Raw A2は凍結A2_HGBモデルの識別情報を維持します。スコアは元の候補・保有ルールに渡され、執行は別の工程です。"
+  },
+  "Frozen HGB scores plus diagonal risk allocation.": {
+    "zh": "冻结 HGB 评分，叠加对角风险配置。",
+    "ja": "凍結HGBスコアと対角リスク配分。"
+  },
+  "Stock scores, target weights and cash.": {
+    "zh": "股票评分、组合目标权重与现金。",
+    "ja": "銘柄スコア、目標配分比率、現金。"
+  },
+  "Use the bound candidate policy and turnover costs.": {
+    "zh": "沿用绑定候选政策，并计入换仓成本。",
+    "ja": "結び付けられた候補方針と売買回転コストを使用。"
+  },
+  "Score the recorded Raw Top40 feature set, then use diagonal covariance in the original allocation optimizer. Candidate membership follows the bound policy.": {
+    "zh": "对原 Raw Top40 特征集评分，再由原配置优化器使用对角协方差；候选成员遵循所绑定政策。",
+    "ja": "記録済みRaw Top40特徴群を評価し、元の配分最適化で対角共分散を使用します。候補の構成は結び付けられた方針に従います。"
+  },
+  "Entry and incumbent heads use their original feature order and frozen scalers. Native proposals pass the existing security and resource checks.": {
+    "zh": "新入场与现有持仓双头沿用原特征顺序及冻结缩放器；原生提案通过既有证券身份与资源检查。",
+    "ja": "新規エントリー・既存保有ヘッドは元の特徴順序と凍結スケーラーを使用します。ネイティブ提案は既存の証券識別・リソース確認を通過します。"
+  },
+  "BUY/SKIP and SELL/HOLD/REPLACE proposals; not stock ranks.": {
+    "zh": "BUY/SKIP、SELL/HOLD/REPLACE 动作提案，不是股票排名。",
+    "ja": "BUY/SKIP・SELL/HOLD/REPLACEの提案であり、銘柄順位ではありません。"
+  },
+  "Resolve conflicts; preserve HOLD units and original cash limits.": {
+    "zh": "消解动作冲突，保留 HOLD 股数与原现金约束。",
+    "ja": "競合を調整し、HOLD株数と元の現金制約を維持。"
+  },
+  "Frozen ElasticNet action-value heads.": {
+    "zh": "冻结 ElasticNet 动作价值模型。",
+    "ja": "凍結ElasticNet行動価値ヘッド。"
+  },
+  "Frozen Ridge action-value heads.": {
+    "zh": "冻结 Ridge 动作价值模型。",
+    "ja": "凍結Ridge行動価値ヘッド。"
+  },
+  "Frozen linear classifier for gross exposure.": {
+    "zh": "冻结线性分类器，选择总仓位档位。",
+    "ja": "凍結線形分類器でグロス投資比率の区分を選択。"
+  },
+  "A requested gross-exposure level, not stock ranks.": {
+    "zh": "请求总仓位档位，不是股票排名。",
+    "ja": "要求するグロス投資比率の区分であり、銘柄順位ではありません。"
+  },
+  "Scale explicit targets; keep exact HOLD units.": {
+    "zh": "缩放明确目标，保留原 HOLD 股数。",
+    "ja": "明示的な目標を調整し、元のHOLD株数を維持。"
+  },
+  "A logistic linear classifier chooses one of five gross levels. The prior requested level is an input; target scaling preserves exact HOLD units.": {
+    "zh": "逻辑线性分类器从五个总仓位档位中选择；输入包含上期请求档位，缩放目标时保留原 HOLD 股数。",
+    "ja": "ロジスティック線形分類器が五つのグロス投資比率から選択します。前回要求した区分を入力とし、目標調整では元のHOLD株数を維持します。"
+  },
+  "Published inputs": {
+    "zh": "已发布输入",
+    "ja": "公開済み入力"
+  },
+  "Dated universe membership, security identities and verified market features; each method keeps its own input contract.": {
+    "zh": "按日期绑定股票池、证券身份和合格市场特征，保留各方法输入契约。",
+    "ja": "日付付きのユニバース構成、証券識別情報、検証済み市場特徴。各手法の入力契約を維持します。"
+  },
+  "Frozen inference": {
+    "zh": "冻结推断",
+    "ja": "凍結モデルによる推論"
+  },
+  "Apply the registered frozen models and transforms; this workbench does not fit or select models.": {
+    "zh": "应用已登记冻结模型与变换；本工作台不拟合或选择模型。",
+    "ja": "登録済みの凍結モデルと変換を適用します。このワークベンチでモデルの学習や選択は行いません。"
+  },
+  "Apply method-specific decisions to existing holdings and cash under the original limits.": {
+    "zh": "结合各方法决策、现有持仓和现金，沿用原组合约束。",
+    "ja": "各手法の判断を既存保有と現金に適用し、元の制約を維持します。"
+  },
+  "Published targets, orders, fills and valuations are recorded separately; a target is not a fill.": {
+    "zh": "目标、委托、成交与估值分别记录；目标不等于成交。",
+    "ja": "公開済み目標、注文、約定、評価は別々に記録します。目標は約定ではありません。"
+  },
+  "From frozen inputs to simulated execution": {
+    "zh": "从冻结输入到模拟执行",
+    "ja": "凍結入力からシミュレーション執行へ"
+  },
+  "Compare how the five current methods turn verified inputs into portfolio decisions.": {
+    "zh": "比较五种现行方法如何将已核验输入转成组合决策。",
+    "ja": "五つの現行手法が検証済み入力をポートフォリオ判断へ変換する仕組みを比較します。"
+  },
+  "Five methods, one workbench": {
+    "zh": "五种方法，一个工作台",
+    "ja": "五つの手法、一つのワークベンチ"
+  },
+  "Inspect a method": {
+    "zh": "查看方法原理",
+    "ja": "手法を確認"
+  },
+  "Reusable engineering": {
+    "zh": "复用既有工程",
+    "ja": "既存エンジニアリングの再利用"
+  },
+  "Original readers and execution owners remain responsible for source, identity, date and account checks.": {
+    "zh": "来源、身份、日期和账户检查仍由原读取器与执行模块负责。",
+    "ja": "ソース、識別情報、日付、口座の確認は、元のリーダーと執行モジュールが引き続き担当します。"
+  },
+  "Architecture only: no model execution, account refresh or new order is triggered here.": {
+    "zh": "仅展示技术原理：本页不运行模型、不刷新账户、不触发新订单。",
+    "ja": "アーキテクチャ説明のみ。このページからモデル実行、口座更新、新規注文は発生しません。"
+  },
+  "Mechanism overview · No model execution": {
+    "zh": "方法原理总览 · 不运行模型",
+    "ja": "仕組みの概要・モデル実行なし"
+  },
+  "Training and development stay before 2026-01-01, with earlier component cutoffs retained. The 2026 replay is descriptive and is not used for tuning.": {
+    "zh": "训练与开发严格早于 2026-01-01，并保留各组件更早截止；2026 回放仅作描述，不用于调优。",
+    "ja": "学習・開発は2026-01-01より前に限定し、各コンポーネントのより早い期限も維持します。2026年のリプレイは記述的な表示であり、調整には使用しません。"
+  },
+  "Method": {
+    "zh": "方法",
+    "ja": "手法"
+  },
+  "Native output": {
+    "zh": "原生输出",
+    "ja": "ネイティブ出力"
+  },
+  "Portfolio handling": {
+    "zh": "组合处理",
+    "ja": "ポートフォリオ処理"
+  },
+  "HGB bins feature values to find tree splits. Training adds trees using loss gradients; frozen inference sums their contributions into a stock score.": {
+    "zh": "HGB 将特征值分箱以搜索树分裂；训练按损失梯度叠加树，冻结推断将树贡献相加得到股票评分。",
+    "ja": "HGBは特徴値をビンに分けて木の分割を探索します。学習では損失勾配を使って木を追加し、凍結推論では各木の寄与を合算して銘柄スコアを得ます。"
+  },
+  "HGB scores enter the allocation objective. A diagonal risk term penalizes position-level variance, while turnover costs and portfolio limits constrain changes from existing holdings. The optimizer chooses weights and cash.": {
+    "zh": "HGB 评分进入配置目标；对角风险项惩罚各持仓的方差，换仓成本和组合约束限制相对现仓的调整，优化器输出权重与现金。",
+    "ja": "HGBスコアを配分目的関数に入力します。対角リスク項で各保有の分散を罰則化し、売買回転コストとポートフォリオ制約で現保有からの変更を制限します。最適化器が配分比率と現金を選びます。"
+  },
+  "ElasticNet fits linear action-value heads with L1 and L2 penalties. L1 can set coefficients to zero, while L2 shrinks them; predicted action advantages feed the original decision decoder.": {
+    "zh": "ElasticNet 以 L1 和 L2 惩罚拟合线性动作价值；L1 可使部分系数归零，L2 收缩系数，预测动作优势交给原解码器。",
+    "ja": "ElasticNetはL1・L2罰則で線形の行動価値ヘッドを学習します。L1は一部の係数をゼロにし得て、L2は係数を縮小します。予測した行動優位性を元のデコーダーに渡します。"
+  },
+  "Ridge fits linear action-value heads with an L2 penalty that shrinks coefficients, without the L1 sparsity term. Predicted action advantages feed the original entry and incumbent decision decoder.": {
+    "zh": "Ridge 用 L2 惩罚收缩线性动作价值系数，不含 L1 稀疏项；预测动作优势交给原入场与持仓解码器。",
+    "ja": "RidgeはL2罰則で線形の行動価値の係数を縮小し、L1の疎性項は使いません。予測した行動優位性を元の新規エントリー・既存保有デコーダーに渡します。"
+  },
+  "A logistic linear classifier turns features and prior requested exposure into probabilities for five exposure classes. The highest-probability class selects a requested gross level; it does not predict stock returns.": {
+    "zh": "逻辑线性分类器将特征与上期请求总仓位转为五类概率，取概率最高的类别作为请求总仓位档位，不预测股票收益。",
+    "ja": "ロジスティック線形分類器が特徴と前回要求した投資比率を五クラスの確率に変換します。最大確率のクラスが要求グロス比率を選び、銘柄収益を予測するものではありません。"
+  },
+  "Model principle": {
+    "zh": "模型原理",
+    "ja": "モデルの原理"
+  },
+  "Execution uses the account's bound strategy. Research selections do not change orders.": {
+    "zh": "执行使用账户已绑定的策略；研究页的选择不会改变下单。",
+    "ja": "執行には口座に設定済みの戦略を使います。研究画面の選択で注文は変わりません。"
+  },
+  "Daily operation and connection": {
+    "zh": "每日操作与连接",
+    "ja": "日次操作と接続"
+  },
+  "Update the data once each trading afternoon, review the published target, then start the simulation within its execution window.": {
+    "zh": "每个交易日下午更新一次数据，核对已发布目标，再在执行窗口内启动模拟。",
+    "ja": "各取引日の午後にデータを一度更新し、公開済みの目標を確認してから、執行時間内にシミュレーションを開始します。"
+  },
+  "Refresh reads account status. It does not update market history or generate a new strategy target.": {
+    "zh": "刷新用于读取账户状态；更新历史数据和生成新目标需执行每日更新。",
+    "ja": "更新ボタンは口座状態を読み込みます。市場履歴の更新や新しい戦略目標の作成には日次更新を実行します。"
+  },
+  "Five methods. One daily simulation.": {
+    "zh": "五种方法，一条每日模拟流程。",
+    "ja": "5つの手法、ひとつの日次シミュレーション。"
+  },
+  "Compare how verified market records become stock decisions, portfolio targets and confirmed simulated fills.": {
+    "zh": "比较已核验市场记录如何变成股票决策、组合目标和已确认的模拟成交。",
+    "ja": "検証済みの市場記録が、銘柄判断、ポートフォリオ目標、確認済みのシミュレーション約定に至る流れを比較します。"
+  },
+  "Choose a method": {
+    "zh": "选择一种方法",
+    "ja": "手法を選ぶ"
+  },
+  "Stock scores": {
+    "zh": "股票评分",
+    "ja": "銘柄スコア"
+  },
+  "Weights and cash": {
+    "zh": "权重与现金",
+    "ja": "配分比率と現金"
+  },
+  "Action proposals": {
+    "zh": "动作提案",
+    "ja": "売買行動の提案"
+  },
+  "Gross exposure": {
+    "zh": "总仓位水平",
+    "ja": "総エクスポージャー"
+  },
+  "What this method produces": {
+    "zh": "该方法产生什么",
+    "ja": "この手法の出力"
+  },
+  "How it becomes a portfolio": {
+    "zh": "如何形成组合",
+    "ja": "ポートフォリオへの反映"
+  },
+  "How this method works": {
+    "zh": "该方法如何工作",
+    "ja": "この手法の仕組み"
+  },
+  "Inputs and safeguards": {
+    "zh": "输入与核验边界",
+    "ja": "入力と検証上の制約"
+  },
+  "Inspect recorded targets": {
+    "zh": "查看已记录目标",
+    "ja": "記録済みの目標を確認"
+  },
+  "Open daily simulation": {
+    "zh": "查看每日模拟",
+    "ja": "日々の模擬取引へ"
+  },
+  "View data and charts": {
+    "zh": "查看数据与图表",
+    "ja": "データとチャートを見る"
+  },
+  "Each trading afternoon: update data, review the target, then use the simulation controls.": {
+    "zh": "每个交易日下午：更新数据、核对目标，再使用模拟执行控件。",
+    "ja": "各取引日の午後に、データ更新、目標確認、シミュレーション操作の順に進みます。"
+  },
+  "Targets are intended holdings. Orders and confirmed fills are recorded separately.": {
+    "zh": "目标是计划持仓，委托与已确认成交分别记录。",
+    "ja": "目標は予定する保有内容です。注文と確認済みの約定は別々に記録します。"
+  },
+  "Read the method first; open records only when you need evidence.": {
+    "zh": "先了解方法，需要证据时再打开记录。",
+    "ja": "まず手法を理解し、根拠が必要なときに記録を開きます。"
+  },
+  "Simulation keeps the original account, quote and authorization checks.": {
+    "zh": "模拟执行保留原账户、报价与授权核验。",
+    "ja": "シミュレーションでは、既存の口座・気配値・権限の検証を維持します。"
+  },
+  "Data & charts": {
+    "zh": "数据与图表",
+    "ja": "データとチャート"
+  },
+  "Which stocks look more promising? The model gives each eligible stock a score. The original selection rules turn those scores into a list of intended holdings.": {
+    "zh": "哪些股票更值得关注？模型为符合条件的股票评分，再由既定选股规则形成计划持仓。",
+    "ja": "どの銘柄が有望か。条件を満たす銘柄をモデルで採点し、既定の選定ルールで保有予定リストを作ります。"
+  },
+  "How much should each stock receive? Start with the model's stock scores, then balance each position's risk, trading costs and cash to set target weights.": {
+    "zh": "每只股票该配多少资金？从模型评分出发，综合单只持仓风险、换仓成本与现金，确定目标比例。",
+    "ja": "各銘柄にいくら配分するか。モデルのスコアを基に、個々の保有リスク、売買費用、現金を考慮して目標比率を決めます。"
+  },
+  "Should we buy, keep, sell or replace a stock? Frozen linear models compare these actions. ElasticNet limits large coefficients and can set some input coefficients to zero.": {
+    "zh": "该买入、继续持有、卖出，还是换成另一只股票？固定好的线性模型比较这些动作的预期优势。ElasticNet 限制过大的系数，也可将部分输入的系数压到零。",
+    "ja": "買う、保有を続ける、売る、別の銘柄に入れ替える。固定済みの線形モデルが各行動を比較します。ElasticNet は大きな係数を抑え、一部の入力の係数をゼロにできます。"
+  },
+  "Should we buy, keep, sell or replace a stock? Frozen linear models compare these actions. Ridge limits large coefficients so the prediction depends less on extreme fitted weights.": {
+    "zh": "该买入、继续持有、卖出，还是换成另一只股票？固定好的线性模型比较这些动作的预期优势。Ridge 限制过大的系数，减少预测对极端拟合权重的依赖。",
+    "ja": "買う、保有を続ける、売る、別の銘柄に入れ替える。固定済みの線形モデルが各行動を比較します。Ridge は大きな係数を抑え、極端な学習済み重みへの依存を減らします。"
+  },
+  "How much of the portfolio should be invested? A frozen classifier selects one of five exposure levels, then scales eligible targets while preserving positions marked HOLD.": {
+    "zh": "组合中有多少资金用于持股？固定好的分类模型从五档总仓位中选择一档，再调整适用目标；标记为继续持有的股票保留原股数。",
+    "ja": "ポートフォリオの何割を投資するか。固定済みの分類器が5段階の総投資比率から選び、対象の目標を調整します。保有継続の銘柄は株数を維持します。"
+  },
+  "Recorded score · target unverified": {
+    "zh": "评分记录 · 目标待核验",
+    "ja": "スコア記録・目標未確認"
+  },
+  "Recorded rank · target unverified": {
+    "zh": "排名记录 · 目标待核验",
+    "ja": "順位記録・目標未確認"
+  },
+  "A system, explained.": {
+    "zh": "量化系统 · 技术解析",
+    "ja": "量的システム · 技術解説"
+  },
+  "Display": {
+    "zh": "显示",
+    "ja": "表示"
+  },
+  "Technical showcase": {
+    "zh": "技术展厅",
+    "ja": "技術展示"
+  },
+  "Strategy applications": {
+    "zh": "应用案例",
+    "ja": "応用例"
+  },
+  "Daily simulation": {
+    "zh": "每日模拟",
+    "ja": "日次シミュレーション"
+  },
+  "Explore recorded decisions": {
+    "zh": "展开已记录的决策与目标",
+    "ja": "記録された判断と目標を開く"
+  },
+  "Browse recorded dates": {
+    "zh": "浏览历史日期",
+    "ja": "記録日を選ぶ"
+  },
+  "Follow the evidence.": {
+    "zh": "顺着图表，追到依据。",
+    "ja": "図表から、根拠をたどる。"
+  },
+  "Inspect recorded charts, model explanations and data sources. Each record keeps its own date and verification status.": {
+    "zh": "查看已记录的图表、模型解释和数据来源。各项记录保留自己的日期与核验状态。",
+    "ja": "記録済みの図表、モデルの説明、データ源を確認します。各記録の日付と検証状態を保持します。"
+  },
+  "From plan to confirmed fills.": {
+    "zh": "从今日计划，到确认成交。",
+    "ja": "今日の計画から、約定の確認へ。"
+  },
+  "Back to the showcase": {
+    "zh": "返回技术展厅",
+    "ja": "技術展示に戻る"
+  },
+  "SYSTEM / ENGINEERING": {
+    "zh": "系统 / 技术架构",
+    "ja": "システム / 技術設計"
+  },
+  "From market records.": {
+    "zh": "从市场记录出发。",
+    "ja": "市場の記録から。"
+  },
+  "To traceable decisions.": {
+    "zh": "让决策有迹可循。",
+    "ja": "たどれる意思決定へ。"
+  },
+  "Explore the engineering between a market record and a simulated fill. Each stage carries its own inputs, limits and evidence.": {
+    "zh": "探索从市场记录到模拟成交之间的技术。每一步都有明确的输入、约束与证据。",
+    "ja": "市場の記録からシミュレーションの約定まで。その間を支える技術と、各段階の入力・制約・根拠をたどります。"
+  },
+  "Principle illustration": {
+    "zh": "原理示意",
+    "ja": "仕組みの模式図"
+  },
+  "Select a stage to explore": {
+    "zh": "点击环节，探索内部原理",
+    "ja": "工程を選び、仕組みを見る"
+  },
+  "Follow one record": {
+    "zh": "沿一条记录前进",
+    "ja": "記録の流れをたどる"
+  },
+  "Input": {
+    "zh": "输入",
+    "ja": "入力"
+  },
+  "Process": {
+    "zh": "处理",
+    "ja": "処理"
+  },
+  "Output": {
+    "zh": "输出",
+    "ja": "出力"
+  },
+  "Versioned identity & traceability": {
+    "zh": "版本身份与全程追溯",
+    "ja": "バージョン識別と追跡可能性"
+  },
+  "Published caches & bounded resources": {
+    "zh": "已发布缓存与资源边界",
+    "ja": "公開済みキャッシュとリソース制約"
+  },
+  "Illustrative paths only. No live data, model execution or order submission.": {
+    "zh": "此处仅演示原理，不读取实时数据，不运行模型，也不提交订单。",
+    "ja": "ここでは仕組みのみを示します。リアルタイムデータの取得、モデルの実行、注文の送信は行いません。"
+  },
+  "Methods as application cases": {
+    "zh": "以策略为应用案例",
+    "ja": "手法を応用事例として見る"
+  },
+  "Data & point-in-time": {
+    "zh": "数据与时点边界",
+    "ja": "データと時点管理"
+  },
+  "What was knowable?": {
+    "zh": "当时能知道什么？",
+    "ja": "その時点で何が分かるか"
+  },
+  "Market records, publication times and security identities.": {
+    "zh": "市场记录、发布时间与证券身份。",
+    "ja": "市場の記録、公表時刻、銘柄の識別情報。"
+  },
+  "Align each input with its available time and dated identity; keep later information outside the decision boundary.": {
+    "zh": "按实际可得时间与当期身份对齐输入，隔离决策时尚不可知的信息。",
+    "ja": "各入力を利用可能な時刻と当時の識別情報に対応させ、後から得られた情報を意思決定に混ぜません。"
+  },
+  "A dated, verified input set with explicit availability limits.": {
+    "zh": "带日期、经过核验且可得边界明确的输入集合。",
+    "ja": "日付と利用可能性の制約が明確な、検証済み入力。"
+  },
+  "Apply a fixed method": {
+    "zh": "应用已固定的方法",
+    "ja": "固定済みの手法を適用"
+  },
+  "Verified features and a registered model with frozen transforms.": {
+    "zh": "已核验特征、已注册模型及冻结的变换。",
+    "ja": "検証済み特徴量、登録済みモデル、凍結済み変換。"
+  },
+  "Apply the original feature order, fitted transforms and frozen model. Browsing does not train or select a model.": {
+    "zh": "沿用原特征顺序、已拟合变换与冻结模型。浏览页面不会训练或挑选模型。",
+    "ja": "元の特徴量順序、学習済み変換、凍結モデルを適用します。閲覧時にモデルの学習や選択は行いません。"
+  },
+  "Method-specific scores, action proposals or a requested exposure level.": {
+    "zh": "由各方法定义的评分、动作提议或目标总仓位档位。",
+    "ja": "各手法が定めるスコア、行動提案、または要求エクスポージャー水準。"
+  },
+  "Portfolio & risk": {
+    "zh": "组合与风险",
+    "ja": "ポートフォリオとリスク"
+  },
+  "Respect the constraints": {
+    "zh": "让决策服从约束",
+    "ja": "制約の中で判断する"
+  },
+  "Method outputs, existing holdings, cash and the bound policy.": {
+    "zh": "方法输出、现有持仓、现金与已绑定规则。",
+    "ja": "手法の出力、既存の保有、現金、紐づけられたルール。"
+  },
+  "Translate decisions under the method's risk, turnover and cash rules; preserve exact HOLD units where required.": {
+    "zh": "按各方法原有的风险、换手与现金规则转成目标；需要时严格保留 HOLD 股数。",
+    "ja": "各手法のリスク・売買回転・現金ルールに従って目標に変換し、必要な場合は HOLD の株数をそのまま保持します。"
+  },
+  "Intended holdings and cash, distinct from executable orders.": {
+    "zh": "目标持仓与现金，和可实际执行的订单分别记录。",
+    "ja": "意図した保有と現金。実行可能な注文とは区別します。"
+  },
+  "Verify what happened": {
+    "zh": "核实实际发生了什么",
+    "ja": "何が起きたかを確認"
+  },
+  "Published targets, account observations and current quotes.": {
+    "zh": "已发布目标、账户观测与当前行情。",
+    "ja": "公開済み目標、口座の観測情報、現在の気配値。"
+  },
+  "Apply the original account, quote, sizing and authorization checks, then reconcile observed orders and fills.": {
+    "zh": "通过原账户、报价、股数与授权检查，再核对实际订单与成交。",
+    "ja": "元の口座・気配値・数量・権限の確認を適用し、観測した注文と約定を照合します。"
+  },
+  "Separate target, order, fill and valuation records.": {
+    "zh": "分别保存目标、订单、成交与估值记录。",
+    "ja": "目標、注文、約定、評価額をそれぞれ記録します。"
+  },
+  "Keep the chain explainable": {
+    "zh": "让过程可解释、可核对",
+    "ja": "経緯を説明できる状態に"
+  },
+  "Input dates, registered identities, source versions and recorded decisions.": {
+    "zh": "输入日期、已注册身份、来源版本与决策记录。",
+    "ja": "入力日付、登録済み識別情報、ソースのバージョン、判断の記録。"
+  },
+  "Retain original bindings and evidence so a displayed result can be traced back to its source and method.": {
+    "zh": "保留原绑定与证据，让展示结果能够回溯到来源与方法。",
+    "ja": "元の紐づけと根拠を保持し、表示結果をデータの出所と手法までさかのぼれるようにします。"
+  },
+  "A reviewable chain from published input to recorded outcome.": {
+    "zh": "从已发布输入到记录结果的一条可审阅链路。",
+    "ja": "公開済み入力から記録された結果まで、確認できるつながり。"
+  },
+  "Separate browsing from work": {
+    "zh": "把浏览与后台作业分开",
+    "ja": "閲覧と処理を分離する"
+  },
+  "Published records and reusable caches from the existing daily workflow.": {
+    "zh": "原日常流程发布的记录与可复用缓存。",
+    "ja": "既存の日次処理で公開された記録と再利用できるキャッシュ。"
+  },
+  "Read only the requested view; keep data acquisition, frozen inference and execution with their existing owners.": {
+    "zh": "仅按需读取当前视图；采集、冻结推断与执行仍由原模块负责。",
+    "ja": "要求された表示に必要な分だけ読み込みます。データ取得、凍結推論、執行は既存の担当モジュールが受け持ちます。"
+  },
+  "Responsive exploration without silently restarting the daily pipeline.": {
+    "zh": "流畅浏览，不在后台悄悄重启日常计算流程。",
+    "ja": "日次処理を勝手に再開せず、応答性のよい閲覧を提供します。"
+  },
+  "Five methods. A shared engineering foundation.": {
+    "zh": "五种方法，共用一套工程基础。",
+    "ja": "五つの手法を、共通の技術基盤で。"
+  },
+  "Explore how different models use the same data, risk and execution infrastructure. Choose a method to see what it produces.": {
+    "zh": "了解不同模型如何使用数据、风险与执行基础设施。选择一种方法，查看它的原理和输出。",
+    "ja": "異なるモデルがデータ・リスク・執行基盤をどう利用するかを確認します。手法を選び、仕組みと出力を見てください。"
+  },
+  "Start system walkthrough": {
+    "zh": "开始系统导览",
+    "ja": "システムガイドを開始"
+  },
+  "System walkthrough · {step} / {total}": {
+    "zh": "系统导览 · {step} / {total}",
+    "ja": "システムガイド · {step} / {total}"
+  },
+  "Engineering benefit": {
+    "zh": "工程优势",
+    "ja": "技術上の利点"
+  },
+  "Verification path": {
+    "zh": "核验入口",
+    "ja": "確認する場所"
+  },
+  "How do we keep later information out of an earlier decision?": {
+    "zh": "如何避免把事后信息混入当时的决策？",
+    "ja": "後から得た情報を過去の判断に混ぜないためには？"
+  },
+  "Availability times and dated identities separate what was knowable from what arrived later.": {
+    "zh": "按可得时间与当期身份对齐，区分当时已知的信息和后来才出现的信息。",
+    "ja": "利用可能な時刻と当時の識別情報を照合し、その時点で分かっていた情報と後から届いた情報を区別します。"
+  },
+  "Select Data & point-in-time. The vertical boundary separates available inputs from later records.": {
+    "zh": "查看“数据与时点边界”：竖直边界把当时可用的输入与后来的记录分开。",
+    "ja": "「データと時点管理」を選択。縦の境界が、その時点で使える入力と後の記録を分けます。"
+  },
+  "Can we trace a decision back to the method that produced it?": {
+    "zh": "一项决策能否回溯到产生它的原始方法？",
+    "ja": "判断を、それを生んだ元の手法までたどれるか？"
+  },
+  "Registered model and transform identities keep frozen inference tied to its original version.": {
+    "zh": "已注册模型与变换身份，把冻结推断绑定到其原始版本。",
+    "ja": "登録されたモデルと変換の識別情報により、凍結推論を元のバージョンに結びつけます。"
+  },
+  "Select Frozen inference. In application cases, inspect the preserved model principle and input contract.": {
+    "zh": "查看“冻结推断”；在应用案例中核对保留的模型原理与输入约定。",
+    "ja": "「凍結モデルによる推論」を選択。応用事例では、保持されたモデルの仕組みと入力の取り決めを確認できます。"
+  },
+  "How do model outputs become constrained holdings?": {
+    "zh": "模型输出如何变成受约束的持仓？",
+    "ja": "モデルの出力を、制約に沿った保有へどう変えるか？"
+  },
+  "Each method retains its original risk, turnover, cash and HOLD rules when forming targets.": {
+    "zh": "各方法形成目标时，继续遵守自身原有的风险、换手、现金与 HOLD 规则。",
+    "ja": "各手法は目標を作る際、元のリスク・売買回転・現金・HOLD のルールを保ちます。"
+  },
+  "Select Portfolio & risk. Compare native outputs with portfolio handling in the application cases.": {
+    "zh": "查看“组合与风险”，再到应用案例对照原生输出和组合处理方式。",
+    "ja": "「ポートフォリオとリスク」を選択し、応用事例で本来の出力と保有への変換を比較してください。"
+  },
+  "How can a result stay reviewable without rerunning everything?": {
+    "zh": "不重跑全部计算，怎样让结果仍然可核对？",
+    "ja": "すべてを再計算せずに、結果を確認できる状態にするには？"
+  },
+  "Version bindings preserve the evidence chain; published caches separate browsing from acquisition and computation.": {
+    "zh": "版本绑定保留证据链；已发布缓存把浏览与数据采集、计算作业分开。",
+    "ja": "バージョンの紐づけが根拠の連鎖を保ち、公開済みキャッシュが閲覧と取得・計算を分離します。"
+  },
+  "Explore both horizontal tracks: versioned identity, then published caches and bounded resources.": {
+    "zh": "依次查看两条横向工程轨：版本身份，以及已发布缓存与资源边界。",
+    "ja": "横方向の2本の経路を確認してください。バージョン識別、続いて公開済みキャッシュとリソース制約です。"
+  },
+  "Can one system support methods that make different decisions?": {
+    "zh": "同一个系统能否承载决策方式不同的方法？",
+    "ja": "判断の仕方が異なる手法を、一つのシステムで扱えるか？"
+  },
+  "Scores, weights, action proposals and exposure levels retain their distinct meanings within the existing workflow.": {
+    "zh": "在原工作流中，评分、权重、动作提议和总仓位档位各自保留明确含义。",
+    "ja": "既存の処理の中で、スコア、ウェイト、行動提案、エクスポージャー水準の意味を混同せずに保ちます。"
+  },
+  "Select any of the five cases. Compare what it produces, how it forms a portfolio and its model principle.": {
+    "zh": "选择五个案例之一，对照它产出什么、如何形成组合，以及模型原理。",
+    "ja": "5つの事例から選び、出力内容、ポートフォリオへの変換、モデルの仕組みを比較してください。"
+  },
+  "What evidence makes a technical claim checkable?": {
+    "zh": "哪些证据让技术主张可以被检查？",
+    "ja": "技術的な主張を確認するには、どんな根拠が必要か？"
+  },
+  "Recorded dates, costs, drawdowns and source identities make observations inspectable; replay is not fresh validation.": {
+    "zh": "记录日期、成本、回撤与来源身份，使观测能够核查；历史回放不等于新验证。",
+    "ja": "記録された日付、コスト、ドローダウン、出所の識別情報を確認できます。過去の再生は新たな検証を意味しません。"
+  },
+  "Inspect performance and risk, model records and data sources. Keep the selected date and each verification limit in view.": {
+    "zh": "查看表现与风险、模型记录和数据来源，同时留意所选日期及各项核验边界。",
+    "ja": "パフォーマンスとリスク、モデル記録、データの出所を確認し、選択日と各検証の限界を意識してください。"
+  },
+  "How do we distinguish an intention from a confirmed outcome?": {
+    "zh": "如何区分计划意图和已经确认的结果？",
+    "ja": "意図した計画と確認済みの結果を、どう区別するか？"
+  },
+  "Targets, orders and fills are separate records. Reconciliation checks execution without equating a plan with a fill.": {
+    "zh": "目标、订单和成交分别记录；对账核实执行，不能把计划当作已经成交。",
+    "ja": "目標、注文、約定は別々の記録です。照合によって執行を確認し、計画を約定と同一視しません。"
+  },
+  "Inspect plan progress, open orders and confirmed fills. The original execution controls and permissions still apply.": {
+    "zh": "查看计划进度、未完成订单与确认成交；原执行控制和授权要求继续适用。",
+    "ja": "計画の進捗、未完了注文、確認済み約定を確認してください。元の執行管理と権限要件は引き続き適用されます。"
+  },
+  "Technology & research capabilities": {
+    "zh": "技术与研发能力",
+    "ja": "技術と研究開発の機能"
+  },
+  "These source explanations cover different research stages. They do not imply every method is active or every model shares the same inputs.": {
+    "zh": "以下说明覆盖不同研发阶段，不表示每种方法都已启用，也不表示所有模型使用相同输入。",
+    "ja": "以下は異なる研究開発段階の説明です。すべての手法が稼働中、または全モデルの入力が同じという意味ではありません。"
+  },
+  "Explore a technical capability": {
+    "zh": "选择一项技术能力",
+    "ja": "技術機能を選ぶ"
+  },
+  "Mechanism & benefit": {
+    "zh": "机制与优势",
+    "ja": "仕組みと利点"
+  },
+  "System application": {
+    "zh": "系统中的应用",
+    "ja": "システム内での用途"
+  },
+  "Evidence & limits": {
+    "zh": "证据范围与限制",
+    "ja": "根拠の範囲と限界"
+  },
+  "Try the synthetic timing drill": {
+    "zh": "打开模拟信息时点练习",
+    "ja": "仮想データの時点判定を試す"
+  },
+  "Explore Raw A2 source-defined inputs": {
+    "zh": "查看 Raw A2 原始输入定义",
+    "ja": "Raw A2 の入力定義を見る"
+  },
+  "Implementation source": {
+    "zh": "实现源码",
+    "ja": "実装ソース"
+  },
+  "Feature engineering": {
+    "zh": "特征工程",
+    "ja": "特徴量設計"
+  },
+  "How are raw observations turned into defined model inputs?": {
+    "zh": "原始观测如何变成定义明确的模型输入？",
+    "ja": "元の観測を、定義されたモデル入力へどう変換するか。"
+  },
+  "The Raw A2 source defines 32 rolling price and volume inputs: momentum, trend, volatility, price position and trading activity. Explicit formulas and complete windows make their meaning inspectable.": {
+    "zh": "Raw A2 源码定义了32项价格和成交量滚动输入，涵盖动量、趋势、波动、价格位置和交易活跃度。明确公式与完整窗口要求，让每项输入的含义可核查。",
+    "ja": "Raw A2 のソースには、モメンタム、トレンド、変動、価格位置、売買活動を表す32個の価格・出来高入力があります。式と必要な期間を明示し、意味を確認できるようにしています。"
+  },
+  "Open the existing feature atlas to inspect source definitions. Other methods keep their own feature order and frozen transforms.": {
+    "zh": "打开原有特征图谱查看源码定义。其他方法仍保留各自的特征顺序和冻结变换。",
+    "ja": "既存の特徴量図鑑でソース上の定義を確認できます。他の手法は、それぞれの特徴量順序と凍結済み変換を維持します。"
+  },
+  "This atlas describes the Raw A2 input schema, not every model and not a selected stock's feature values. It does not compute feature contributions.": {
+    "zh": "该图谱说明 Raw A2 的输入结构，不代表全部模型，也不读取所选股票的特征值；这里不计算特征贡献。",
+    "ja": "この図鑑は Raw A2 の入力構造を説明します。全モデルを代表せず、選択銘柄の特徴量値や寄与度も計算しません。"
+  },
+  "Machine learning methods": {
+    "zh": "机器学习方法体系",
+    "ja": "機械学習の手法群"
+  },
+  "Which learning methods can the research system compare?": {
+    "zh": "研究系统能比较哪些学习方法？",
+    "ja": "研究システムはどの学習手法を比較できるか。"
+  },
+  "Research adapters define regularized linear models, boosted trees, ensembles, neural and sequence models, and quantile or distributional objectives. Named families and fixed capacities keep the comparison setup explicit.": {
+    "zh": "研究适配器定义了正则化线性模型、提升树、集成、神经网络与序列模型，以及分位数或分布目标。明确的方法族与固定容量，使比较设置可核查。",
+    "ja": "研究用アダプターには、正則化線形モデル、勾配ブースティング、アンサンブル、ニューラル・系列モデル、分位点・分布目的があります。手法群と容量を固定し、比較条件を明示します。"
+  },
+  "Ridge and ElasticNet, HGB, XGBoost, LightGBM, CatBoost, MLP, ResNet, FTTransformer, TCN, GRU and LSTM are examples in the source. Inspect the five application cases separately to see the accepted method and its native output.": {
+    "zh": "源码中的例子包括 Ridge、ElasticNet、HGB、XGBoost、LightGBM、CatBoost、MLP、ResNet、FTTransformer、TCN、GRU 和 LSTM。五个应用案例另行说明各自已接受的方法与原生输出。",
+    "ja": "ソース上の例には Ridge、ElasticNet、HGB、XGBoost、LightGBM、CatBoost、MLP、ResNet、FTTransformer、TCN、GRU、LSTM があります。五つの応用例では、採用された手法と固有の出力を別に確認できます。"
+  },
+  "Implemented research methods are not a deployment list. This display does not train, rank or select models, and does not claim that all these families are used by the five applications.": {
+    "zh": "已实现的研究方法不是部署清单。此处不训练、排名或选择模型，也不表示五个应用使用了所有这些方法族。",
+    "ja": "実装済みの研究手法は稼働中モデルの一覧ではありません。ここでは学習・順位付け・モデル選択を行わず、五つの応用例が全手法を使うとも主張しません。"
+  },
+  "Time-aware validation": {
+    "zh": "时间边界与验证",
+    "ja": "時間境界と検証"
+  },
+  "How are training, validation and later observations kept apart?": {
+    "zh": "如何分开训练、验证与后续观测？",
+    "ja": "学習・検証・後の観測をどう分離するか。"
+  },
+  "Temporal fold masks check signal time, label maturity and label availability against inner and outer cutoffs. Training and development content stay before 2026; frozen transforms are applied without refitting on later observations.": {
+    "zh": "时序分折同时核对信号时间、标签成熟时间和可用时间，以及内外折截止。训练与开发内容严格早于2026年；后续观测只应用冻结变换，不重新拟合。",
+    "ja": "時系列分割では信号時刻、ラベルの成熟・利用可能時刻、内側・外側の締切を確認します。学習・開発は2026年より前に限定し、その後は凍結済み変換を再学習せず適用します。"
+  },
+  "The original fold builder and frozen-input path retain their date and ownership checks. The synthetic timing drill separately illustrates publication-time availability.": {
+    "zh": "原分折构建器和冻结输入路径保留日期及归属检查。模拟时间练习则单独说明信息发布后何时可用。",
+    "ja": "元の分割処理と凍結入力経路は日付と由来の検査を維持します。仮想データの時点演習では、公表後の利用可能時刻を別に説明します。"
+  },
+  "Source boundaries are not proof of predictive skill. Exposed 2026 observations do not become a new independent holdout, and no fixed embargo length is implied here.": {
+    "zh": "源码边界不是预测能力的证明。已暴露的2026年观测不能重新当作独立留出集；这里也不暗示固定长度的隔离期。",
+    "ja": "ソース上の境界は予測力の証明ではありません。既に観測した2026年データを新たな独立留保データにはできず、固定日数のエンバーゴも意味しません。"
+  },
+  "Risk-aware allocation": {
+    "zh": "风险约束与配置",
+    "ja": "リスクを考慮した配分"
+  },
+  "How can a score become a portfolio under different risk assumptions?": {
+    "zh": "评分如何在不同风险假设下变成组合？",
+    "ja": "異なるリスク仮定の下で、スコアをどう配分へ変換するか。"
+  },
+  "The selected HGB research paths bind diagonal and factor-shrinkage risk specifications. Portfolio construction reuses the original covariance, risk penalty, trading costs and solver, with policy-specific eligibility and position bounds.": {
+    "zh": "HGB 研究路径分别绑定对角风险与因子收缩风险规格。组合构建复用原协方差、风险惩罚、交易成本和求解器，并按各自政策检查候选资格及持仓上限。",
+    "ja": "HGB の研究経路には対角リスクと因子収縮リスクの仕様があります。元の共分散、リスク罰則、売買費用、ソルバーを再利用し、方針ごとの候補条件と保有上限を確認します。"
+  },
+  "Compare the diagonal-risk application with the retained factor-shrinkage research path. Their source bindings explain the allocation mechanism without loading a model or solving a portfolio here.": {
+    "zh": "可对照对角风险应用与保留的因子收缩研究路径。源码绑定解释配置机制，这里不加载模型或求解组合。",
+    "ja": "対角リスクの応用と、保存された因子収縮の研究経路を対照できます。ソースの結び付きを説明し、ここではモデル読込や配分計算を行いません。"
+  },
+  "A retained research risk path is not evidence of deployment. This description neither changes the current account policy nor claims that one risk estimate guarantees smaller future losses.": {
+    "zh": "保留的风险研究路径不代表已部署。此说明不改变当前账户政策，也不保证某种风险估计能降低未来损失。",
+    "ja": "保存されたリスク研究経路は稼働の証拠ではありません。現在の口座方針は変更せず、特定の推定が将来損失を減らすとも保証しません。"
+  },
+  "On-demand reading and memory scope": {
+    "zh": "按需读取与内存生命周期",
+    "ja": "必要な読込とメモリの生存範囲"
+  },
+  "How can browsing and daily computation avoid unnecessary work?": {
+    "zh": "浏览和日常计算如何避免不必要的工作？",
+    "ja": "閲覧と日次計算で不要な処理をどう避けるか。"
+  },
+  "The stock-history reader projects approved columns and filters strategy, date and ticker in bounded Arrow batches. Current-input construction returns sealed references before publication, so its large temporary frames can leave scope first.": {
+    "zh": "股票历史读取器只取批准的列，并按策略、日期和股票过滤，以有界 Arrow 批次扫描。当前输入构建阶段先返回封存引用再发布，让大型临时数据帧先退出作用域。",
+    "ja": "銘柄履歴は許可列だけを選び、戦略・日付・銘柄で絞って上限付き Arrow バッチを走査します。現在入力の構築では封印された参照だけを返し、大きな一時表の生存範囲を終えてから公開します。"
+  },
+  "Published views reuse verified source bindings; the daily owner retains its original history and resource checks. Browsing does not restart data acquisition, model fitting or order execution.": {
+    "zh": "已发布视图复用经过核验的来源绑定；日更仍保留原完整历史与资源检查。浏览不会重启采集、模型拟合或订单执行。",
+    "ja": "公開ビューは確認済みの出所を再利用し、日次処理は元の全履歴と資源検査を維持します。閲覧で取得・学習・注文執行を再開しません。"
+  },
+  "These are specific source mechanisms, not a fixed peak-RAM promise or a claim that every source is streamed. Cache integrity, freshness and account permissions remain separate checks.": {
+    "zh": "这些是具体源码机制，不承诺固定内存峰值，也不表示所有来源均以流式读取。缓存完整性、时效与账户权限仍分别核验。",
+    "ja": "これは個別の実装機構であり、固定メモリ上限や全データのストリーミングを保証しません。キャッシュの整合性、鮮度、口座権限は別に確認します。"
+  },
+  "Action values compare native decisions. They are not stock-return scores or probabilities.": {
+    "zh": "动作价值用于比较原模型决策，不是股票收益评分或概率。",
+    "ja": "行動価値は元モデルの判断を比較する値です。株式リターンのスコアや確率ではありません。"
+  },
+  "CURRENT_PAPER_ACCOUNT": {
+    "zh": "当前纸面模拟账户记录",
+    "ja": "現在のペーパー口座記録"
+  },
+  "Evidence status": {
+    "zh": "证据状态",
+    "ja": "エビデンスの状態"
+  },
+  "Feature order and fitted transforms are not exposed by this reader.": {
+    "zh": "此读取器未提供特征顺序及已拟合的变换记录。",
+    "ja": "このリーダーでは特徴量の順序と学習済み変換の記録を表示できません。"
+  },
+  "Label maturity boundary": {
+    "zh": "标签成熟边界",
+    "ja": "ラベル確定の境界"
+  },
+  "No verified native output is available for this observation.": {
+    "zh": "所选观察日暂无已验证的策略原生输出。",
+    "ja": "選択した観測日の検証済みの戦略固有出力はありません。"
+  },
+  "Prediction target": {
+    "zh": "预测目标",
+    "ja": "予測対象"
+  },
+  "Previous requested gross exposure": {
+    "zh": "上次请求的总仓位",
+    "ja": "前回の要求総エクスポージャー"
+  },
+  "Previous weight": {
+    "zh": "原仓位",
+    "ja": "前回のウェイト"
+  },
+  "RECORDED_MAIN_RESEARCH": {
+    "zh": "已记录的 MAIN 研究账本",
+    "ja": "記録済みの MAIN 研究台帳"
+  },
+  "RECORDED_MODEL_OUTPUT": {
+    "zh": "已记录的模型原生输出",
+    "ja": "記録済みのモデル固有出力"
+  },
+  "Raw input ranks describe upstream inputs. Native actions and target weights remain separate outputs.": {
+    "zh": "Raw 输入排名描述上游输入；模型原生动作与目标仓位分别展示。",
+    "ja": "Raw 入力順位は上流の入力を示します。モデル固有の行動と目標ウェイトは別々に表示します。"
+  },
+  "Recorded action value": {
+    "zh": "已记录动作价值",
+    "ja": "記録済み行動価値"
+  },
+  "Recorded source": {
+    "zh": "记录来源",
+    "ja": "記録元"
+  },
+  "Requested gross exposure": {
+    "zh": "请求的总仓位",
+    "ja": "要求総エクスポージャー"
+  },
+  "Same-date recorded outputs. Each strategy keeps its own units and decision rules.": {
+    "zh": "对比同一日期的已记录输出，各策略保留自身的单位与决策规则。",
+    "ja": "同じ日付の記録済み出力を比較します。各戦略の単位と判断ルールを保ちます。"
+  },
+  "Select a bar or a security to inspect its recorded decision.": {
+    "zh": "点击柱形或选择股票，查看其已记录的决策。",
+    "ja": "棒グラフまたは銘柄を選び、記録済みの判断を確認できます。"
+  },
+  "Two recorded securities are required for comparison.": {
+    "zh": "至少需要两只已记录的股票才能对比。",
+    "ja": "比較には記録済みの銘柄が2つ以上必要です。"
+  },
+  "{count} recorded securities": {
+    "zh": "{count} 只已记录股票",
+    "ja": "記録済み {count} 銘柄"
+  },
+  "Continue from principle to evidence": {
+    "zh": "从原理走向证据",
+    "ja": "原理から記録へ"
+  },
+  "Keep the same method and observation date as you explore its recorded decisions, charts and simulated execution.": {
+    "zh": "沿用同一策略与观察日期，继续查看决策记录、数据图表与模拟执行。",
+    "ja": "同じ戦略と観測日を保ち、判断記録、データとチャート、模擬執行を確認できます。"
+  },
+  "Explore the five ML workbenches": {
+    "zh": "进入五策略机器学习工作台",
+    "ja": "5戦略の機械学習ワークベンチへ"
+  },
+  "Explore data and charts": {
+    "zh": "查询数据与图表",
+    "ja": "データとチャートを調べる"
+  },
+  "Open this ML workbench": {
+    "zh": "进入此策略机器学习工作台",
+    "ja": "この戦略の機械学習ワークベンチへ"
+  },
+  "View recorded decisions": {
+    "zh": "查看决策记录",
+    "ja": "判断記録を見る"
+  },
+  "Choose any of the five strategies in the ML workbench. Compare its model engine, native output and recorded evidence.": {
+    "zh": "在机器学习工作台中选择五套策略之一，查看它的模型引擎、原生输出与已记录证据。",
+    "ja": "機械学習ワークベンチで5戦略から選び、モデルエンジン、固有の出力、保存された証拠を確認します。"
+  },
+  "Latest recorded observation": {
+    "zh": "转到最近的已记录日期",
+    "ja": "直近の記録済み観測日へ"
+  },
+  "Which stocks should we look at first?": {
+    "zh": "先看哪些股票？",
+    "ja": "どの銘柄から検討する？"
+  },
+  "Compare eligible stocks within the original candidate pool.": {
+    "zh": "在原有候选池内，比较符合条件的股票。",
+    "ja": "元の候補集合の中で、条件を満たす銘柄を比較します。"
+  },
+  "The model's defined price and trading-volume features.": {
+    "zh": "模型规定的价格和成交量特征。",
+    "ja": "モデルで定義された価格・出来高の特徴量。"
+  },
+  "Small decision trees make successive adjustments. Their contributions combine into one score per stock.": {
+    "zh": "多棵小决策树逐步修正判断，把各自的贡献合成每只股票的分数。",
+    "ja": "小さな決定木が順に判断を補正し、その寄与を合計して銘柄ごとのスコアを作ります。"
+  },
+  "Relative stock scores and ranks.": {
+    "zh": "用于相对比较的股票分数和排序。",
+    "ja": "銘柄を相対比較するためのスコアと順位。"
+  },
+  "The original candidate and holding rules turn scores into targets. Orders and fills remain separate records.": {
+    "zh": "原有的候选、持仓规则将分数转成目标；委托和成交另行记录。",
+    "ja": "元の候補・保有ルールでスコアを目標に変換し、注文と約定は別に記録します。"
+  },
+  "How much should each selected stock receive?": {
+    "zh": "每只入选股票分配多少资金？",
+    "ja": "選ばれた銘柄にどれだけ配分する？"
+  },
+  "Turn stock scores into a portfolio that accounts for risk and trading costs.": {
+    "zh": "把股票分数转成兼顾风险和交易成本的组合。",
+    "ja": "銘柄スコアから、リスクと取引コストを考慮したポートフォリオを作ります。"
+  },
+  "HGB stock scores, each position's estimated risk, current holdings and cash.": {
+    "zh": "HGB 股票分数、各持仓的风险估计，以及当前持仓和现金。",
+    "ja": "HGB の銘柄スコア、各ポジションの推定リスク、現在の保有と現金。"
+  },
+  "An optimizer balances opportunity, position-level risk and the cost of changing holdings.": {
+    "zh": "优化器在机会、单个持仓风险和换仓成本之间寻找平衡。",
+    "ja": "最適化処理が、投資機会・各ポジションのリスク・売買による変更コストを調整します。"
+  },
+  "Target stock weights and a cash allocation.": {
+    "zh": "股票目标权重和现金比例。",
+    "ja": "銘柄の目標ウェイトと現金比率。"
+  },
+  "Eligible targets pass through the original execution checks. Confirmed fills show what was actually held.": {
+    "zh": "合格目标再经过原执行检查；确认的成交记录反映实际持有情况。",
+    "ja": "適格な目標は元の執行チェックに進み、確認済みの約定に実際の保有が記録されます。"
+  },
+  "Which action is preferable for this stock?": {
+    "zh": "对这只股票，哪种操作更合适？",
+    "ja": "この銘柄には、どの操作が適切？"
+  },
+  "Compare entry choices and choices for existing holdings.": {
+    "zh": "分别比较新候选的进入操作，以及已有持仓的处理操作。",
+    "ja": "新規候補のエントリー判断と、既存保有の対応をそれぞれ比較します。"
+  },
+  "The entry and holding models' own features, in their frozen order and scale.": {
+    "zh": "进入模型、持仓模型各自的特征，保持已冻结的顺序与尺度。",
+    "ja": "エントリー用・保有用モデルそれぞれの特徴量を、固定済みの順序と尺度で使います。"
+  },
+  "Buy/skip proposals for candidates; sell/hold/replace proposals for existing holdings.": {
+    "zh": "对新候选提出买入或跳过；对已有持仓提出卖出、保留或替换。",
+    "ja": "新規候補には買い・見送り、既存保有には売り・維持・入替えを提案します。"
+  },
+  "Original conflict, cash and position-preservation rules turn proposals into targets.": {
+    "zh": "原有的冲突处理、现金和持仓保留规则，将操作提案转成目标。",
+    "ja": "元の競合調整・現金・保有維持ルールが、操作提案を目標へ変換します。"
+  },
+  "Linear models compare the actions. L1 and L2 penalties limit coefficients during training; L1 can set some to zero.": {
+    "zh": "线性模型比较各操作。训练时用 L1、L2 约束系数，L1 可将部分系数压到零。",
+    "ja": "線形モデルが操作を比較します。学習時に L1・L2 で係数を制約し、L1 は一部をゼロにできます。"
+  },
+  "Linear models compare the actions. An L2 penalty limits large coefficients during training; the fitted model then stays fixed.": {
+    "zh": "线性模型比较各操作。训练时用 L2 约束过大的系数，拟合完成后保持模型固定。",
+    "ja": "線形モデルが操作を比較します。学習時の L2 ペナルティで大きすぎる係数を抑え、学習後のモデルを固定します。"
+  },
+  "How much should be invested in stocks now?": {
+    "zh": "这一轮，有多少资金投入股票？",
+    "ja": "今回は、どれだけ株式に投資する？"
+  },
+  "Control the portfolio's investment level after stock choices have been formed.": {
+    "zh": "在股票选择形成之后，控制整个组合的投入水平。",
+    "ja": "銘柄の選択ができた後に、ポートフォリオ全体の投資水準を調整します。"
+  },
+  "Verified model features and the previous requested investment level.": {
+    "zh": "已验证的模型特征，以及上一轮请求的投入档位。",
+    "ja": "検証済みのモデル特徴量と、前回リクエストした投資水準。"
+  },
+  "A fixed linear classifier compares five exposure classes and selects the most likely class.": {
+    "zh": "固定的线性分类器比较五个投入档位，选择其中概率最高的一档。",
+    "ja": "固定済みの線形分類器が五つの投資水準を比較し、最も確率の高い区分を選びます。"
+  },
+  "One requested investment level for the portfolio.": {
+    "zh": "对整个组合提出一个投入比例请求。",
+    "ja": "ポートフォリオ全体に対する、一つの投資水準のリクエスト。"
+  },
+  "Original portfolio rules handle targets, cash and positions whose share counts must be kept before execution is recorded.": {
+    "zh": "原组合规则再处理目标、现金和必须保留股数的持仓，随后记录执行结果。",
+    "ja": "元のポートフォリオルールが目標・現金・株数を維持すべき保有を処理し、その後に執行結果を記録します。"
+  },
+  "Histogram binning": {
+    "zh": "直方图分箱",
+    "ja": "ヒストグラム分割"
+  },
+  "Group input values into ranges so trees can search their split points.": {
+    "zh": "将输入值分成区间，供决策树寻找分割位置。",
+    "ja": "入力値を区間にまとめ、決定木の分岐点を探索します。"
+  },
+  "Loss gradient": {
+    "zh": "损失梯度",
+    "ja": "損失の勾配"
+  },
+  "A direction for the next tree to reduce the current prediction error during training.": {
+    "zh": "训练时，指引下一棵树修正当前预测误差的方向。",
+    "ja": "学習中、次の木が現在の予測誤差を減らすための方向です。"
+  },
+  "Diagonal risk": {
+    "zh": "对角风险",
+    "ja": "対角リスク"
+  },
+  "A risk estimate using each position's variance without cross-position covariance terms.": {
+    "zh": "使用各持仓的方差估计风险，不加入持仓之间的协方差项。",
+    "ja": "各ポジションの分散を使い、ポジション間の共分散項を含めないリスク推定です。"
+  },
+  "Turnover cost": {
+    "zh": "换仓成本",
+    "ja": "売買変更コスト"
+  },
+  "The modeled cost of changing the existing portfolio.": {
+    "zh": "模型中改变现有组合所需付出的成本。",
+    "ja": "既存のポートフォリオを変更するときに、モデル上で考慮するコストです。"
+  },
+  "Action-value head": {
+    "zh": "操作估值分支",
+    "ja": "操作価値の出力分岐"
+  },
+  "A model output that evaluates a particular action before the decision rules resolve it.": {
+    "zh": "模型先为某项操作估值，再由决策规则处理。",
+    "ja": "特定の操作をモデルが評価し、その後で意思決定ルールが処理する出力です。"
+  },
+  "L1 penalty": {
+    "zh": "L1 约束",
+    "ja": "L1 ペナルティ"
+  },
+  "A training penalty that can make some fitted coefficients exactly zero.": {
+    "zh": "训练时的约束，可使部分拟合系数恰好为零。",
+    "ja": "学習時の制約で、一部の係数を正確にゼロにできます。"
+  },
+  "L2 penalty": {
+    "zh": "L2 约束",
+    "ja": "L2 ペナルティ"
+  },
+  "A training penalty on squared coefficients that discourages excessively large weights.": {
+    "zh": "对系数平方施加训练约束，抑制过大的权重。",
+    "ja": "係数の二乗に学習時のペナルティを与え、過大な重みを抑えます。"
+  },
+  "Linear classifier": {
+    "zh": "线性分类器",
+    "ja": "線形分類器"
+  },
+  "Combine weighted inputs to compare the available classes.": {
+    "zh": "将输入加权组合，比较可选类别。",
+    "ja": "入力を重み付けして組み合わせ、選択可能な区分を比較します。"
+  },
+  "The stock-investment level proposed by the model, before portfolio handling.": {
+    "zh": "模型提出的股票投入水平，随后仍需经过组合处理。",
+    "ja": "ポートフォリオ処理に入る前に、モデルが提案する株式への投資水準です。"
+  },
+  "Exact HOLD units": {
+    "zh": "保留确切股数",
+    "ja": "HOLD の厳密な株数維持"
+  },
+  "Shares that the original decision rules require to remain unchanged.": {
+    "zh": "原决策规则要求保持不变的股数。",
+    "ja": "元の意思決定ルールが、変更せず維持するよう求める株数です。"
+  },
+  "Question": {
+    "zh": "要解决的问题",
+    "ja": "解決する問い"
+  },
+  "Inputs": {
+    "zh": "输入",
+    "ja": "入力"
+  },
+  "Model mechanism": {
+    "zh": "模型机制",
+    "ja": "モデルの仕組み"
+  },
+  "Portfolio & records": {
+    "zh": "组合与记录",
+    "ja": "ポートフォリオと記録"
+  },
+  "Method illustration": {
+    "zh": "方法原理示意",
+    "ja": "手法の仕組みの図解"
+  },
+  "Choose a step, or follow the flow": {
+    "zh": "选择一个步骤，或顺着流程看",
+    "ja": "ステップを選ぶか、流れを順にたどる"
+  },
+  "Follow the flow": {
+    "zh": "顺着流程看",
+    "ja": "流れをたどる"
+  },
+  "Start again": {
+    "zh": "从头再看",
+    "ja": "最初から見る"
+  },
+  "Step {number} of {total}": {
+    "zh": "第 {number} 步，共 {total} 步",
+    "ja": "ステップ {number} / {total}"
+  },
+  "Technical detail & terminology": {
+    "zh": "技术细节与术语解释",
+    "ja": "技術の詳細と用語"
+  },
+  "How the model works": {
+    "zh": "模型如何工作",
+    "ja": "モデルの動き方"
+  },
+  "Native output contract": {
+    "zh": "原生输出约定",
+    "ja": "モデル本来の出力の定義"
+  },
+  "Input contract": {
+    "zh": "输入约定",
+    "ja": "入力の定義"
+  },
+  "Terms in plain language": {
+    "zh": "把术语讲清楚",
+    "ja": "用語を平易に説明"
+  },
+  "Training & evidence boundary": {
+    "zh": "训练与证据边界",
+    "ja": "学習とエビデンスの範囲"
+  },
+  "Illustrative flow only. No stock scores, account data or portfolio calculations.": {
+    "zh": "仅展示原理流程，不含股票分数、账户数据或组合计算。",
+    "ja": "仕組みの流れのみの図解です。銘柄スコア・口座データ・ポートフォリオ計算は含みません。"
+  },
+  "Should this candidate enter the buy branch?": {
+    "zh": "这个候选是否进入买入分支？",
+    "ja": "この候補を買い分岐に進める？"
+  },
+  "Use a frozen neural model to assess the original buy decision.": {
+    "zh": "使用已冻结的神经网络，评估原有买入决策。",
+    "ja": "固定済みのニューラルモデルで、元の買い判断を評価します。"
+  },
+  "Forty original features plus forty flags showing which inputs were missing.": {
+    "zh": "40 个原始特征，加上 40 个对应的缺失标志。",
+    "ja": "元の40特徴量と、各入力の欠損を示す40個のフラグ。"
+  },
+  "The encoded inputs pass through fixed learned weights to produce a buy-branch assessment.": {
+    "zh": "编码后的输入经过已固定的学习权重，得到买入分支的评估。",
+    "ja": "符号化された入力を固定済みの学習重みに通し、買い分岐の評価を得ます。"
+  },
+  "The original buy-branch output.": {
+    "zh": "原有买入分支的输出。",
+    "ja": "元の買い分岐の出力。"
+  },
+  "The original decision and portfolio rules process the buy output; the duration branch keeps its own role.": {
+    "zh": "原决策与组合规则处理买入输出；持有时长分支保留自己的职责。",
+    "ja": "元の意思決定・ポートフォリオルールが買い出力を処理し、保有期間の分岐は独自の役割を保ちます。"
+  },
+  "Frozen neural buy-branch model.": {
+    "zh": "冻结的神经网络买入分支模型。",
+    "ja": "固定済みニューラル買い分岐モデル。"
+  },
+  "Buy-branch decisions under the original decoder.": {
+    "zh": "由原解码规则处理的买入分支决策。",
+    "ja": "元のデコード規則で処理する買い分岐の判断。"
+  },
+  "Only the buy branch is supplied by this model; original portfolio handling remains authoritative.": {
+    "zh": "该模型只提供买入分支输出，组合处理仍由原规则负责。",
+    "ja": "このモデルは買い分岐のみを担い、ポートフォリオ処理は元のルールに従います。"
+  },
+  "The frozen input has 80 dimensions: 40 original features and their 40 missingness flags.": {
+    "zh": "冻结输入共 80 维：40 个原始特征与对应的 40 个缺失标志。",
+    "ja": "固定入力は80次元で、元の40特徴量と対応する40個の欠損フラグからなります。"
+  },
+  "The frozen neural buy model maps the 80-dimensional encoded input through its learned weights. Only its original buy branch is used; layer counts, activation functions and capacities must come from the registered model evidence.": {
+    "zh": "冻结的神经网络买入模型通过学习权重处理 80 维编码输入，只用于原买入分支；层数、激活函数和容量应以已登记模型证据为准。",
+    "ja": "固定済みニューラル買いモデルは、80次元の符号化入力を学習重みで処理し、元の買い分岐にのみ適用します。層数・活性化関数・容量は登録済みモデルの証拠に従います。"
+  },
+  "Missingness flag": {
+    "zh": "缺失标志",
+    "ja": "欠損フラグ"
+  },
+  "An extra input records whether the corresponding original feature was missing.": {
+    "zh": "额外输入记录对应原特征是否缺失。",
+    "ja": "対応する元特徴量が欠損していたかを追加の入力として示します。"
+  },
+  "Learned weights": {
+    "zh": "学习权重",
+    "ja": "学習重み"
+  },
+  "Parameters determined during training and kept fixed for the published model.": {
+    "zh": "训练阶段确定、在已发布模型中保持固定的参数。",
+    "ja": "学習時に決定し、公開済みモデルでは固定して使うパラメータです。"
+  },
+  "How should this holding-duration decision be handled?": {
+    "zh": "这项持有时长决策该如何处理？",
+    "ja": "この保有期間の判断をどう扱う？"
+  },
+  "Use a frozen tree model in the original duration branch.": {
+    "zh": "在原持有时长分支中，使用已冻结的树模型。",
+    "ja": "元の保有期間の分岐で、固定済みの木モデルを使います。"
+  },
+  "Tree conditions divide the input states. Their recorded output passes to the original duration rules.": {
+    "zh": "树的判断条件区分不同输入状态，输出再交给原持有时长规则。",
+    "ja": "木の分岐条件で入力状態を分け、その出力を元の保有期間ルールに渡します。"
+  },
+  "The original duration-branch output.": {
+    "zh": "原有持有时长分支的输出。",
+    "ja": "元の保有期間分岐の出力。"
+  },
+  "The original holding and execution rules apply. The supplied age is a proxy, not the account position's actual days held.": {
+    "zh": "原有持仓与执行规则继续生效。输入中的年龄为代理值，并非账户持仓的实际持有天数。",
+    "ja": "元の保有・執行ルールを使います。入力の年齢は代理値であり、口座ポジションの実際の保有日数ではありません。"
+  },
+  "Frozen tree duration-branch model.": {
+    "zh": "冻结的树模型持有时长分支。",
+    "ja": "固定済み木モデルの保有期間分岐。"
+  },
+  "Duration decisions under the original duration decoder.": {
+    "zh": "由原持有时长解码规则处理的时长决策。",
+    "ja": "元の保有期間デコード規則で処理する期間の判断。"
+  },
+  "The tree supplies the duration role; original account and portfolio rules retain control.": {
+    "zh": "树模型负责持有时长角色，账户和组合规则仍由原实现控制。",
+    "ja": "木モデルは保有期間の役割を担い、口座・ポートフォリオの制御は元の実装に残ります。"
+  },
+  "The frozen tree model uses the original 40 features and their missingness flags as an 80-dimensional input. Tree conditions route the state to the original duration output. Its age input is a proxy; it must not be relabeled as actual account holding days.": {
+    "zh": "冻结树模型使用原 40 个特征及其缺失标志，组成 80 维输入。树的条件分支将状态映射到原时长输出。年龄输入为代理值，不能改标为账户实际持有天数。",
+    "ja": "固定済み木モデルは、元の40特徴量とその欠損フラグからなる80次元入力を使います。木の条件分岐で状態を元の期間出力へ対応付けます。年齢入力は代理値であり、実際の口座保有日数と表示してはいけません。"
+  },
+  "Proxy age": {
+    "zh": "代理年龄",
+    "ja": "代理の年齢"
+  },
+  "The age supplied by the original model owner, rather than observed account holding days.": {
+    "zh": "原模型实现提供的年龄值，而非账户观测到的持有天数。",
+    "ja": "元のモデル実装から与えられる年齢であり、口座で観測した実際の保有日数ではありません。"
+  },
+  "Which stocks stand out within Consensus Top100?": {
+    "zh": "Consensus Top100 中，先看哪些股票？",
+    "ja": "Consensus Top100では、どの銘柄から見る？"
+  },
+  "Apply the same frozen Raw scorer inside a different, explicitly defined candidate pool.": {
+    "zh": "在另一个明确界定的候选池中，应用同一冻结 RAW 评分器。",
+    "ja": "明示された別の候補集合に、同じ固定済みRAWスコアラーを適用します。"
+  },
+  "The original Raw features for the Consensus Top100 candidate pool.": {
+    "zh": "Consensus Top100 候选池内的原 RAW 特征。",
+    "ja": "Consensus Top100候補集合に属する銘柄の、元のRAW特徴量。"
+  },
+  "Consensus Top100 orders securities by institution count, then summed institution portfolio weights, then CUSIP. Its pool differs from Raw A2; the frozen scorer is unchanged.": {
+    "zh": "Consensus Top100 依次按机构数量、各机构组合权重之和、CUSIP 排序。它与 Raw A2 的候选池不同，冻结评分器保持不变。",
+    "ja": "Consensus Top100は、機関数、機関ポートフォリオ内ウェイトの合計、CUSIPの順に銘柄を並べます。候補集合はRaw A2と異なり、固定スコアラーは変更しません。"
+  },
+  "The original candidate pool defines which stocks are being compared.": {
+    "zh": "比较对象由原候选池决定。",
+    "ja": "比較する銘柄は元の候補集合で決まります。"
+  },
+  "A stock score alone does not explain each feature's contribution.": {
+    "zh": "单个股票分数不能单独解释各特征的贡献。",
+    "ja": "銘柄スコアだけでは、各特徴量の寄与は分かりません。"
+  },
+  "Did this change come from the inputs, pool membership or a model version?": {
+    "zh": "这次变化来自输入、候选池成员变化，还是模型版本？",
+    "ja": "今回の変化は入力・候補集合・モデル版のどれに由来する？"
+  },
+  "Are ranks being compared within the same eligible pool and observation date?": {
+    "zh": "是否在同一合格候选池、同一观察日内比较排名？",
+    "ja": "同じ適格候補集合・同じ観測日の中で順位を比較している？"
+  },
+  "The diagonal risk term uses position-level variances.": {
+    "zh": "对角风险项使用单个持仓的方差。",
+    "ja": "対角リスク項は各ポジションの分散を使います。"
+  },
+  "Cross-position covariance is not represented by the diagonal risk term.": {
+    "zh": "对角风险项不表达持仓之间的协方差。",
+    "ja": "対角リスク項ではポジション間の共分散を表しません。"
+  },
+  "How much of this weight change comes from the score, estimated risk or turnover cost?": {
+    "zh": "本次权重变化分别有多少来自分数、风险估计或换仓成本？",
+    "ja": "今回のウェイト変更は、スコア・推定リスク・売買変更コストのどれに由来する？"
+  },
+  "Could shared stock exposures matter beyond the position-level risk term?": {
+    "zh": "单个持仓风险之外，共同风险暴露是否值得进一步核验？",
+    "ja": "各ポジションのリスク以外に、共通のエクスポージャーを確認する必要はある？"
+  },
+  "Entry and incumbent heads keep their own action meanings.": {
+    "zh": "进入分支和已有持仓分支各自保留原操作含义。",
+    "ja": "エントリー分岐と既存保有分岐には、それぞれ固有の操作の意味があります。"
+  },
+  "Sparse coefficients do not establish that selected inputs are causal.": {
+    "zh": "系数稀疏不能证明入选输入具有因果作用。",
+    "ja": "係数が疎であることは、採用入力の因果性を証明しません。"
+  },
+  "Which action head produced this proposal?": {
+    "zh": "这项提案来自哪个操作分支？",
+    "ja": "この提案はどの操作分岐が出した？"
+  },
+  "Which coefficients were zero after fitting, and is that evidence exposed here?": {
+    "zh": "拟合后哪些系数为零？这里是否公开了相应证据？",
+    "ja": "学習後にどの係数がゼロになり、その証拠はここで公開されている？"
+  },
+  "The frozen feature order and scales are part of the model contract.": {
+    "zh": "冻结的特征顺序和尺度属于模型约定的一部分。",
+    "ja": "固定済みの特徴量順序と尺度は、モデルの定義の一部です。"
+  },
+  "L2 shrinkage alone does not perform L1-style feature selection.": {
+    "zh": "单独使用 L2 收缩，不等于 L1 式特征选择。",
+    "ja": "L2による縮小だけでは、L1型の特徴量選択は行いません。"
+  },
+  "Which action alternatives are compared under the original decision rules?": {
+    "zh": "原决策规则下，比较的是哪些可选操作？",
+    "ja": "元の意思決定ルールでは、どの操作候補を比較している？"
+  },
+  "Are we reading an action value or mistakenly treating it as a stock-return score?": {
+    "zh": "读到的是操作估值，还是把它误当成股票收益分数？",
+    "ja": "操作価値を見ているか、それとも銘柄リターンのスコアと取り違えていないか？"
+  },
+  "The previous requested investment level is itself a model input.": {
+    "zh": "上一轮请求的投入水平本身也是模型输入。",
+    "ja": "前回リクエストした投資水準も、モデルへの入力です。"
+  },
+  "Requested exposure and final holdings can differ after exact HOLD rules.": {
+    "zh": "确切股数保留规则生效后，请求投入水平与最终持仓可能不同。",
+    "ja": "HOLDの厳密な株数維持ルールにより、要求投資水準と最終保有が異なることがあります。"
+  },
+  "Did the new inputs or the previous request drive the class change?": {
+    "zh": "本次档位变化主要来自新输入，还是上一轮请求？",
+    "ja": "今回の区分変更は、新しい入力と前回の要求のどちらによるもの？"
+  },
+  "How did the original portfolio rules translate this request into eligible targets?": {
+    "zh": "原组合规则怎样把这项请求转成合格目标？",
+    "ja": "元のポートフォリオルールは、この要求を適格な目標へどう変換した？"
+  },
+  "This model supplies the buy branch, not every holding decision.": {
+    "zh": "该模型提供买入分支，并不包办全部持仓决策。",
+    "ja": "このモデルが担うのは買い分岐であり、保有判断全体ではありません。"
+  },
+  "A missingness flag shows missing input state, not the missing value itself.": {
+    "zh": "缺失标志表达输入的缺失状态，不等于补回了缺失数值。",
+    "ja": "欠損フラグは欠損状態を示すもので、欠損値そのものを復元しません。"
+  },
+  "Which missingness patterns are present in the buy-branch inputs?": {
+    "zh": "买入分支的输入中，出现了哪些缺失模式？",
+    "ja": "買い分岐の入力には、どのような欠損パターンがある？"
+  },
+  "What happens to a buy proposal under the unchanged portfolio rules?": {
+    "zh": "买入提案经过保持不变的组合规则后，会如何处理？",
+    "ja": "買い提案は、変更されていないポートフォリオルールでどう扱われる？"
+  },
+  "The supplied age is the original owner's proxy age.": {
+    "zh": "输入年龄采用原实现的代理年龄。",
+    "ja": "入力の年齢には、元の実装の代理年齢を使います。"
+  },
+  "Proxy age must not be interpreted as actual account holding days.": {
+    "zh": "不能把代理年龄解读成账户实际持有天数。",
+    "ja": "代理年齢を、実際の口座保有日数と解釈してはいけません。"
+  },
+  "Which tree condition changed the duration branch?": {
+    "zh": "哪项树条件改变了持有时长分支？",
+    "ja": "どの木の分岐条件が、保有期間の判断を変えた？"
+  },
+  "Does the proxy-age meaning match the holding state being discussed?": {
+    "zh": "当前讨论的持仓状态，与代理年龄的含义是否一致？",
+    "ja": "議論している保有状態は、代理年齢の意味と一致している？"
+  },
+  "Candidate selection happens before the unchanged Raw scorer is applied.": {
+    "zh": "先确定候选集合，再应用保持不变的 RAW 评分器。",
+    "ja": "変更していないRAWスコアラーを適用する前に、候補集合を決めます。"
+  },
+  "Different candidate pools can change ranks without changing the scorer.": {
+    "zh": "即使评分器不变，不同候选池也可能改变排名。",
+    "ja": "スコアラーが同じでも、候補集合の違いで順位は変わり得ます。"
+  },
+  "Is the difference driven by pool membership or by the stock features?": {
+    "zh": "差异来自候选池成员，还是股票特征？",
+    "ja": "差は候補集合への所属と銘柄特徴量のどちらに由来する？"
+  },
+  "Are institution counts, weights and CUSIP identities bound to the intended snapshot?": {
+    "zh": "机构数、权重和 CUSIP 身份是否绑定到预期的快照？",
+    "ja": "機関数・ウェイト・CUSIPの識別は、意図したスナップショットに紐付いている？"
+  },
+  "Buy decisions": {
+    "zh": "买入决策",
+    "ja": "買い判断"
+  },
+  "Holding-duration decisions": {
+    "zh": "持有时长决策",
+    "ja": "保有期間の判断"
+  },
+  "Research questions to keep in mind": {
+    "zh": "研究时想一想",
+    "ja": "研究で考えておく問い"
+  },
+  "Working assumptions": {
+    "zh": "使用前提",
+    "ja": "前提となる条件"
+  },
+  "What this method leaves out": {
+    "zh": "这种方法没有表达什么",
+    "ja": "この手法が表していないこと"
+  },
+  "Questions to verify": {
+    "zh": "待核验的问题",
+    "ja": "確認すべき問い"
+  },
+  "Query other methods": {
+    "zh": "查询其他方法",
+    "ja": "ほかの手法を調べる"
+  },
+  "Choose another method to inspect": {
+    "zh": "选择其他方法查看",
+    "ja": "別の手法を選んで確認"
+  },
+  "Viewing another method. The five-method showcase stays unchanged.": {
+    "zh": "正在查看其他方法，五套展示名单保持不变。",
+    "ja": "ほかの手法を表示中です。展示する五つの手法は変更しません。"
+  },
+  "Same-pool RAW · Consensus Top100": {
+    "zh": "同池 RAW · Consensus Top100",
+    "ja": "同一候補集合 RAW · Consensus Top100"
+  },
+  "R6 Buy NEURAL": {
+    "zh": "R6 买入 · 神经网络",
+    "ja": "R6 買い · ニューラル"
+  },
+  "R6 Duration TREE": {
+    "zh": "R6 持有时长 · 树模型",
+    "ja": "R6 保有期間 · 木モデル"
+  },
+  "The fixed neural model estimates whether buying is preferable. The original decoder chooses buy, skip or the reference rule.": {
+    "zh": "固定神经网络估计买入是否更优，再由原解码器选择买入、跳过或交给参考规则。",
+    "ja": "固定済みニューラルモデルが買いの優位性を推定し、元のデコーダーが買い・見送り・参照ルールへの引渡しを選びます。"
+  },
+  "BUY or SKIP; exact ties and unknown values use REFERENCE.": {
+    "zh": "BUY 或 SKIP；恰好相等或数值未知时使用 REFERENCE。",
+    "ja": "BUY または SKIP。同値・不明の場合は REFERENCE を使います。"
+  },
+  "The frozen 80-dimensional neural buy branch supplies p_superior. The original fixed decoder uses BUY above 0.5 and SKIP below 0.5; an exact tie or unknown value uses REFERENCE. This illustration does not change that threshold or the fitted model.": {
+    "zh": "冻结的 80 维神经网络买入分支提供 p_superior。原固定解码器在大于 0.5 时选择 BUY，小于 0.5 时选择 SKIP；恰好相等或未知时使用 REFERENCE。此示意不改变阈值或已拟合模型。",
+    "ja": "固定済み80次元ニューラル買い分岐は p_superior を出力します。元の固定デコーダーは0.5超で BUY、0.5未満で SKIP、同値・不明なら REFERENCE を使います。この図解は閾値や学習済みモデルを変更しません。"
+  },
+  "At this observation point, should the duration rule request an exit?": {
+    "zh": "到了这个观察点，持有时长规则是否请求退出？",
+    "ja": "この観測点で、保有期間ルールは退出を求める？"
+  },
+  "The 80-dimensional feature encoding and the original fixed proxy-age observation points.": {
+    "zh": "80 维特征编码，以及原定义的固定代理年龄观察点。",
+    "ja": "80次元の特徴量符号化と、元の固定された代理年齢の観測点。"
+  },
+  "The tree estimates the originally defined failure probability. At fixed proxy-age points, the original decoder decides whether to request an exit.": {
+    "zh": "树模型估计原定义的失效概率；原解码器在固定代理年龄观察点判断是否请求退出。",
+    "ja": "木モデルが元の定義に基づく失効確率を推定し、元のデコーダーが固定の代理年齢観測点で退出要求を判断します。"
+  },
+  "An exit proposal, or a return to the original reference rule.": {
+    "zh": "提出退出，或交回原参考规则处理。",
+    "ja": "退出を提案するか、元の参照ルールに処理を戻します。"
+  },
+  "SELL at qualified probes when p_failure exceeds 0.5; otherwise REFERENCE.": {
+    "zh": "在合格观察点，p_failure 大于 0.5 时为 SELL；否则为 REFERENCE。",
+    "ja": "適格な観測点で p_failure が0.5を超える場合は SELL、それ以外は REFERENCE です。"
+  },
+  "The frozen tree duration branch uses the 80-dimensional encoding and p_failure. The original decoder participates only at proxy ages 0, 7 and 14: p_failure above 0.5 requests SELL; other values, unknown values and non-probe ages use REFERENCE. This controls the original exit role, not a prediction of the number of days to hold.": {
+    "zh": "冻结树模型时长分支使用 80 维编码和 p_failure。原解码器仅在代理年龄 0、7、14 的观察点参与：p_failure 大于 0.5 时请求 SELL；其他数值、未知值或非观察点年龄使用 REFERENCE。这控制原有退出角色，并非直接预测应持有多少天。",
+    "ja": "固定済み木モデルの期間分岐は80次元符号化と p_failure を使います。元のデコーダーが参加するのは代理年齢0・7・14の観測点のみです。p_failure が0.5超なら SELL、それ以外の値・不明値・観測点以外では REFERENCE を使います。元の退出の役割を制御するもので、保有日数そのものの予測ではありません。"
+  },
+  "Reference rule": {
+    "zh": "参考规则",
+    "ja": "参照ルール"
+  },
+  "Return this branch to the unchanged original reference decision.": {
+    "zh": "将本分支交回保持不变的原参考决策处理。",
+    "ja": "この分岐の処理を、変更されていない元の参照判断へ戻します。"
+  },
+  "How would a mismatch between proxy age and actual holding age affect this interpretation?": {
+    "zh": "代理年龄与实际持仓年龄的差异，会怎样影响这里的解释？",
+    "ja": "代理年齢と実際の保有期間の違いは、この解釈にどう影響する？"
+  },
+  "The accepted showcase roster is unavailable. You can still inspect a method; browsing does not change the roster.": {
+    "zh": "已接受的展示名单暂不可用。仍可查询单个方法，浏览不会改变展示名单。",
+    "ja": "承認済みの展示一覧を利用できません。個別の手法は確認でき、閲覧で展示一覧は変更されません。"
+  },
+  "同池 RAW · Consensus Top100": {
+    "zh": "同池 RAW · Consensus Top100",
+    "ja": "同一候補集合 RAW · Consensus Top100"
+  },
+  "Recorded buy-superiority probability": {
+    "zh": "已记录的买入更优概率",
+    "ja": "記録された買い優位の確率"
+  },
+  "Recorded failure probability": {
+    "zh": "已记录的失效概率",
+    "ja": "記録された失効確率"
+  },
+  "Recorded probabilities follow the frozen action decoder; they do not rank stock returns.": {
+    "zh": "已记录的概率按冻结操作解码器处理，不用于给股票收益排名。",
+    "ja": "記録された確率は固定済み操作デコーダーに従い、銘柄リターンの順位付けには使いません。"
+  },
+  "The available MAIN records expose actions and targets; stock ranks and scores were not recorded.": {
+    "zh": "可用的 MAIN 记录提供操作和目标，原记录未保存股票排名或分数。",
+    "ja": "利用可能なMAIN記録には操作と目標があり、銘柄順位・スコアは記録されていません。"
+  },
+  "The original Raw scorer is unchanged. This MAIN reader exposes recorded actions and targets, without reconstructing missing ranks or scores.": {
+    "zh": "原 RAW 评分器保持不变。此 MAIN 读取器只展示已记录的操作和目标，不重构缺失的排名或分数。",
+    "ja": "元のRAWスコアラーは変更しません。このMAINリーダーは記録済みの操作と目標を表示し、未記録の順位やスコアを再構成しません。"
+  },
+  "At the observation point, should we exit this holding?": {
+    "zh": "到了观察点，是否该退出持仓？",
+    "ja": "観測点で、この保有銘柄を手仕舞うべき？"
+  },
+  "Split the question of continuing to hold into exit decisions at the original fixed observation points.": {
+    "zh": "把“是否继续持有”拆成原固定观察点上的退出判断。",
+    "ja": "「保有を続けるか」を、元の固定観測点での手仕舞い判断として扱います。"
+  },
+  "Should we buy or skip this candidate?": {
+    "zh": "这个候选，买入还是跳过？",
+    "ja": "この候補を買う、それとも見送る？"
+  },
+  "After candidates have been formed, decide whether to open a new position or skip it.": {
+    "zh": "在候选已形成之后，为新仓位决定买入还是跳过。",
+    "ja": "候補集合ができた後、新規ポジションを建てるか見送るかを判断します。"
+  },
+  "Inspect frozen records through {date}": {
+    "zh": "查看截至 {date} 的冻结记录",
+    "ja": "{date} までの凍結記録を確認"
+  },
+  "{count} plotted / {total} recorded securities": {
+    "zh": "已绘制 {count} / 已记录 {total} 只",
+    "ja": "図示 {count} / 記録 {total} 銘柄"
+  },
+  "Only recorded values are plotted; missing values are not treated as zero.": {
+    "zh": "只绘制已记录的数值；缺失值不会按零处理。",
+    "ja": "記録された値だけを図示し、欠損値をゼロとして扱いません。"
   }
 }

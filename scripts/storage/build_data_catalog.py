@@ -126,7 +126,7 @@ def combine_candidates(candidates, adjustment):
         if set(candidate.provider_code)!=set(result.provider_code):
             issues.append({'path':path,'reason':'PROVIDER_MAPPING_CONFLICT_REQUIRES_ALIAS_EVIDENCE'})
             continue
-        left=result.set_index('date'); right=candidate.set_index('date')
+        left=result.loc[:,['date','open','high','low','close']].set_index('date'); right=candidate.set_index('date')
         overlap=left.index.intersection(right.index)
         conflicts=0
         if len(overlap):
@@ -186,20 +186,73 @@ def register_file(conn, dataset, ticker, adjustment, path, row_count, min_date, 
     conn.execute('INSERT OR REPLACE INTO data_files VALUES ('+','.join(['?']*len(values))+')',values)
 
 
+def _selected_price_latest_date(parquet):
+    """Check the original selected dates without decoding unrelated OHLCV.
+
+    Published prices have string dates and Parquet statistics. Older files
+    without usable statistics keep the same check via bounded date-only reads.
+    """
+    from pyarrow import compute as pc
+
+    date_index = parquet.schema_arrow.get_field_index('date')
+    if date_index < 0:
+        raise ValueError('selected price file has no date column')
+    maxima = []
+    use_statistics = str(parquet.schema_arrow.field(date_index).type) in {'string', 'large_string'}
+    if use_statistics:
+        for index in range(parquet.metadata.num_row_groups):
+            statistics = parquet.metadata.row_group(index).column(date_index).statistics
+            if statistics is not None and statistics.num_values == 0:
+                continue
+            if statistics is None or not statistics.has_min_max or not isinstance(statistics.max, str):
+                use_statistics = False
+                break
+            maxima.append(statistics.max)
+    if not use_statistics:
+        maxima = []
+        for batch in parquet.iter_batches(columns=['date'], batch_size=65536):
+            maximum = pc.max(batch.column(0)).as_py()
+            if maximum is not None:
+                if not isinstance(maximum, str):
+                    raise ValueError('selected price dates must use the normalized string schema')
+                maxima.append(maximum)
+    if not maxima:
+        raise ValueError('selected price file has no valid dates')
+    return max(maxima)
+
+
+def _catalog_price_inventory(conn):
+    """Return the complete current inventory using only the existing index."""
+    return [
+        {'ticker':ticker, 'adjustment':a, 'rows':rows, 'min_date':first,
+         'max_date':last, 'path':path, 'issues':len(json.loads(lineage or '{}').get('issues', []))}
+        for ticker,a,rows,first,last,path,lineage in conn.execute(
+            "SELECT ticker,adjustment,row_count,min_date,max_date,path,lineage_json "
+            "FROM data_files WHERE dataset='prices_daily' AND is_current=1 ORDER BY ticker,adjustment")
+    ]
+
+
 def materialize_market(paths, conn, cutoff, extra_root=None, source_paths=None, updates_only=False):
     candidates={}; deferred={}; errors=[]; quarantined=[]; inventory=[]; seen=set()
+    selected={}; declared_tickers={}; seen_tickers={}
     for ticker,a,path,expected in conn.execute(
         "SELECT ticker,adjustment,path,source_sha256 FROM data_files WHERE dataset='prices_daily' AND is_current=1"
     ).fetchall():
         p=Path(path)
         if not p.is_file() or sha256(p)!=expected:
             raise ValueError(f'Prior selected data is missing or changed; preserve and repair before rebuild: {p}')
-        frame=pq.ParquetFile(p).read().to_pandas()
+        selected[(ticker,a)]=(p,expected)
+        parquet=pq.ParquetFile(p)
+        if updates_only:
+            if _selected_price_latest_date(parquet)>cutoff:
+                raise ValueError('Rebuild cutoff would truncate the existing selected history')
+            continue
+        frame=parquet.read().to_pandas()
         if frame.date.max()>cutoff:
             raise ValueError('Rebuild cutoff would truncate the existing selected history')
         # Retain original source_id values so a no-op rebuild stays byte-stable.
         candidates[(ticker,a)]=(0,frame,[str(p)],[])
-    if updates_only and not candidates:raise ValueError('updates-only requires an existing populated price catalog')
+    if updates_only and not selected:raise ValueError('updates-only requires an existing populated price catalog')
     items=[] if updates_only else discover_market(source_paths or paths)
     if extra_root:
         for manifest in Path(extra_root).glob('intervals/*.json'):
@@ -208,20 +261,37 @@ def materialize_market(paths, conn, cutoff, extra_root=None, source_paths=None, 
             p=Path(record.get('path',''))
             if a in {'raw','qfq'} and p.is_file() and sha256(p)==record.get('sha256'):
                 items.append((p,a,100))
+                if updates_only:
+                    declared_tickers[(str(p),a,100)]=record.get('item',{}).get('ticker')
     for index,(p,a,pri) in enumerate(items):
         try:
             digest=sha256(p)
             if (digest,a) in seen:
+                if updates_only and declared_tickers.get((str(p),a,pri))!=seen_tickers.get((digest,a)):
+                    raise ValueError('incoming interval ticker does not match its declared identity')
                 conn.execute('INSERT OR REPLACE INTO source_files VALUES (?,?,?,?,?)',
                              (str(p),digest,p.stat().st_size,'EXACT_DUPLICATE_PRESERVED',''))
                 continue
-            seen.add((digest,a))
+            if not updates_only:
+                seen.add((digest,a))
             frame=pd.read_csv(p) if p.suffix=='.csv' else pq.ParquetFile(p).read().to_pandas()
             source_quarantine=[]
             norm=normalize(frame,a,digest,cutoff,source_quarantine)
+            if updates_only:
+                declared=declared_tickers.get((str(p),a,pri))
+                if not isinstance(declared,str) or norm.empty or not norm.ticker.eq(declared).all():
+                    raise ValueError('incoming interval ticker does not match its declared identity')
+                seen_tickers[(digest,a)]=declared
+                seen.add((digest,a))
             quarantined.extend({'path':str(p),**row} for row in source_quarantine)
             for ticker,group in norm.groupby('ticker',sort=False):
                 key=(ticker,a)
+                if updates_only and key not in candidates and key in selected:
+                    prior,expected=selected[key]
+                    if sha256(prior)!=expected:
+                        raise ValueError(f'Prior selected data is missing or changed; preserve and repair before rebuild: {prior}')
+                    previous=pq.ParquetFile(prior).read().to_pandas()
+                    candidates[key]=(0,previous,[str(prior)],[])
                 if key not in candidates:
                     candidates[key]=(pri,group.copy(),[str(p)],[])
                 else:
@@ -280,7 +350,10 @@ def materialize_market(paths, conn, cutoff, extra_root=None, source_paths=None, 
         inventory.append({'ticker':ticker,'adjustment':a,'rows':len(frame),'min_date':frame.date.min(),
                           'max_date':frame.date.max(),'path':str(final),'issues':len(issues)})
         if index%250==0: print(f'normalized {index}/{len(candidates)}',flush=True)
-    return {'source_files':len(items),'rejected_sources':errors,'quarantined_rows':quarantined,'price_files':inventory}
+    if updates_only:
+        inventory=_catalog_price_inventory(conn)
+    return {'source_files':len(items),'rejected_sources':errors,'quarantined_rows':quarantined,'price_files':inventory,
+            'materialized_price_files':len(candidates),'retained_price_files':len(inventory)-len(candidates)}
 
 
 def index_support(paths, conn, sec_root=None, quarter_root=None, incremental_sec_root=None, calendar_manifest=None, public_sources_report=None):

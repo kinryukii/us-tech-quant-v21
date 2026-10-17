@@ -94,14 +94,14 @@ def _summary(app):
 
 def _comparison_values(app):
     from apps.demo_console.i18n import language_scope, tr
-    from apps.demo_console.pages.selected_strategies import WORKSPACE_STRATEGIES
+    from apps.demo_console.pages.selected_strategies import strategy_label
     language = next((item.value for item in app.selectbox if item.key == "language"), "en")
     with language_scope(language):
         frame = _summary(app).set_index(tr("Strategy"))
         fields = [tr(name) for name in ("Period return", "Maximum window drawdown", "Historical average cash")]
         result = {}
         for sid in reader.STRATEGY_IDS:
-            values = tuple(frame.loc[tr(WORKSPACE_STRATEGIES[sid]), fields])
+            values = tuple(frame.loc[tr(strategy_label(sid)), fields])
             result[sid] = (f"{float(values[0].rstrip('%')):+.2f}%", *values[1:])
         return result
 
@@ -134,12 +134,15 @@ def test_main_hgb_metrics_and_charts_switch_policy_without_raw_identity_or_futur
     assert not app.exception and not app.error
     expected = {"HGB_DIAG_5": ("+19.79%", "-1.00%", "20.00%"), "HGB_FACTOR_5": ("+14.00%", "-5.00%", "70.00%")}
     assert _comparison_values(app) == expected
-    assert _summary(app).iloc[0]["Strategy"] == "Raw A2"
-    assert _summary(app).iloc[0]["Period return"] == "—"
+    from apps.demo_console.pages.selected_strategies import strategy_label
+    assert set(_summary(app)["Strategy"]) == {strategy_label(sid) for sid in reader.STRATEGY_IDS} | {"Raw A2"}
+    assert _summary(app).set_index("Strategy").loc["Raw A2", "Period return"] == "—"
     assert not app.tabs and not app.metric
     spec, rows = _chart(app,"research_hgb_comparison_chart")
     assert spec["layer"][0]["encoding"]["x"]["scale"]["domain"] == ["2026-01-05","2026-08-18"]
     assert len(rows) == 6
+    app.session_state["research_hgb_risk_path"] = True
+    app.run()
     assert len(_chart(app,"research_hgb_drawdown_chart")[1]) == 6
     for focus in ("HGB_FACTOR_5","RAW_A2","HGB_DIAG_5"):
         app.selectbox(key="workspace_strategy").select(focus).run()
@@ -219,11 +222,11 @@ def test_available_raw_is_a_third_common_window_card_without_future_gain_or_miss
     app.session_state["with_raw"] = True
     app.run()
     assert not app.exception and not app.error
-    assert _summary(app).iloc[0]["Period return"] == "33.10%"
-    assert _summary(app).iloc[0]["Maximum window drawdown"] == "0.00%"
-    assert _summary(app).iloc[0]["Historical average cash"] == "30.00%"
+    assert _summary(app).set_index("Strategy").loc["Raw A2", "Period return"] == "33.10%"
+    assert _summary(app).set_index("Strategy").loc["Raw A2", "Maximum window drawdown"] == "0.00%"
+    assert _summary(app).set_index("Strategy").loc["Raw A2", "Historical average cash"] == "30.00%"
     _,rows = _chart(app,"research_hgb_comparison_chart")
-    assert len(rows) == 9 and rows[2]["value"] == pytest.approx(1.331)
+    assert len(rows) == 9 and [row for row in rows if row["series"] == "Raw A2"][-1]["value"] == pytest.approx(1.331)
     original = _summary(app).copy()
     for focus in ("HGB_FACTOR_5","RAW_A2"):
         app.selectbox(key="workspace_strategy").select(focus).run()
@@ -232,14 +235,14 @@ def test_available_raw_is_a_third_common_window_card_without_future_gain_or_miss
     app.date_input(key="research_dates_draft").set_value((date(2026,1,6),date(2026,8,18)))
     app.button(key="research_dates_apply").click().run()
     assert not app.exception and not app.error
-    assert _summary(app).iloc[0]["Period return"] == "21.00%"
+    assert _summary(app).set_index("Strategy").loc["Raw A2", "Period return"] == "21.00%"
     spec,rows = _chart(app,"research_hgb_comparison_chart")
     assert len(rows) == 6 and spec["layer"][0]["encoding"]["x"]["scale"]["domain"] == ["2026-01-06","2026-08-18"]
     app.session_state["raw_missing_date"] = True
     app.run()
     assert not app.exception and not app.error
     assert len(_chart(app,"research_hgb_comparison_chart")[1]) == 4
-    assert _summary(app).iloc[0]["Period return"] == "—"
+    assert _summary(app).set_index("Strategy").loc["Raw A2", "Period return"] == "—"
     assert any("RAW is omitted" in item.value for item in app.caption)
 
 
@@ -287,7 +290,7 @@ def test_raw_focus_keeps_common_primary_comparison_and_reuses_full_raw_analysis_
     from streamlit.testing.v1 import AppTest
     app = AppTest.from_function(_raw_page,default_timeout=30).run()
     assert not app.exception and not app.error
-    assert _summary(app).iloc[0]["Period return"] == "33.10%"
+    assert _summary(app).set_index("Strategy").loc["Raw A2", "Period return"] == "33.10%"
     assert _comparison_values(app)["HGB_DIAG_5"][0] == "+19.79%"
     _,rows = _chart(app,"research_hgb_comparison_chart")
     assert len(rows) == 9
@@ -298,15 +301,15 @@ def test_raw_focus_keeps_common_primary_comparison_and_reuses_full_raw_analysis_
 def test_strategy_labels_use_workspace_catalog_in_each_language_without_changing_economics():
     from streamlit.testing.v1 import AppTest
     from apps.demo_console.i18n import language_scope,tr
-    from apps.demo_console.pages.selected_strategies import WORKSPACE_STRATEGIES
+    from apps.demo_console.pages.selected_strategies import strategy_label
     app = AppTest.from_function(_hgb_page,default_timeout=30).run()
     for language in ("en","zh","ja"):
         app.selectbox(key="language").select(language).run()
         assert not app.exception and not app.error
         assert _comparison_values(app)["HGB_DIAG_5"][0] == "+19.79%"
         with language_scope(language):
-            labels = {tr(WORKSPACE_STRATEGIES[sid]) for sid in reader.STRATEGY_IDS}
-            assert set(_summary(app)[tr("Strategy")]) == labels|{"Raw A2"}
+            labels = {tr(strategy_label(sid)) for sid in reader.STRATEGY_IDS}
+            assert set(_summary(app)[tr("Strategy")]) == labels | {"Raw A2"}
         assert {row["series"] for row in _chart(app,"research_hgb_comparison_chart")[1]} == labels
 
 
@@ -360,3 +363,264 @@ def test_nav_chart_domains_are_actual_shared_observations_and_baseline():
     different_calendar["two"][1]["execution_date"] = "2026-09-24"
     with pytest.raises(ValueError):
         nav_comparison_chart(different_calendar)
+
+
+
+def _latest_open_page():
+    """Exercise real UI readers with synthetic immutable evidence and no provider."""
+    from contextlib import ExitStack
+    from unittest.mock import patch
+    import streamlit as st
+    from apps.demo_console.adapters import workspace_reader as workspace, applied_account_reader as accounts
+    from apps.demo_console.adapters.benchmarks_reader import BenchmarkHistory, BenchmarkSeries
+    from apps.demo_console.components import top20_table, stock_history_search
+    from apps.demo_console.i18n import language_scope
+    from apps.demo_console.pages import selected_strategies, research
+    from apps.demo_console.tests.test_selected_workspace_routing import latest_execution_fixture
+    from apps.demo_console.tests.test_hgb_research_workspace import _forbidden
+
+    proof = latest_execution_fixture()
+    st.session_state["workspace_sample"] = "test_2026"
+    st.selectbox("Workspace strategy", ("RAW_A2", "HGB_DIAG_5", "HGB_FACTOR_5"), index=1, key="workspace_strategy")
+    st.selectbox("Language", ("zh", "en", "ja"), key="language")
+    st.selectbox("Observation", ("2026-10-02", "2026-10-01"), key="decision_date")
+    st.selectbox("Page", ("Research", "Overview", "Portfolio", "History"), key="test_page")
+
+    def benchmarks(dates, baseline_date=None):
+        st.session_state["test_benchmark_dates"] = dates
+        return BenchmarkHistory(series=(BenchmarkSeries("QQQ", "QQQ", error="HTTP_403_CURRENT_OPEN"),))
+
+    def stock_history(**kwargs):
+        st.session_state["test_stock_cutoff"] = kwargs["as_of"]
+        st.session_state["test_stock_loads"] = st.session_state.get("test_stock_loads", 0) + 1
+        return {"status": "UNAVAILABLE", "catalog": []}
+
+    def rankings(day, **kwargs):
+        st.session_state["test_rank_cutoff"] = day
+        return {"status": "READY", "strategies": {}}
+
+    def original_fixture_contexts(day, **kwargs):
+        # This fixture tests its original three archived clock series. Live
+        # five-account context/HTTP/new replay providers belong to other tests.
+        kwargs.pop("account_state", None)
+        return workspace.load_applied_strategies(day, **kwargs)
+
+    with ExitStack() as stack:
+        stack.enter_context(patch.object(accounts, "load_state", return_value={"books": {}}))
+        stack.enter_context(patch.object(workspace, "load_active_strategies", original_fixture_contexts))
+        stack.enter_context(language_scope(st.session_state["language"]))
+        for name, function in (("load_overview", proof["overview"]), ("read_performance", proof["performance"]),
+                               ("latest_executed_overview", proof["book"]),
+                               ("load_applied_stock_catalog", stock_history), ("load_applied_rankings", rankings)):
+            stack.enter_context(patch.object(workspace, name, function))
+        stack.enter_context(patch.object(workspace.updated, "binding", return_value=proof["binding"]))
+        stack.enter_context(patch.object(research, "read_updated_benchmarks", benchmarks))
+        stack.enter_context(patch.object(research, "read_benchmarks", _forbidden))
+        stack.enter_context(patch.object(research.rx_research_reader, "read", _forbidden))
+        stack.enter_context(patch.object(top20_table, "render_applied_rankings", lambda *args, **kwargs: None))
+        stack.enter_context(patch.object(stock_history_search, "render_applied_stock_history", lambda *args, **kwargs: None))
+        stack.enter_context(patch.object(workspace.selected, "load_package", _forbidden))
+        selected_strategies.render_workspace(proof["model"], proof["package"],
+            presentation=True, view=st.session_state["test_page"])
+
+
+@pytest.mark.parametrize("page,key", [("Research", "applied_nav"), ("Overview", "applied_nav")])
+def test_current_ui_retains_verified_next_open_when_benchmark_open_is_unavailable(page, key):
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_function(_latest_open_page, default_timeout=30).run()
+    if page != "Research":
+        app.selectbox(key="test_page").select(page).run()
+    assert not app.exception and not app.error
+    spec, rows = _chart(app, key)
+    assert spec["layer"][0]["encoding"]["x"]["scale"]["domain"] == ["2026-10-01", "2026-10-05"]
+    assert len(rows) == 9 and {row["execution_date"] for row in rows} == {"2026-10-01", "2026-10-02", "2026-10-05"}
+    assert not any("QQQ" in row["series"] for row in rows)
+    assert app.session_state["test_benchmark_dates"][-1] == "2026-10-05"
+    captions = "\n".join(item.value for item in app.caption)
+    assert "2026-10-02" in captions and "2026-10-05" in captions
+    assert "QQQ 的合格开盘价格尚未完整覆盖至 2026-10-05" in captions
+    if page == "Overview":
+        assert "test_rank_cutoff" not in app.session_state
+        assert "test_stock_cutoff" not in app.session_state
+    for focus in ("HGB_FACTOR_5", "RAW_A2"):
+        app.selectbox(key="workspace_strategy").select(focus).run()
+        assert not app.exception and not app.error
+        assert _chart(app, key)[1] == rows
+
+
+@pytest.mark.parametrize("page,key", [("Research", "applied_nav"), ("Overview", "applied_nav")])
+def test_ui_historical_selection_never_sees_later_execution_or_target(page, key):
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_function(_latest_open_page, default_timeout=30).run()
+    if page != "Research":
+        app.selectbox(key="test_page").select(page).run()
+    app.selectbox(key="decision_date").select("2026-10-01").run()
+    assert not app.exception and not app.error
+    rows = _chart(app, key)[1]
+    assert len(rows) == 3 and {row["execution_date"] for row in rows} == {"2026-10-01"}
+    assert app.session_state["test_benchmark_dates"] == ("2026-10-01",)
+    captions = "\n".join(item.value for item in app.caption)
+    assert "2026-10-01" in captions
+    assert "执行绩效截至 2026-10-05" not in captions
+    if page == "Overview":
+        assert "test_rank_cutoff" not in app.session_state
+        assert "test_stock_cutoff" not in app.session_state
+
+
+
+def _vintage_caption_package():
+    row = {"ticker": "SYN", "security_id": "SYN_ID", "raw_rank": 2,
+           "raw_score": .01, "hgb_rank": 1, "pred_hgb": .02}
+    return {"shared_scores": {"current": {"status": "READY", "signal_date": "2026-04-07", "rows": [row]},
+        "historical": [{**row, "signal_date": "2026-04-07"}]},
+        "performance_period": {"price_basis": "PIT_FORWARD_REHAB_INDEX"}}
+
+
+@pytest.mark.parametrize("field,value", [("ticker", "SYN_OTHER"), ("security_id", "SYN_OTHER_ID"),
+    ("raw_rank", 3), ("raw_score", .011), ("hgb_rank", 2), ("pred_hgb", .021)])
+def test_replay_input_vintage_caption_detects_same_day_identity_rank_and_score_changes(field, value):
+    from apps.demo_console.pages.selected_strategies import replay_input_vintage_caption
+    package = _vintage_caption_package()
+    package["shared_scores"]["current"]["rows"][0][field] = value
+    original = deepcopy(package)
+    assert "candidate lists may differ" in replay_input_vintage_caption(package)
+    assert package == original
+
+
+def test_replay_input_vintage_caption_ignores_order_and_other_signal_dates():
+    from apps.demo_console.pages.selected_strategies import replay_input_vintage_caption
+    package = _vintage_caption_package()
+    row = {**package["shared_scores"]["current"]["rows"][0], "ticker": "SYN_SECOND", "security_id": "ID_SECOND"}
+    package["shared_scores"]["current"]["rows"].append(row)
+    package["shared_scores"]["historical"].insert(0, {**row, "signal_date": "2026-04-07"})
+    package["shared_scores"]["historical"].append({**row, "ticker": "OTHER_DAY", "signal_date": "2026-04-06"})
+    assert replay_input_vintage_caption(package) is None
+    package["shared_scores"]["historical"] = [{**row, "signal_date": "2026-04-06"}]
+    assert replay_input_vintage_caption(package) is None
+    assert replay_input_vintage_caption({}) is None
+
+
+@pytest.mark.parametrize("language,expected", [
+    ("zh", "研究回放保留当时已接受的信号输入版本；当前目标／模拟仓采用补齐后的输入，候选名单可能不同。"),
+    ("en", "The research replay retains its accepted signal input version. Current targets / paper portfolios use the completed inputs, so candidate lists may differ."),
+    ("ja", "研究リプレイは当時受理したシグナル入力版を保持します。現在の目標配分／ペーパーポートフォリオは補完後の入力を使用するため、候補銘柄が異なる場合があります。"),
+])
+def test_source_details_preserve_input_vintage_caption_only_when_different(monkeypatch, language, expected):
+    from contextlib import nullcontext
+    from apps.demo_console.i18n import language_scope
+    from apps.demo_console.pages import selected_strategies
+    captions = []
+    monkeypatch.setattr(selected_strategies.st, "caption", captions.append)
+    monkeypatch.setattr(selected_strategies.st, "write", lambda *args: None)
+    monkeypatch.setattr(selected_strategies.st, "expander", lambda *args, **kwargs: nullcontext())
+    package = {**_vintage_caption_package(), "package_sha256": "ab" * 32}
+    with language_scope(language):
+        selected_strategies._source_details(package, presentation=True)
+        assert expected not in captions
+        package["shared_scores"]["current"]["rows"][0]["pred_hgb"] += .001
+        selected_strategies._source_details(package, presentation=True)
+    assert captions.count(expected) == 1
+    assert not any("D:/" in caption or "sha256" in caption for caption in captions)
+
+def test_stock_history_loads_only_when_its_tab_opens_and_keeps_observation_cutoff():
+    from streamlit.testing.v1 import AppTest
+    from apps.demo_console.tests.test_localized_tabs import _switch_tab
+    app = AppTest.from_function(_latest_open_page, default_timeout=30).run()
+    app.selectbox(key="test_page").select("Portfolio").run()
+    assert not app.exception and not app.error
+    assert "test_stock_loads" not in app.session_state
+    assert app.session_state["test_rank_cutoff"] == "2026-10-02"
+    _switch_tab(app, "个股跨策略历史")
+    assert not app.exception and not app.error
+    assert app.session_state["test_stock_loads"] == 1
+    assert app.session_state["test_stock_cutoff"] == "2026-10-02"
+    app.selectbox(key="decision_date").select("2026-10-01").run()
+    assert not app.exception and not app.error
+    assert app.session_state["test_stock_cutoff"] == "2026-10-01"
+    # Closed decision content keeps its last capture until that native tab opens.
+    assert app.session_state["test_rank_cutoff"] == "2026-10-02"
+    from apps.demo_console.tests.test_localized_tabs import _label
+    _switch_tab(app, _label("Decisions & portfolio", "zh"), key="applied_workspace_tools")
+    assert not app.exception and not app.error
+    assert app.session_state["test_rank_cutoff"] == "2026-10-01"
+
+
+def _active_reference_page():
+    from unittest.mock import patch
+    from types import SimpleNamespace
+    import streamlit as st
+    from apps.demo_console.i18n import language_scope
+    from apps.demo_console.pages import research, selected_strategies
+    from apps.demo_console.adapters.benchmarks_reader import BenchmarkHistory, BenchmarkSeries, BenchmarkPoint
+    dates = ("2026-01-05", "2026-01-06", "2026-01-07")
+    missing = st.checkbox("Synthetic reference unavailable", key="missing_reference")
+    contexts = {sid: {"label": label, "history": {"start": dates[0], "end": dates[-1],
+        "daily": [{"date": day, "nav": 1 + index * .02 + offset * .01, "cash_weight": .2}
+                  for offset, day in enumerate(dates)]}}
+                for index, (sid, label) in enumerate(selected_strategies.WORKSPACE_STRATEGIES.items())}
+    payload = {"strategies": {"HGB_DIAG_5": {"daily": contexts["HGB_DIAG_5"]["history"]["daily"]}}}
+    def references(requested, baseline_date=None):
+        st.session_state["reference_request"] = (requested, baseline_date)
+        series = []
+        for symbol, gain in (("QQQ", .04), ("SPY", -.02)):
+            series.append(BenchmarkSeries(symbol, symbol, adjustment="RAW",
+                points=tuple(BenchmarkPoint(day, 100., 0., 1. + offset * gain, 0.)
+                             for offset, day in enumerate(requested)),
+                total_return=(len(requested) - 1) * gain,
+                error="SYNTHETIC_MISSING_OPEN" if missing else None))
+        return BenchmarkHistory(series=tuple(series))
+    with language_scope(st.session_state.get("reference_language", "en")), patch.object(research, "read_updated_benchmarks", references):
+        result = research.render_applied_performance(contexts, payload, dates[-1],
+            key_prefix="active_ref", statistics=False)
+    st.session_state["recorded_strategy_windows"] = result["windows"]
+
+
+def test_five_strategy_reference_selector_changes_only_reference_curve_and_preserves_missing_window():
+    from copy import deepcopy
+    from streamlit.testing.v1 import AppTest
+    app = AppTest.from_function(_active_reference_page, default_timeout=20).run()
+    assert not app.exception and not app.error
+    expected = deepcopy(app.session_state["recorded_strategy_windows"])
+    initial = _chart(app, "active_ref_nav")[1]
+    assert len({row["series"] for row in initial}) == 6
+    assert any(row["series"].startswith("QQQ") for row in initial)
+    assert app.session_state["reference_request"] == (("2026-01-05", "2026-01-06", "2026-01-07"), None)
+    for symbol in ("SPY", "None", "QQQ"):
+        app.selectbox(key="applied_benchmark").select(symbol).run()
+        assert not app.exception and not app.error
+        rows = _chart(app, "active_ref_nav")[1]
+        assert app.session_state["recorded_strategy_windows"] == expected
+        assert any(row["series"].startswith("SPY") for row in rows) == (symbol == "SPY")
+        assert any(row["series"].startswith("QQQ") for row in rows) == (symbol == "QQQ")
+    app.checkbox(key="missing_reference").check().run()
+    assert not app.exception and not app.error
+    rows = _chart(app, "active_ref_nav")[1]
+    assert len({row["series"] for row in rows}) == 5
+    assert app.session_state["recorded_strategy_windows"] == expected
+    assert any("2026-01-07" in caption.value and "retained" in caption.value for caption in app.caption)
+
+
+def test_actual_benchmark_caption_translates_in_all_languages_without_changing_results():
+    from copy import deepcopy
+    from streamlit.testing.v1 import AppTest
+    from apps.demo_console.i18n import catalog, language_scope, tr
+    current = "{label}: {return_value} over these dates · RAW open-price reference, excluding dividends and fees. Strategy replay uses its recorded adjustment basis."
+    legacy = "{label}: {return_value} over these dates · RAW open-price reference, excluding dividends and fees. QFQ replay remains a separate return basis."
+    assert legacy in catalog()
+    app = AppTest.from_function(_active_reference_page, default_timeout=20).run()
+    assert not app.exception and not app.error
+    windows = deepcopy(app.session_state["recorded_strategy_windows"])
+    request = app.session_state["reference_request"]
+    for language in ("zh", "ja", "en"):
+        app.session_state["reference_language"] = language
+        app.run()
+        assert not app.exception and not app.error
+        with language_scope(language):
+            expected = tr(current, label="QQQ · " + tr("Price reference"), return_value="8.00%")
+        captions = [node.value for node in app.caption]
+        assert expected in captions
+        assert "8.00%" in expected and "RAW" in expected
+        if language != "en":
+            assert "over these dates" not in expected and "excluding dividends and fees" not in expected
+        assert app.session_state["recorded_strategy_windows"] == windows
+        assert app.session_state["reference_request"] == request

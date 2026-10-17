@@ -11,7 +11,7 @@ from scripts.research.a2.ensemble import joint_oof_bridge as bridge
 from scripts.research.a2.evaluation.joint_execution_resume import digest
 from scripts.research.a2.evaluation.joint_method_coverage import JointMethodCoverage
 from scripts.research.a2.evaluation.joint_method_stages import task_writer
-from scripts.research.a2.evaluation.joint_native_coverage import _frame_sha,_json_sha
+from scripts.research.a2.evaluation.joint_native_coverage import _frame_sha,_json_sha,scientific_source_binding
 
 META_MAPPING={32:"equal",33:"median",34:"fixed_weighted",35:"nnls",36:"simplex",37:"ridge_stack",38:"elastic_stack",39:"hgb_stack",40:"mlp_stack",41:"linear_gate",42:"mlp_gate"}
 RESID_MAPPING={43:"ridge_then_hgb",44:"hgb_then_ridge"}
@@ -43,6 +43,10 @@ def source_dependencies():
 class JointFusionCoverage(JointMethodCoverage):
     def _freeze(self):
         sources=source_dependencies()
+        path=self.out("receipts/FIVE_DAY_FUSION_FREEZE.json")
+        self.execution_sources=dict(sources)
+        if path.exists():
+            sources,self.execution_sources=scientific_source_binding(self.root,sources,self.read("receipts/FIVE_DAY_FUSION_FREEZE.json")["source_sha256"])
         obj={"status":"FROZEN_BEFORE_B_FULL_ROW_FIVE_DAY_META_RESIDUAL_FIT", "spec":fusion.SPEC,
             "meta_mapping":{str(k):v for k,v in META_MAPPING.items()},"residual_mapping":{str(k):v for k,v in RESID_MAPPING.items()},
             "meta_years":[2023,2024,2025],"residual_years":[2022,2023,2024,2025],
@@ -109,7 +113,7 @@ class JointFusionCoverage(JointMethodCoverage):
                 key={"method":method,"spec":fusion.SPEC,"source_sha256":sources,
                      "prior_B_native_OOF_dependencies":[d for y in years for d in deps[y]],
                      "actual_meta_predictor_values_sha256":_frame_sha(train),"sampling":"ALL_PRIOR_MATURED_ROWS"}
-                for path,sha in sources.items():
+                for path,sha in self.execution_sources.items():
                     if digest(path)!=sha:raise RuntimeError("Meta fitted source changed:"+path)
                 kind="five_day_meta_"+method
                 bundle=self.fit_state(kind,year,key,train,lambda:fusion.fit_five_day_fusion(history,cut,method),fusion.fusion_fit_units(method))
@@ -152,7 +156,7 @@ class JointFusionCoverage(JointMethodCoverage):
                 key={"method":method,"source_sha256":sources,"spec":fusion.SPEC,
                     "prior_existing_B_primary_OOF_dependencies":[deps[y] for y in range(2021,year)],
                     "actual_primary_OOF_predictor_and_residual_values_sha256":_frame_sha(train),"primary_refit_units":0}
-                for path,sha in sources.items():
+                for path,sha in self.execution_sources.items():
                     if digest(path)!=sha:raise RuntimeError("Residual fitted source changed:"+path)
                 kind="five_day_feature_residual_"+method
                 bundle=self.fit_state(kind,year,key,train,lambda:fusion.fit_oof_residual(history,cutoff,method),2)
@@ -162,7 +166,7 @@ class JointFusionCoverage(JointMethodCoverage):
                     prior=pd.concat(composite_history,ignore_index=True)
                     spec={"native_name":method,"native_role":"return","B_target":fusion.UNIT,"native_target":"B_PRIMARY_RAW_PLUS_CANONICAL32_OOF_RESIDUAL","alpha":100,"minimum_rows":100}
                     prepared,_=bridge.prepare_native_training(prior,truth,cutoff,spec)
-                    bridge_key={"spec":spec,"source_sha256":sources,"prior_true_composite_OOF_dependencies":composite_deps,
+                    bridge_key={"spec":spec,"source_sha256":sources,"prior_true_composite_OOF_dependencies":list(composite_deps),
                         "actual_composite_predictor_values_sha256":_frame_sha(prepared)}
                     calibrated=self.fit_state(bridge_kind,year,bridge_key,prepared,lambda:bridge.fit_native_bridge(prior,truth,cutoff,spec),3)
                     block=bridge.apply_native_bridge(raw,calibrated)

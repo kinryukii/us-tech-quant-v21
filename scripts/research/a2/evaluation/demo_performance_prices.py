@@ -6,7 +6,10 @@ rehab snapshots retain their recorded, nonhistorical publication semantics.
 """
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 
@@ -22,7 +25,7 @@ PRICE_COLUMNS = ["ticker", "trade_date", "open", "close", "high", "low", "volume
 EVENT_COLUMNS = ["ticker", "event_date", "audit_kind"]
 EXECUTION_BRIDGE_TICKERS = frozenset({"APLD", "WOLF", "FN", "KLAR", "CAI", "HIVE", "SDGR", "SFIX", "TEAM", "TEM", "XENE"})
 RECENT_EXECUTION_BRIDGE_TICKERS = frozenset({"CAI", "HIVE", "SDGR", "SFIX", "TEAM", "TEM", "XENE"})
-NATIVE_SUPPLEMENT_TICKERS = frozenset({"AMPL", "SLMT"})
+NATIVE_SUPPLEMENT_TICKERS = frozenset({"AMPL", "SLMT", "FICO", "SOFI", "P"})
 EXECUTION_GATE = "FIVE_EXACT_OHLC_AND_ALL_OVERLAP_EXACT_OPEN_CLOSE_V1"
 EVENT_REVIEW_POLICY = "TIER1_3_CONFIRMED_NON_CORPORATE_ACTION_ONLY"
 
@@ -237,6 +240,42 @@ def _native_anchor(entry, verify):
     return raw.loc[raw.trade_date.between(pd.Timestamp(entry["anchor_date"]), pd.Timestamp(entry["raw_end"]))]
 
 
+def _massive_record_from_proof(recorded, ticker, target):
+    """Reconstruct the immutable recorded snapshot, without catalog selection."""
+    refs = [{key: row[key] for key in ("path", "sha256", "date", "observed_at")}
+            for row in recorded["raw_inputs"]]
+    return {"dataset": "prices_daily_massive", "ticker": ticker, "source": "MASSIVE_GROUPED",
+        "adjustment": "raw", "format": "parquet", "path": recorded["normalized_path"],
+        "source_sha256": recorded["normalized_sha256"], "max_date": target,
+        "lineage": {"schema_version": 1, "role": "PROVIDER_DAILY_PRICE_SNAPSHOT", "provider": "MASSIVE_GROUPED",
+            "date_column": "date", "price_basis": "RAW", "currency": "USD",
+            "exchange_timezone": "America/New_York", "vintage_semantics": "CURRENT_RETRIEVAL_NOT_HISTORICAL_PIT",
+            "provider_symbol": recorded["provider_symbol"], "provider_mapping": recorded["provider_mapping"],
+            "inputs": refs}}
+
+
+def replay_recorded_execution_bridge(bridge, native, ticker, target, verify, store, raw_cache=None):
+    """Replay an accepted execution-only raw tail; grant no feature eligibility."""
+    recorded = bridge["qualification"]
+    if (bridge.get("ticker") != ticker or bridge.get("target_date") != target
+            or bridge.get("model_feature_eligibility_granted") is not False
+            or bridge.get("historical_end") != native.trade_date.max().date().isoformat()
+            or recorded.get("gate") != EXECUTION_GATE
+            or recorded.get("consumer_fields") != ["open", "close"]
+            or recorded.get("model_feature_eligibility_granted") is not False
+            or recorded.get("tail_end") != target):
+        raise ValueError("EXECUTION_RECORDED_DISPLAY_BRIDGE_BINDING_INVALID")
+    record = _massive_record_from_proof(recorded, ticker, target)
+    tail, proof = qualify_execution_massive_tail(record, native, ticker, target, store, raw_cache)
+    if proof != recorded:
+        raise ValueError("EXECUTION_BRIDGE_QUALIFICATION_CHANGED")
+    verify(proof["normalized_path"], proof["normalized_sha256"])
+    for ref in proof["raw_inputs"]:
+        verify(ref["path"], ref["sha256"])
+        verify(ref["checkpoint_path"], ref["checkpoint_sha256"])
+    return tail
+
+
 def _replay_alternate(entry, native, verify, store, raw_cache):
     recorded = entry["alternate_bridge"]
     provider = recorded.get("provider")
@@ -245,18 +284,7 @@ def _replay_alternate(entry, native, verify, store, raw_cache):
         source_ticker = _alias_source_ticker(entry, alias)
         if alias is not None and alias != entry.get("anchor_proof", {}).get("native_source", {}).get("transport_alias_proof"):
             raise ValueError("EXECUTION_BRIDGE_ALIAS_DIFFERS_FROM_NATIVE_ANCHOR")
-        # Reconstruct only the immutable acquisition identity already recorded
-        # by the qualified bridge; a new catalog vintage cannot replace it.
-        refs = [{key: row[key] for key in ("path", "sha256", "date", "observed_at")}
-                for row in recorded["raw_inputs"]]
-        record = {"dataset": "prices_daily_massive", "ticker": source_ticker, "source": provider,
-            "adjustment": "raw", "format": "parquet", "path": recorded["normalized_path"],
-            "source_sha256": recorded["normalized_sha256"], "max_date": entry["raw_end"],
-            "lineage": {"schema_version": 1, "role": "PROVIDER_DAILY_PRICE_SNAPSHOT", "provider": provider,
-                "date_column": "date", "price_basis": "RAW", "currency": "USD",
-                "exchange_timezone": "America/New_York", "vintage_semantics": "CURRENT_RETRIEVAL_NOT_HISTORICAL_PIT",
-                "provider_symbol": recorded["provider_symbol"], "provider_mapping": recorded["provider_mapping"],
-                "inputs": refs}}
+        record = _massive_record_from_proof(recorded, source_ticker, entry["raw_end"])
         tail, proof = original._qualified_massive_tail(record, native, source_ticker, entry["raw_end"], store, raw_cache,
             gap_dates=recorded.get("gap_fill", {}).get("requested_dates"))
         if alias is not None:
@@ -382,10 +410,268 @@ def _validated_event_review(path, historical_sha, supplement_sha, events, select
     return reference
 
 
+def read_execution_supplement(path, historical_sha, verify, expected_sha=None):
+    """Validate the existing execution-only supplement contract once per reader."""
+    path = Path(path).resolve()
+    supplement_sha = expected_sha if expected_sha is not None else original.digest(path)
+    supplement = _json(verify(path, supplement_sha))
+    if (supplement.get("schema") != "A2_EXECUTION_PRICE_SUPPLEMENT_V1"
+            or supplement.get("historical_manifest_sha256") != historical_sha
+            or supplement.get("gate") != EXECUTION_GATE
+            or supplement.get("model_feature_eligibility_granted") is not False
+            or not isinstance(supplement.get("lineage"), list)):
+        raise ValueError("EXECUTION_SUPPLEMENT_CONTRACT_MISMATCH")
+    lineage = supplement["lineage"]
+    if any(row["ticker"] not in EXECUTION_BRIDGE_TICKERS | NATIVE_SUPPLEMENT_TICKERS for row in lineage):
+        raise ValueError("EXECUTION_SUPPLEMENT_TICKER_NOT_AUTHORIZED")
+    return lineage
+
+
+def execution_open_clock(signal_end, execution_end, sessions, as_of_utc):
+    """Allow only the opened official session immediately after the frozen signal."""
+    signal, execution = pd.Timestamp(signal_end), pd.Timestamp(execution_end)
+    calendar = pd.DatetimeIndex(pd.to_datetime(sessions)).normalize().sort_values().unique()
+    observed = pd.Timestamp(as_of_utc)
+    if (signal not in calendar or execution not in calendar
+            or calendar.get_loc(execution) != calendar.get_loc(signal) + 1
+            or not pd.Timestamp("2026-01-01") <= signal < execution < pd.Timestamp("2027-01-01")
+            or observed.tzinfo is None or observed > pd.Timestamp(datetime.now(timezone.utc))):
+        raise ValueError("EXECUTION_OPEN_CLOCK_INVALID")
+    opening = execution.tz_localize("America/New_York") + pd.Timedelta(hours=9, minutes=30)
+    if observed < opening:
+        raise ValueError("EXECUTION_OPEN_NOT_YET_AVAILABLE")
+    return opening, observed
+
+
+def _execution_open_values_valid(prices, volume):
+    return (len(prices) > 1 and np.isfinite(prices[:-1]).all()
+            and (prices[:-1] > 0).all() and np.isfinite(volume[:-1]).all()
+            and (volume[:-1] >= 0).all() and np.isfinite(prices[-1, 0])
+            and prices[-1, 0] > 0 and np.isnan(prices[-1, 1:]).all()
+            and np.isnan(volume[-1]))
+
+
+def _execution_open_adapter(adapter):
+    """Adapt only terminal validation; all frozen affine/event mathematics stays."""
+    original.verify(original.ADAPTER_PATH, original.ADAPTER_SHA)
+    tree = ast.parse(inspect.getsource(adapter.adjusted_price_frame))
+    seams = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+             and isinstance(node.func, ast.Name) and node.func.id == "require"
+             and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant)
+             and node.args[1].value == "INVALID_ADJUSTED_PRICE"]
+    if len(seams) != 1:
+        raise ValueError("EXECUTION_OPEN_ADAPTER_VALIDATION_SEAM_CHANGED")
+    seams[0].args[0] = ast.Call(func=ast.Name(id="_execution_open_values_valid", ctx=ast.Load()),
+        args=[ast.Name(id="prices", ctx=ast.Load()), ast.Name(id="volume", ctx=ast.Load())], keywords=[])
+    ast.fix_missing_locations(tree)
+    namespace = dict(adapter.adjusted_price_frame.__globals__)
+    namespace["_execution_open_values_valid"] = _execution_open_values_valid
+    exec(compile(tree, str(original.ADAPTER_PATH), "exec"), namespace)
+    return namespace["adjusted_price_frame"]
+
+
+def _bounded_factors(path, code, end):
+    """Read only identities and already effective factor values."""
+    identities = pq.read_table(path, columns=["code"]).to_pandas()
+    if not identities.code.eq(code).all():
+        raise ValueError("EXECUTION_OPEN_REHAB_CODE_MISMATCH")
+    if identities.empty:
+        return identities
+    import pyarrow as pa
+    kind = pq.read_schema(path).field("ex_div_date").type
+    bound = pd.Timestamp(end) + pd.Timedelta(days=1)
+    value = (bound.to_pydatetime() if pa.types.is_timestamp(kind) else
+             bound.date() if pa.types.is_date(kind) else bound.date().isoformat())
+    return pq.read_table(path, filters=[("code", "=", code), ("ex_div_date", "<", value)]).to_pandas()
+
+
+def _execution_open_inputs(paths, path, report, historical_inputs_ref, verify, sessions=None):
+    if path is None:
+        return None
+    if report is None:
+        raise ValueError("EXECUTION_OPEN_CURRENT_REPORT_REQUIRED")
+    path = Path(path).resolve()
+    manifest_ref = {"path": str(path), "sha256": original.digest(path)}
+    manifest = _json(verify(path, manifest_ref["sha256"]))
+    current = manifest.get("current_report", {})
+    if (manifest.get("schema") != "A2_EXECUTION_OPEN_INPUTS_V1"
+            or manifest.get("signal_end_date") != report["data_date"]
+            or Path(current.get("path", "")).resolve() != Path(report["report_path"]).resolve()
+            or current.get("sha256") != original.digest(current["path"])):
+        raise ValueError("EXECUTION_OPEN_MANIFEST_BINDING_MISMATCH")
+    verify(current["path"], current["sha256"])
+    if sessions is None:
+        from scripts.research.a2.inference.historical_top40 import load_sessions
+        sessions, _ = load_sessions(paths)
+    opening, observed = execution_open_clock(manifest["signal_end_date"],
+        manifest["execution_end_date"], sessions, manifest["as_of_utc"])
+    binding = manifest["identity_binding"]
+    if binding.get("sha256") != report.get("universe", {}).get("universe_members_sha256"):
+        raise ValueError("EXECUTION_OPEN_MEMBER_AUTHORITY_MISMATCH")
+    members = pq.read_table(verify(binding["path"], binding["sha256"]),
+        columns=["ticker", "security_id", "moomoo_symbol"]).to_pandas()
+    member_keys = {(str(row.ticker), str(row.moomoo_symbol), str(row.security_id))
+                   for row in members.itertuples(index=False)}
+    historical_binding = manifest.get("historical_identity_binding")
+    historical_rows = []
+    if historical_binding is not None:
+        if {key: historical_binding[key] for key in ("path", "sha256")} != historical_inputs_ref:
+            raise ValueError("EXECUTION_OPEN_HISTORICAL_IDENTITY_AUTHORITY_MISMATCH")
+        historical_rows = _json(verify(historical_binding["path"], historical_binding["sha256"]))["lineage"]
+    acquisition_ref, rehab_ref = manifest["acquisition_manifest"], manifest["rehab_receipt"]
+    acquisition = _json(verify(acquisition_ref["path"], acquisition_ref["sha256"]))
+    rehab = _json(verify(rehab_ref["path"], rehab_ref["sha256"]))
+    if (acquisition.get("acquisition_mode") != "current-kline"
+            or acquisition.get("source_policy") != "MOOMOO_ONLY"
+            or acquisition.get("trade_context_opened") is not False
+            or rehab.get("source") != "MOOMOO_OPEND_GET_REHAB"
+            or rehab.get("target_date") != manifest["execution_end_date"]):
+        raise ValueError("EXECUTION_OPEN_PROVIDER_CONTRACT_INVALID")
+    result = {}
+    for record in manifest.get("records", []):
+        ticker, code, security = record["ticker"], record["code"], record["security_id"]
+        if ticker in result:
+            raise ValueError("EXECUTION_OPEN_DUPLICATE_TICKER")
+        if (ticker, code, security) not in member_keys:
+            old = [row for row in historical_rows if row.get("ticker") == ticker
+                   and row.get("code") == code and row.get("cusips") == [security]]
+            if ticker in set(members.ticker) or len(old) != 1:
+                raise ValueError("EXECUTION_OPEN_SECURITY_IDENTITY_MISMATCH:" + ticker)
+        acquired = [row for row in acquisition.get("results", [])
+                    if row.get("item", {}).get("ticker") == ticker]
+        factors = [row for row in rehab.get("results", []) if row.get("code") == code]
+        if len(acquired) != 1 or len(factors) != 1:
+            raise ValueError("EXECUTION_OPEN_UNIQUE_PROVIDER_PROOF_REQUIRED:" + ticker)
+        row, factor = acquired[0], factors[0]
+        item, provenance = row["item"], row.get("current_kline_provenance", {})
+        fetched, captured = pd.Timestamp(factor.get("fetched_at")), pd.Timestamp(provenance.get("observed_at_utc"))
+        if (row.get("status") != "FETCHED_VALIDATED_INTERVAL"
+                or item.get("moomoo_symbol") != code or item.get("security_id") != security
+                or item.get("adjustment") != "raw" or item.get("session") != "RTH"
+                or item.get("planned_end_date") != manifest["signal_end_date"]
+                or provenance.get("api") != "get_cur_kline" or provenance.get("retcode") != 0
+                or provenance.get("code") != code or provenance.get("num") != 130
+                or provenance.get("ktype") != "K_DAY" or provenance.get("autype") != "NONE"
+                or provenance.get("session") != "RTH" or provenance.get("owned_subscription") is not True
+                or provenance.get("sdk_response_semantics") != "RETURNED_DATAFRAME_PARQUET_NOT_WIRE_RESPONSE"
+                or provenance.get("availability") != "CURRENT_RETRIEVAL_NOT_HISTORICAL_PIT"
+                or factor.get("status") != "PASS" or fetched.tzinfo is None or captured.tzinfo is None
+                or not opening <= fetched <= observed or not opening <= captured <= observed):
+            raise ValueError("EXECUTION_OPEN_NATIVE_OR_FRESH_REHAB_PROOF_INVALID:" + ticker)
+        for ref in (row, factor, provenance["sdk_response"]):
+            verify(ref["path"], ref["sha256"])
+        result[ticker] = {"record": record, "acquired": row, "factor": factor}
+    if not result:
+        raise ValueError("EXECUTION_OPEN_EMPTY_MANIFEST")
+    return {"manifest": manifest, "ref": manifest_ref, "records": result, "sessions": sessions}
+
+
+def _qualify_execution_open(ticker, proof, entry, built, verify, store, raw_cache, adapter, wolf, end):
+    code = proof["record"]["code"]
+    if entry is None or entry["code"] != code:
+        raise ValueError("EXECUTION_OPEN_ORIGINAL_ANCHOR_UNBOUND")
+    row, factor = proof["acquired"], proof["factor"]
+    raw = _raw(entry, verify, store, raw_cache)
+    names = pd.read_csv(row["path"], nrows=0).columns
+    day_column = next((name for name in ("trade_date", "date", "time_key") if name in names), None)
+    if day_column is None:
+        raise ValueError("EXECUTION_OPEN_COMPLETED_DATE_COLUMN_MISSING")
+    dates = pd.to_datetime(pd.read_csv(row["path"], usecols=[day_column])[day_column]).dt.normalize()
+    if (dates.isna().any() or not dates.between(pd.Timestamp(row["item"]["planned_start_date"]),
+                                              pd.Timestamp(end)).all()):
+        raise ValueError("EXECUTION_OPEN_COMPLETED_INTERVAL_OUTSIDE_SIGNAL_BOUNDARY")
+    completed = original._raw_frame(pd.read_csv(row["path"]), code)
+    if completed.trade_date.max() != pd.Timestamp(end):
+        raise ValueError("EXECUTION_OPEN_COMPLETED_PREFIX_MISSING")
+    sdk = row["current_kline_provenance"]["sdk_response"]
+    if pq.read_metadata(sdk["path"]).num_rows > 130:
+        raise ValueError("EXECUTION_OPEN_SDK_RESPONSE_OVER_REQUEST_LIMIT")
+    identities = pq.read_table(sdk["path"], columns=["code"]).to_pandas()
+    if not identities.code.eq(code).all():
+        raise ValueError("EXECUTION_OPEN_SDK_RESPONSE_CODE_MISMATCH")
+    overlap = raw.merge(completed, on="trade_date", suffixes=("_old", "_fresh"))
+    calendar = pd.DatetimeIndex(pd.to_datetime(proof["sessions"])).normalize().sort_values().unique()
+    required = set(calendar[calendar <= pd.Timestamp(end)][-5:])
+    if len(required) != 5:
+        raise ValueError("EXECUTION_OPEN_FIVE_OFFICIAL_SESSIONS_REQUIRED")
+    if not required.issubset(set(overlap.trade_date)):
+        # Old held anchors can end before the normalized interval. Read only
+        # completed rows from the same already captured native SDK response.
+        import pyarrow as pa
+        kind = pq.read_schema(sdk["path"]).field("time_key").type
+        stop = pd.Timestamp(end) + pd.Timedelta(days=1)
+        upper = stop.to_pydatetime() if pa.types.is_timestamp(kind) else stop.date().isoformat()
+        native = pq.read_table(sdk["path"], columns=original.RAW_COLUMNS,
+            filters=[("code", "=", code), ("time_key", "<", upper)]).to_pandas()
+        completed = original._raw_frame(native, code)
+        overlap = raw.merge(completed, on="trade_date", suffixes=("_old", "_fresh"))
+        # Validate five actual historical official sessions, even when the
+        # captured completed tail extends an old held anchor to signal_end.
+        required = set(calendar[calendar <= raw.trade_date.max()][-5:])
+    if len(required) != 5 or not required.issubset(set(overlap.trade_date)):
+        raise ValueError("EXECUTION_OPEN_FIVE_EXACT_NATIVE_OPENS_REQUIRED")
+    if not overlap.open_old.eq(overlap.open_fresh).all():
+        raise ValueError("EXECUTION_OPEN_HISTORICAL_NATIVE_OPEN_CHANGED")
+    signal = overlap.loc[overlap.trade_date.eq(pd.Timestamp(end))]
+    if not signal.empty and not signal.close_old.eq(signal.close_fresh).all():
+        raise ValueError("EXECUTION_OPEN_SIGNAL_CLOSE_CHANGED")
+    differences = {field: int(overlap[field + "_old"].ne(overlap[field + "_fresh"]).sum())
+                   for field in ("close", "high", "low", "volume")}
+    last_old = raw.trade_date.max()
+    tail = completed.loc[completed.trade_date.gt(last_old) & completed.trade_date.le(pd.Timestamp(end))]
+    missing = set(calendar[(calendar > last_old) & (calendar <= pd.Timestamp(end))]) - set(tail.trade_date)
+    if missing:
+        raise ValueError("EXECUTION_OPEN_NATIVE_COMPLETED_TAIL_SESSION_MISSING")
+    # Retain the old real vintage exactly. Unconsumed revised volume/earlier
+    # close values are evidence only, never features or replacement book marks.
+    raw = pd.concat([raw, tail], ignore_index=True).sort_values("trade_date").reset_index(drop=True)
+    qualification = {"ticker": ticker, "native_open_overlap_days": len(overlap),
+        "all_overlap_open_exact": True, "signal_close_exact_when_previously_recorded": True,
+        "preserved_original_raw_vintage": True, "unconsumed_overlap_differences": differences,
+        "completed_native_tail_days": len(tail), "model_feature_eligibility_granted": False}
+    execution = proof["execution_end_date"]
+    # Do not materialize intraday close/high/low/volume, including future values.
+    import pyarrow as pa
+    if pq.read_metadata(factor["path"]).num_rows != factor["row_count"]:
+        raise ValueError("EXECUTION_OPEN_REHAB_ROW_COUNT_CHANGED")
+    kind = pq.read_schema(sdk["path"]).field("time_key").type
+    lo, hi = pd.Timestamp(execution), pd.Timestamp(execution) + pd.Timedelta(days=1)
+    lower, upper = ((lo.to_pydatetime(), hi.to_pydatetime()) if pa.types.is_timestamp(kind)
+                    else (lo.date().isoformat(), hi.date().isoformat()))
+    opening = pq.read_table(sdk["path"], columns=["code", "time_key", "open"],
+        filters=[("code", "=", code), ("time_key", ">=", lower), ("time_key", "<", upper)]).to_pandas()
+    if len(opening) != 1 or not np.isfinite(float(opening.iloc[0].open)) or float(opening.iloc[0].open) <= 0:
+        raise ValueError("EXECUTION_OPEN_NATIVE_MARK_MISSING")
+    value = float(opening.iloc[0].open)
+    if abs(value / float(raw.iloc[-1].close) - 1.0) >= .80:
+        raise ValueError("EXECUTION_OPEN_LARGE_RAW_MOVE_REVIEW_REQUIRED")
+    terminal = {name: np.nan for name in raw.columns}
+    terminal.update(code=code, trade_date=pd.Timestamp(execution), open=value)
+    combined = pd.concat([raw, pd.DataFrame([terminal])], ignore_index=True)
+    factors = _bounded_factors(factor["path"], code, execution)
+    adjusted, event_rows = adapter(code, ticker, combined, factors, wolf)
+    if any(pd.Timestamp(event["event_date"]) > pd.Timestamp(end) for event in event_rows):
+        raise ValueError("EXECUTION_OPEN_NEW_CORPORATE_ACTION_REVIEW_REQUIRED")
+    overlap = built.merge(adjusted, on=["ticker", "trade_date"], suffixes=("_old", "_new"))
+    if len(overlap) != len(built) or any(not overlap[field + "_old"].eq(overlap[field + "_new"]).all()
+                                       for field in original.PRICE_FIELDS):
+        raise ValueError("EXECUTION_OPEN_ADJUSTED_HISTORY_PREFIX_CHANGED")
+    terminal_adjusted = adjusted.loc[adjusted.trade_date.eq(pd.Timestamp(execution)), PRICE_COLUMNS]
+    if len(terminal_adjusted) != 1 or not terminal_adjusted[["close", "high", "low", "volume"]].isna().all().all():
+        raise ValueError("EXECUTION_OPEN_TERMINAL_CLOSE_MUST_STAY_UNKNOWN")
+    # Old held anchors can precede signal_end. Keep every strictly qualified
+    # completed tail row and its event audit, as well as the opening mark.
+    extension = adjusted.loc[adjusted.trade_date.gt(built.trade_date.max()), PRICE_COLUMNS]
+    new_events = [event for event in event_rows
+                  if pd.Timestamp(event["event_date"]) > built.trade_date.max()]
+    return extension, qualification, new_events
+
+
 def load_execution_prices(paths, historical_manifest_path, *, tickers=None,
                           current_report_path=None, start=None, end=None,
                           additional_price_manifest_path=None, event_review_manifest_path=None,
-                          inference_manifest_path=None, current_execution_manifest_path=None):
+                          inference_manifest_path=None, current_execution_manifest_path=None,
+                          execution_open_manifest=None, execution_end=None, execution_sessions=None):
     """Return prices/events/gaps/refs; perform no writes, requests or returns.
 
     ``prices`` uses ticker, trade_date and the original adjusted OHLCV. Missing
@@ -442,15 +728,7 @@ def load_execution_prices(paths, historical_manifest_path, *, tickers=None,
     supplements, supplement_sha = [], None
     if supplement_path.is_file():
         supplement_sha = original.digest(supplement_path)
-        supplement = _json(verify(supplement_path, supplement_sha))
-        if (supplement.get("schema") != "A2_EXECUTION_PRICE_SUPPLEMENT_V1"
-                or supplement.get("historical_manifest_sha256") != historical_sha
-                or supplement.get("gate") != EXECUTION_GATE
-                or supplement.get("model_feature_eligibility_granted") is not False):
-            raise ValueError("EXECUTION_SUPPLEMENT_CONTRACT_MISMATCH")
-        supplements = supplement["lineage"]
-        if any(row["ticker"] not in EXECUTION_BRIDGE_TICKERS | NATIVE_SUPPLEMENT_TICKERS for row in supplements):
-            raise ValueError("EXECUTION_SUPPLEMENT_TICKER_NOT_AUTHORIZED")
+        supplements = read_execution_supplement(supplement_path, historical_sha, verify, supplement_sha)
     elif additional_price_manifest_path:
         raise ValueError("EXECUTION_SUPPLEMENT_MANIFEST_MISSING")
     selected = set(tickers) if tickers is not None else {row["ticker"] for row in historical + current + supplements + replayed}
@@ -464,11 +742,19 @@ def load_execution_prices(paths, historical_manifest_path, *, tickers=None,
     from scripts.research.a2.inference.historical_top40_prices import _store
     store = _store(paths) if (report is not None and selected & RECENT_EXECUTION_BRIDGE_TICKERS) or any(row.get("execution_bridge") or row.get("alternate_bridge")
         for row in historical + current + supplements + replayed) else None
+    open_inputs = _execution_open_inputs(paths, execution_open_manifest, report, reference,
+        verify, sessions=execution_sessions)
+    if execution_end is not None and (open_inputs is None or execution_end != open_inputs["manifest"]["execution_end_date"]):
+        raise ValueError("EXECUTION_OPEN_EXPLICIT_END_BINDING_REQUIRED")
+    if open_inputs is not None and end != open_inputs["manifest"]["signal_end_date"]:
+        raise ValueError("EXECUTION_OPEN_SIGNAL_END_MISMATCH")
+    open_adapter = _execution_open_adapter(original._adapter(open_inputs["manifest"]["execution_end_date"])) if open_inputs else None
     frames, all_events, gaps, factor_cache, raw_cache = [], [], [], {}, {}
+    accepted_open, open_qualifications = [], []
     execution_bridges = []
     fresh_rehab = None
     for ticker in sorted(selected):
-        built, events, first_entry = None, [], None
+        built, events, first_entry, raw_entry = None, [], None, None
         for role, entry in (("HISTORICAL", histories.get(ticker)), ("EXECUTION_SUPPLEMENT", additions.get(ticker)),
                             ("REPLAYED_MISSING_SIGNALS", missing_signals.get(ticker)),
                             ("CURRENT", updates.get(ticker))):
@@ -490,6 +776,7 @@ def load_execution_prices(paths, historical_manifest_path, *, tickers=None,
                         raise ValueError("EXECUTION_CURRENT_ADJUSTED_OVERLAP_CHANGED")
                     frame = pd.concat([built, frame.loc[~frame.trade_date.isin(built.trade_date)]], ignore_index=True)
                 built = frame
+                raw_entry = entry
                 if first_entry is None:
                     first_entry = entry
                 events.extend(event_rows)
@@ -557,7 +844,19 @@ def load_execution_prices(paths, historical_manifest_path, *, tickers=None,
                     "model_feature_eligibility_granted": False})
             except (ValueError, KeyError, TypeError, OSError) as exc:
                 gaps.append({"ticker": ticker, "source_role": "RECENT_EXECUTION_BRIDGE", "reason": str(exc)})
-        frames.append(built.loc[built.trade_date.between(pd.Timestamp(start), pd.Timestamp(end))])
+        frame = built.loc[built.trade_date.between(pd.Timestamp(start), pd.Timestamp(end))]
+        if open_inputs and ticker in open_inputs["records"]:
+            try:
+                proof = {**open_inputs["records"][ticker], "execution_end_date": open_inputs["manifest"]["execution_end_date"], "sessions": open_inputs["sessions"]}
+                extension, qualification, new_events = _qualify_execution_open(ticker, proof, raw_entry, frame, verify, store, raw_cache,
+                    open_adapter, wolf, end)
+                frame = pd.concat([frame, extension], ignore_index=True)
+                events.extend(new_events)
+                accepted_open.append(ticker)
+                open_qualifications.append(qualification)
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                gaps.append({"ticker": ticker, "source_role": "EXECUTION_OPEN_ONLY", "reason": str(exc)})
+        frames.append(frame)
         all_events.extend(events)
     prices = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=PRICE_COLUMNS)
     events = pd.DataFrame(all_events) if all_events else pd.DataFrame(columns=EVENT_COLUMNS)
@@ -574,6 +873,12 @@ def load_execution_prices(paths, historical_manifest_path, *, tickers=None,
     return {"prices": prices.sort_values(["trade_date", "ticker"]).reset_index(drop=True),
             "events": events, "gaps": gaps, "event_review": event_review,
             "execution_bridges": execution_bridges,
+            **({"execution_open": {"manifest": open_inputs["ref"],
+                "signal_end_date": end, "execution_end_date": open_inputs["manifest"]["execution_end_date"],
+                "as_of_utc": open_inputs["manifest"]["as_of_utc"], "qualified_tickers": accepted_open,
+                "qualifications": open_qualifications,
+                "consumer_fields": ["open"], "terminal_close_available": False,
+                "model_feature_eligibility_granted": False}} if open_inputs else {}),
             "refs": [{"path": path, "sha256": sha} for path, sha in sorted(checked.items())],
             "start_date": start, "end_date": end,
             "price_basis": "PIT_FORWARD_REHAB_INDEX",

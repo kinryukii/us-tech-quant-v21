@@ -7,7 +7,7 @@ and the Anti-Bloat policy before material work, as required by root AGENTS.md.
 Read the research contract section before research/data-dependent work. A pointer
 is not permission to read its contents; use task-authorized non-result metadata.
 
-## Status vocabulary
+## Asset status vocabulary
 
 - `ACTIVE`: current code/control surface supported by repository evidence.
 - `FROZEN`: referenceable, hash/contract protected, and not to be modified.
@@ -18,6 +18,7 @@ is not permission to read its contents; use task-authorized non-result metadata.
 
 ## Current navigation
 
+- [Agent execution, recovery, task status, evidence and ExecPlan](#agent-execution-and-completion)
 - [Runtime and development entrypoints](../README.md)
 - [Research reuse table](research/README.md): derived from the existing accepted identity registry and the retained branch table.
 - [Repository layout](governance/REPOSITORY_LAYOUT.md): current code and test locations.
@@ -36,6 +37,7 @@ is not permission to read its contents; use task-authorized non-result metadata.
 | A2 risk research | `ACTIVE`; R6 is a frozen prospective reference in current evidence | `scripts/v22/a2_stock_risk_r6.py`, `scripts/v22/a2_stock_risk_r10_r11_fast_track.py`, paired tests, and the risk registry when present |
 | Execution / portfolio policy | `ACTIVE` research; adopted identities may be `FROZEN` | `scripts/v22/abcde_a2_r1c_execution_contract_freeze_r1.py`, `scripts/v22/abcde_a2_r4_portfolio_translation_using_hgb_incumbent.py`, and the execution registry when present |
 | DEMO daily performance synchronization | `ACTIVE` descriptive presentation adapters; no fitting or new research selection | `scripts/daily_recommendation.py`, `scripts/research/a2/evaluation/demo_performance.py`, `three_strategy_extension.py`, `selected_performance_update.py`; frozen policy/engine reuse, verified ledgers under external `daily_root/A2_selected_hgb/research_runs/`, paired evaluation and DEMO reader tests |
+| Five-strategy DEMO / paper integration | `ACTIVE` frozen inference and descriptive readers; explicit runtime binding controls adoption | `scripts/research/a2/inference/consensus_current_inputs.py`, `consensus_paper.py`; `apps/demo_console/adapters/new_strategy_replay_reader.py`, `new_strategy_stock_history_reader.py`; existing applied source/cohort/best-broker APIs. Active RAW/diag/ElasticNet/Ridge/R7, factor history retained; original SIM differential rebalance and original storage/time/resource gates |
 | 2026 holdout | `EVALUATION_ONLY` and already exposed for A2 | `D:\us-tech-quant-results\A2_ALGORITHM_R2_2026_FROZEN_HOLDOUT\status.json`; protected content, not an ordinary-development read target; prior exposure blocks pristine-holdout reuse/optimization |
 | Forward / prospective evaluation | `EVALUATION_ONLY`; no training/search/selection | `scripts/v22/forward_shadow/`, `config/research_governance/a2_forward_shadow_unified_r1.json`, and `docs/research_governance/` when present |
 | FAST3 | `ACTIVE` implementation, currently synthetic-only; frozen confirmation remains unread | `fast3/state/FAST3_STATE.json`, `fast3/manifests/registries/FAST3_STAGE_REGISTRY.json`, `fast3/FAST3_STATUS.md` |
@@ -45,6 +47,14 @@ is not permission to read its contents; use task-authorized non-result metadata.
 | Anti-Bloat | `ACTIVE`; policy and thresholds are authoritative | `docs/governance/ANTI_BLOAT_POLICY.md`, `configs/anti_bloat_policy.toml`, `fast3/scripts/audit/run_fast3_guard.py` |
 | V21 daily/history | Mixed; do not assume obsolete | `docs/V21_ACTIVE_SYSTEM_REGISTRY.md`, `config/v21/active_chain_manifest.json`, and the V22 active/deprecated output manifest implementation |
 | Results and evidence | Protected external evidence | `D:\us-tech-quant-results`, `D:\us-tech-quant-backtests`, `D:\us-tech-quant-daily`; never rewrite for ordinary development |
+
+Before repeated manual DEMO input recovery, read the original daily owner's
+`daily_root/A2_today_recommendation/acquisition_notes.json`. These are
+evidence-bound current acquisition notes, not a model universe or historical
+PIT registry. Match ticker, security ID, transport code and inactive date;
+known closed securities are recorded in daily `acquisition_notes.deferred` rather
+than repeatedly queried. A new identity/code, changed evidence or explicit
+human recheck requires reassessment. Historical/frozen records stay intact.
 
 13F manager completeness is scoped to a declared cohort, not a universal fixed
 24/25 count. The original Raw A2 authoritative 24-manager configuration excludes
@@ -56,6 +66,8 @@ history does not imply an end date. Keep task-specific `ALL_APPLICABLE` versus
 explicitly authorized `DISCLOSED_ONLY` coverage separate; a disclosed subset is
 not evidence that a stricter whole-qualified-snapshot contract passed. Preserve
 old frozen bindings and use an explicit quarter roster binding for new cohorts.
+
+Corporate-cash ex-date source normalization has one owner: `scripts/research/a2/data/joint_cash_bindings.py`. New authorized post-verified research source builders use `adjudicate_post_verified_cash_ex` before turning issuer-history/vendor date disagreements into unsupported events. The owner checks the applicable settlement regime, named vendor date, security and raw-share units, normal-small-cash evidence, and exceptions; it preserves conflicting observations and unknown historical availability. Its result grants no account, quote, strict-PIT, production or data-access authority. Existing frozen pre-2026 callers retain the explicit legacy policy and their pins; do not rewrite them. Unresolved cash authority and independent raw quote defects remain separate causes and must retain their qualification gates.
 
 Broad `scripts/v22` contents are not collectively authoritative. Multiple versions
 and experiments coexist. Locate a candidate with `rg`, inspect paired tests and
@@ -96,6 +108,11 @@ registry, permanent task budget or automatic permission to reopen research.
   change with preserved canonical lineage and the original conclusions, using
   the existing lifecycle's required new research_id rather than overwriting or
   reopening the old record in place; governance updates reopen nothing.
+  A model rename alone is not a new scientific question. Prior negative evidence
+  reduces related search budgets; pre-2026 content is not automatically untouched.
+  Target/window/threshold/universe/cost/exit/selection changes add selection
+  freedom and must retain candidate identity and selection history. Never expand
+  specifications indefinitely to obtain a winner.
 - PIT is an information-chain contract: distinguish report period from actual
   financial/13F disclosure, database vintage/revision from event time, and raw
   versus adjusted prices from their authoritative PIT lineage. Carry availability
@@ -106,8 +123,10 @@ registry, permanent task budget or automatic permission to reopen research.
   prohibited contents before access; whole-file reads followed by filtering fail
   this boundary. Synthetic dates and document references remain legal. Missing
   PIT inputs stop only dependent units and never authorize guessed substitutes.
-- Correct negative, no-incremental-value and untestable conclusions are complete
-  research outcomes. Prior exposure survives new sessions, names and freezes;
+- Correct negative and no-incremental-value experiments can complete research.
+  An untestable qualification assessment can complete its bounded scope, but the
+  original economic target test remains unperformed. Prior exposure survives new
+  sessions, names and freezes;
   separately authorized descriptive evaluation is not an untouched test.
 
 Temporal authorities and limitations:
@@ -254,6 +273,198 @@ present. Preserve unknown or inaccessible evidence; do not repair by overwriting
   domain views do not supersede accepted research identities or global gates.
 
 
+## Agent execution and completion
+
+This is the detailed execution policy linked by root AGENTS.md. It extends the
+existing task/run record and lifecycle; it creates no task engine or registry.
+Current platform permissions and the human task scope apply throughout. New
+governance never retroactively authorizes a restricted read or external action.
+
+### Invariants versus implementation
+
+**Protect invariants, not implementation details.** A change is substantive if it
+changes any of: scientific question; target/label; label maturity; information set;
+PIT/as-of semantics; training/validation/holdout boundaries; candidate space;
+universe; benchmark; evaluation population/window; cost semantics; execution
+clock; account semantics; frozen baseline identity; authority/provenance; economic
+policy; research selection freedom; experiment interpretation; production/external
+authorization. Such a change uses the applicable scientific contract/change
+control and authorized selection boundary; it must not be hidden in a bugfix.
+
+Internal structure, function/class decomposition, scientifically equivalent
+algorithm/library implementations, batching/chunk size, caching/streaming,
+parallelism/workers, memory control, temporary formats/directories, intermediate
+files, logging, test ordering and ordinary compatibility fixes are autonomous.
+Confirm equivalence against the contract and relevant behavior, including ordering,
+seed/numerical tolerance and cost/execution meaning where material. Changing a
+worker count is an implementation choice; changing the evaluation sample to fit
+memory is a substantive change. Reuse approved roots and preserve provenance.
+
+### Recovery and branch isolation
+
+**A normal engineering failure is not a final blocker.** OOM/RAM pressure,
+temporary file collision, multiprocessing, encoding/path bugs, minor schema or
+dependency compatibility, stale cache, interruption, test ordering, recoverable
+network/provider/API failure, library defects, timeout, lock and process crash
+start a recovery cycle:
+
+1. Diagnose the cause and distinguish an ordinary fault from a hard boundary.
+2. Preserve completed valid work and record the failure and affected scope.
+3. Repair within scope; bound retries by attempts/time/cost and new evidence.
+4. Change an equivalent implementation, reduce parallelism/memory or split into
+   equivalent stages; invalidate only cache/checkpoints proved inconsistent.
+5. Verify checkpoint/input/contract integrity and resume at the first unfinished
+   stage. Preserve expensive validated stages and historical failed trials.
+6. Isolate the failing branch, continue independent branches and record recovery.
+7. Validate the repair and return to the original acceptance contract.
+
+Do not repeat the same failed operation without changed conditions or new evidence.
+A first failure is not grounds for final BLOCKED. Retry cannot bypass an ACL,
+restricted content read, freeze, cost budget or required authorization. An
+environment failure becomes hard only after reasonable safe alternatives are
+exhausted; preserve the diagnostic evidence rather than inventing success.
+
+**If one branch is blocked, continue all independent work.** If A can train
+legally, B lacks authoritative inputs, C can validate and D can report already
+authorized evidence, continue A/C/D; this example grants no training or read
+permission. Local access restrictions stop the dependent operation only.
+
+A remaining blocker record names the exact missing object, why it is required,
+affected scope, unaffected scope, completed work, attempted safe recoveries and
+minimal unblocking action. Whole-task BLOCKED_HARD is justified only when no
+independent required work can proceed. Do not ask for milestone approval where
+existing authorization suffices. If a choice would alter science, authority,
+external state, material cost or irreversibility, complete independent authorized
+work and present the concrete decision requiring authorization.
+
+### Task status and domain status
+
+These are task-delivery meanings, separate from ACTIVE/FROZEN identity states and
+existing contract/registry enums. Preserve historical domain statuses and receipt
+schemas; do not relabel old records or treat a status string as authorization.
+
+| Task status | Required meaning |
+| --- | --- |
+| DONE | All requested acceptance obligations completed with appropriate evidence; no required work remains. |
+| DONE_WITH_LIMITATIONS | The deliverable/qualification assessment or independent branches are usable, with explicitly scoped limitations; list each unmet original obligation and its blocker, never imply full target acceptance. |
+| NO_UPGRADE | Legal experiment and upgrade evaluation completed; no candidate meets the frozen upgrade criteria. |
+| NO_FINALIST | Legal declared finalist evaluation completed; no finalist qualifies. |
+| NOT_TESTABLE | Necessary research/input qualification is absent; the target test has not legally completed. It is not an economic failure. |
+| BLOCKED_HARD | Remaining scope requires violating an invariant, irreplaceable input, unavailable credential/authority, unauthorized external/irreversible action or scientific contract change, or an environment irrecoverable after reasonable safe alternatives. |
+| FAILED_IMPLEMENTATION | The implementation genuinely failed after reasonable compliant recovery paths were exhausted; identify remaining work and evidence, not a negative economic finding. |
+| RECOVERABLE_ERROR | Internal running state while diagnosing/repairing/resuming; it is not a final task-delivery status. |
+
+A correct negative experiment can be DONE/NO_UPGRADE/NO_FINALIST. A completed
+qualification assessment can report NOT_TESTABLE; its original economic test
+remains unperformed. Engineering PASS never implies economic PASS.
+PARTIAL_COMPLETION_WITH_SPECIFIC_BLOCKER is a presentation of completed branches
+plus explicit blockers, not a new persisted enum or an excuse to abandon them.
+
+Existing BLOCKED/BLOCKED_DATA/UNTESTABLE/FAILED/PARTIAL/STOPPED/INCOMPLETE and
+WAITING_HUMAN records must be interpreted by their owning contract: specify
+whether they describe a branch, qualification, implementation or whole delivery,
+and the reason. CLOSED_NEGATIVE is an existing research conclusion; PROMOTED or
+FROZEN is a recorded domain state, never automatic production approval.
+STOPPED/PARKED can reflect a predeclared stopping rule or explicit human stop,
+not an unexplained first engineering failure. Preserve legal NO_UPGRADE and
+NO_FINALIST conclusions without seeking a winner by expanding specifications.
+
+### Evidence and acceptance
+
+**Completion is based on working behavior and required evidence, not on activity.**
+Choose evidence proportional to the task and its actual contract:
+
+| Evidence label | What it establishes for the named object/scope |
+| --- | --- |
+| PLANNED | Intended behavior/steps only. |
+| IMPLEMENTED | The requested source/config/document exists. |
+| EXECUTED | The named operation actually ran with observed execution evidence. |
+| TESTED | Relevant checks ran and their actual results/scope are recorded. |
+| REPRODUCED | Another specified run reproduced the declared result under recorded inputs/environment. |
+| CONSUMED | The real named consumer used the artifact, with consumer/run identity and observed evidence. |
+| ACCEPTED | The applicable acceptance contract was satisfied and the relevant authority accepted it. |
+| PRODUCTION-AUTHORIZED | Current explicit external/production authorization exists for the exact scope. |
+
+No level promotes itself to another. Code written is not task completed; a test
+pass is not system acceptance; artifact existence is not consumer use; historical
+acceptance is not current authorization. Labels describe evidence, not mandatory
+bureaucratic steps for every edit. Distinguish observed fact (directly checked),
+reported fact (attributed source not independently checked), inferred fact
+(reasoning with stated assumptions) and planned behavior. Unverified claims remain
+unverified. Never manufacture receipts, hashes, metrics, Git state or completion.
+
+Completion normally combines the requested implementation, actual execution,
+appropriate validation/tests, required artifacts/provenance/receipt, interpretation
+and remaining limitations. Engineering, economic, instruction-loading, runtime
+interception, adoption and production readiness require their own applicable
+evidence. Routine documentation work does not require new research or a consumer
+deployment. The existing lifecycle completion entry must validate its receipt
+against the research spec and bind the referenced stored receipt to that content;
+content addressing does not establish economic validity or production approval.
+
+### Resumable ExecPlan in the existing task record
+
+Use the existing contract/task record for long, multistage, expensive or
+interruption-prone work; routine changes need no permanent plan. Before its first
+write, resolve purpose and physical destination through the existing storage
+resolver. Governance records/reports live in results_root/_maintenance/<task_id>;
+research run artifacts/checkpoints belong to the existing backtest run identity;
+daily recovery state belongs to its existing daily chain. See STORAGE_LAYOUT.md.
+
+The record contains Goal, Scope, Hard constraints, Frozen research contract and
+Inputs (authority, identity, permitted read/selection boundaries), Milestones,
+Progress, Completed expensive stages, Decisions, Unexpected findings, Failures,
+Recovery actions, Checkpoints, Artifacts, Validation, Remaining work, Exact resume
+point and Final status. Reuse an equivalent existing field rather than introduce
+a parallel schema/registry. Store content identities/provenance where required;
+do not copy protected results into the plan or agent context.
+
+Milestone completed -> update record -> continue the next authorized stage.
+An ExecPlan is an execution record, not a user approval gate at every milestone.
+On resume, verify current scope/authority and frozen contract, code/config/input
+identities, checkpoint completeness and output destination. Reuse valid expensive
+stages; rebuild only affected invalid stages. A resumed process does not reset
+trials, information exposure or authorization. Record the exact next entrypoint
+and remaining validation so a new session can continue without guessing.
+
+### Avoid repeated engineering work
+
+Use the existing task record and owners; no new workflow or approval hierarchy.
+
+- Before repeating a read, test, review or restart, identify the changed code,
+  input/environment identity, invalid evidence, specific unresolved question or
+  explicit user/contract requirement.
+  Reuse evidence only for its verified version and scope. Context compaction alone
+  does not invalidate a checked instruction file or completed stage.
+- Keep one rolling summary with current job identity, state, validated stages,
+  evidence references and exact resume point. Link detailed history instead of
+  repeatedly loading or appending full snapshots. Preserve required failed/frozen
+  records and read boundaries; a summary is not new authority.
+- Attach to a verified live job rather than launch another. Prefer completion
+  events; inspect only incremental state, back off when unchanged and react to
+  progress/failure. Do not repeatedly ask workers for the same status.
+- Let the assigned owner complete authorized low-risk repair, verification and
+  execution; the root integrates at meaningful milestones and owns acceptance.
+  Review the actual change delta instead of recreating release/manifest chains
+  for routine edits; all contract-required reviews, receipts and pins still apply.
+- Before expensive execution/retry, stay within existing authority and read
+  boundaries; use existing synthetic or authorized metadata-only preflight to check entrypoint, dependencies and recovery conditions.
+  This grants no scientific pilot, extra outcome read, refit or retry, and does
+  not replace full acceptance or change samples, windows, memory/quote gates,
+  freezes or scientific budgets.
+
+### Enforcement scope
+
+Reuse the existing storage resolver/DataStore, lifecycle receipt checks, registry
+preflight/hash/trial guards, FAST3 Anti-Bloat guard and paired synthetic tests.
+Their coverage is entrypoint-specific: instruction prose is not an OS sandbox,
+a path helper does not intercept arbitrary writes, receipt validation does not
+prove independent economic evidence, and not every historical caller is guarded.
+Record gaps honestly; add high-value small checks in the existing owner rather
+than a second governance platform. Frozen baseline overwrite and dirty worktree
+retirement remain governed by existing exact-hash and preservation gates.
+
+
 ## Maintenance consolidation (2026-09-14)
 
 - `scripts/maintenance/audit_repo_size_r1.py` is the compatibility CLI for the
@@ -291,7 +502,7 @@ Its recorded acceptance is not a fresh health check or permission to fetch data.
 | Current daily research | `scripts/v22/run_v22_044_daily_single_entrypoint_freeze_and_guard_r1.ps1` -> V22.040 -> current V21 components | `-Execute` runs the real daily chain. V21.256 remains an internal governance component, not another primary entrypoint. |
 | A2 research development | `scripts/research/a2/<category>/`, `scripts/maintenance/research_registry.py` and `scripts/maintenance/prospective_research_lifecycle.py` | Locate the accepted identity and contract first. There is no single universally safe command for all research. Historical frozen references remain unchanged and may resolve through the Git recovery catalog. |
 | Read-only research presentation | `apps/demo_console/start.ps1` | Uses `envs_root/demo-console`; reads existing artifacts through its adapters. See that app's README for the authorized presentation scope. |
-| Local strategy simulation | `apps/moomoo_trading_component/start.ps1` | Existing three paper books and the original MOOMOO SIMULATE identity; state under `daily_root/moomoo_trading_component`. Explicit activation only; opening delay defaults to zero and records actual quote/order/fill times. REAL execution remains unavailable. See the component README. |
+| Local strategy simulation | `apps/moomoo_trading_component/start.ps1` | Existing three paper books and the original MOOMOO SIMULATE identity; state under `daily_root/moomoo_trading_component`. Explicit activation only; ordinary execution defaults to New York 09:55–10:20 (25-minute opening delay, 1500-second window; single manual catchup remains at most 600 seconds; schema2 stops automatically at 10:20 with no afternoon continuation) and records actual quote/order/fill times. REAL execution remains unavailable. See the component README. |
 | R1E service and Dashboard V2 | `scripts/v22/start_v22_047_r1e_service.ps1`, `start_v22_047_r1e_ui.ps1`, `status_v22_047_r1e_service.ps1` | These and `install_v22_047_r1e_tasks.ps1` reuse `Get-UstqStoragePaths -RepoRoot`; task actions use external Python. A service start is not a unit test. |
 
 Run the default core regressions **from the repository root with no test path**:
@@ -422,9 +633,8 @@ checks here, storage detail in STORAGE_LAYOUT.md and Anti-Bloat detail in its
 existing policy. Global instructions apply general preferences. The C: chat
 workspace entry routes this project's work to the D: authority; historical staged
 copies and task plans do not become current policy. Only load references required
-by the task. Complex multi-step work may use the existing external task record
-with outcome, scope, milestones, decisions, validation and recovery steps; routine
-edits do not require new permanent plans or contracts.
+by the task. The Agent execution and completion section above owns resumable
+ExecPlan and delivery semantics; routine edits need no new permanent contract.
 
 When changing guidance, check current callers, configured testpaths, actual
 instruction discovery/override files, combined instruction size and destination

@@ -291,3 +291,235 @@ def test_score_projection_rejects_missing_security_identity_and_incomplete_scope
     day.loc[0, "security_id"] = None
     with pytest.raises(backend.SelectedStrategyError, match="SECURITY_IDENTITY"):
         backend._score_rows(day)
+
+
+@pytest.fixture
+def frozen_synthetic_optimizer():
+    """Execute only the current retained solve definition; never load artifacts."""
+    import ast
+    from types import SimpleNamespace
+    import numpy as np
+    import pandas as pd
+    from scipy.optimize import minimize
+    # MODULE_PATH is .../scripts/research/a2/portfolio/selected_hgb.py.
+    path = MODULE_PATH.parent.parent / "retained/a2_top20_all_methods_20260925/optimize_route.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    constants = {}
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in {"SPECS", "COST_ONE_WAY", "MAX_WEIGHT", "MAX_GROSS", "ZERO_CUTOFF"}):
+            constants[node.targets[0].id] = ast.literal_eval(node.value)
+    def covariance_for(bundle, signal, names):
+        indices = [bundle["tickers"].index(ticker) for ticker in names]
+        return bundle["covariance"][np.ix_(indices, indices)].copy()
+    namespace = {"np": np, "pd": pd, "minimize": minimize,
+                 "risk_aux": SimpleNamespace(covariance_for=covariance_for), **constants}
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "solve")
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
+    return SimpleNamespace(solve=namespace["solve"], **constants)
+
+
+def _direct_policy_inputs():
+    import numpy as np
+    import pandas as pd
+    names = [f"T{rank:02d}" for rank in range(1, 41)]
+    day = pd.DataFrame({"ticker": names, "raw_rank": range(1, 41),
+        "pred_hgb": np.arange(1, 41) / 1000., "pred_q10": -.1,
+        "raw_rank_strength": 1. - np.arange(40) / 39.})
+    bundle = {"tickers": names, "covariance": np.eye(40) * .001}
+    return day, bundle, pd.Timestamp("2026-09-24")
+
+
+def test_direct_policy_hgb_top20_controls_new_buys_without_mutating_input(frozen_synthetic_optimizer):
+    import pandas as pd
+    day, bundle, signal = _direct_policy_inputs()
+    original = day.copy(deep=True)
+    target, diagnostic = backend.solve_targets(day, {}, {}, 1., bundle,
+        frozen_synthetic_optimizer.SPECS["HGB_DIAG_5"], signal,
+        optimizer=frozen_synthetic_optimizer, policy=backend.DIRECT_POLICY)
+    assert not diagnostic["solver_failed"]
+    assert target["T40"] > 0 and "T01" not in target
+    assert set(target) <= {f"T{rank:02d}" for rank in range(21, 41)}
+    pd.testing.assert_frame_equal(day, original)
+
+
+def test_direct_policy_old_hgb_candidates_can_sell_but_cannot_increase(frozen_synthetic_optimizer):
+    day, bundle, signal = _direct_policy_inputs()
+    # Same Top20 in both policies; the low-risk old name would otherwise grow.
+    day["pred_hgb"] = .005
+    day.loc[39, "pred_hgb"] = .004
+    bundle["covariance"][39, 39] = .00001
+    old = {"T40": .01}
+    target, diagnostic = backend.solve_targets(day, {"T40": 1.}, old, 1., bundle,
+        frozen_synthetic_optimizer.SPECS["HGB_DIAG_5"], signal,
+        optimizer=frozen_synthetic_optimizer, policy=backend.DIRECT_POLICY)
+    assert not diagnostic["solver_failed"]
+    assert target.get("T40", 0.) <= old["T40"] + 1e-8
+    legacy, diagnostic = frozen_synthetic_optimizer.solve(day, {"T40": 1.}, old, 1.,
+        bundle, frozen_synthetic_optimizer.SPECS["HGB_DIAG_5"], signal)
+    assert not diagnostic["solver_failed"] and legacy["T40"] > old["T40"] + .001
+
+
+def test_legacy_policy_reuses_original_output_and_globals(frozen_synthetic_optimizer):
+    day, bundle, signal = _direct_policy_inputs()
+    spec = frozen_synthetic_optimizer.SPECS["HGB_DIAG_5"]
+    original_minimize = frozen_synthetic_optimizer.solve.__globals__["minimize"]
+    expected = frozen_synthetic_optimizer.solve(day, {}, {}, 1., bundle, spec, signal)
+    actual = backend.solve_targets(day, {}, {}, 1., bundle, spec, signal,
+                                   optimizer=frozen_synthetic_optimizer)
+    assert actual == expected
+    backend.solve_targets(day, {}, {}, 1., bundle, spec, signal,
+        optimizer=frozen_synthetic_optimizer, policy=backend.DIRECT_POLICY)
+    assert frozen_synthetic_optimizer.solve.__globals__["minimize"] is original_minimize
+
+
+def test_direct_policy_retains_risk_weighting_and_cash(frozen_synthetic_optimizer):
+    import numpy as np
+    day, bundle, signal = _direct_policy_inputs()
+    day["pred_hgb"] = .005
+    bundle["covariance"] = np.full((40, 40), .0009) + np.eye(40) * .0001
+    targets = {}
+    for strategy in backend.STRATEGY_IDS:
+        target, diagnostic = backend.solve_targets(day, {}, {}, 1., bundle,
+            frozen_synthetic_optimizer.SPECS[strategy], signal,
+            optimizer=frozen_synthetic_optimizer, policy=backend.DIRECT_POLICY)
+        assert not diagnostic["solver_failed"]
+        assert all(0 <= weight <= .1 + 1e-7 for weight in target.values())
+        targets[strategy] = target
+    assert sum(targets["HGB_FACTOR_5"].values()) < sum(targets["HGB_DIAG_5"].values()) - .5
+    assert 0 < sum(targets["HGB_FACTOR_5"].values()) < .2
+    # Stable ticker ordering resolves equal HGB scores for both risk variants.
+    assert set(targets["HGB_DIAG_5"]) == {f"T{rank:02d}" for rank in range(1, 21)}
+
+
+@pytest.mark.parametrize("bad_score", [float("nan"), float("inf"), -float("inf"), "invalid"])
+def test_direct_policy_rejects_nonfinite_predictions(frozen_synthetic_optimizer, bad_score):
+    day, bundle, signal = _direct_policy_inputs()
+    day["pred_hgb"] = day.pred_hgb.astype(object)
+    day.loc[0, "pred_hgb"] = bad_score
+    with pytest.raises(backend.SelectedStrategyError, match="FINITE_SCORES"):
+        backend.solve_targets(day, {}, {}, 1., bundle,
+            frozen_synthetic_optimizer.SPECS["HGB_DIAG_5"], signal,
+            optimizer=frozen_synthetic_optimizer, policy=backend.DIRECT_POLICY)
+
+
+def _policy_storage_paths(tmp_path):
+    """Keep all synthetic roots distinct even when pytest temp is in real cache."""
+    names = {"repo_root": "repo", "data_root": "data", "cache_root": "cache",
+             "daily_root": "daily", "backtest_root": "backtests", "results_root": "results",
+             "envs_root": "envs"}
+    paths = {key: tmp_path / name for key, name in names.items()}
+    config = paths["repo_root"] / "config/storage_paths.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({key: str(value) for key, value in paths.items()}), encoding="utf-8")
+    return paths
+
+
+@pytest.mark.parametrize("policy, relative", [
+    (backend.LEGACY_POLICY, "A2_selected_hgb/latest.json"),
+    (backend.DIRECT_POLICY, "A2_selected_hgb/direct_hgb_r1/latest.json"),
+])
+def test_active_policy_resolves_separate_daily_package(tmp_path, policy, relative):
+    paths = _policy_storage_paths(tmp_path)
+    repo, daily = paths["repo_root"], paths["daily_root"]
+    config = repo / "config/research_governance/selected_hgb_policy.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"schema_version": 1, "policy_id": policy,
+                                  "package_relative_path": relative}), encoding="utf-8")
+    assert backend.active_policy(paths) == (policy, (daily / relative).resolve())
+
+
+def test_active_policy_missing_config_preserves_legacy_and_invalid_path_is_rejected(tmp_path):
+    paths = _policy_storage_paths(tmp_path)
+    repo, daily = paths["repo_root"], paths["daily_root"]
+    assert backend.active_policy(paths) == (backend.LEGACY_POLICY, (daily / "A2_selected_hgb/latest.json").resolve())
+    config = repo / "config/research_governance/selected_hgb_policy.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"schema_version": 1, "policy_id": backend.DIRECT_POLICY,
+                                  "package_relative_path": "../outside.json"}), encoding="utf-8")
+    with pytest.raises(backend.SelectedStrategyError, match="CONFIG_INVALID"):
+        backend.active_policy(paths)
+
+
+
+def test_direct_inference_both_risks_use_the_shared_hgb_scores(monkeypatch, frozen_synthetic_optimizer):
+    import numpy as np
+    day = _day()
+    runtime = _runtime()
+    class MeanModel:
+        def predict(self, frame):
+            return np.arange(1, 41) / 1000.
+    class DownsideModel:
+        def predict(self, frame):
+            return np.full(40, -.1)
+    runtime.update(model=MeanModel(), q10=DownsideModel(), optimizer=frozen_synthetic_optimizer,
+                   risk={"tickers": day.ticker.tolist(), "covariance": np.eye(40) * .001})
+    monkeypatch.setattr(backend, "_runtime", lambda root: runtime)
+    applications, scores = backend._infer_with_scores(day, policy=backend.DIRECT_POLICY)
+    eligible = {row["ticker"] for row in scores["rows"][:20]}
+    assert eligible == {f"T{rank}" for rank in range(21, 41)}
+    for application in applications.values():
+        assert application["policy_id"] == backend.DIRECT_POLICY
+        assert application["eligibility_basis"] == "HGB_TOP20_PRED_HGB_DESC_TICKER_ASC"
+        assert {row["ticker"] for row in application["rows"] if row["target_weight"] > 0} <= eligible
+        assert application["model_fit_calls"] == 0
+
+
+
+def test_direct_build_package_uses_manifest_ledgers_without_legacy_projection(monkeypatch, tmp_path):
+    from copy import deepcopy
+    from scripts.research.a2.evaluation.three_strategy_extension import reference
+    monkeypatch.setattr(backend, "verify_frozen", lambda root: tmp_path)
+    monkeypatch.setattr(backend, "FROZEN_HASHES", {})
+    monkeypatch.setattr(backend, "_projection", lambda *args: pytest.fail("Direct package cannot read legacy ledgers"))
+    monkeypatch.setattr(backend, "_historical_day", lambda *args: pytest.fail("Current synthetic input must be used"))
+    monkeypatch.setattr(backend, "_merge_archived_snapshots", lambda *args, **kwargs: None)
+    period = {"start": "2026-09-24", "end": "2026-09-25", "days": 2,
+              "price_basis": "PIT_FORWARD_REHAB_INDEX", "decision_clock": "SIGNAL_CLOSE_NEXT_SESSION_OPEN"}
+    strategies = {}
+    for sid, nav in (("RAW_A2", 1.02), ("HGB_DIAG_5", 1.2), ("HGB_FACTOR_5", 1.05)):
+        daily_path, target_path = tmp_path / (sid + "_daily.parquet"), tmp_path / (sid + "_targets.parquet")
+        daily_path.write_bytes(("synthetic daily " + sid).encode())
+        target_path.write_bytes(("synthetic targets " + sid).encode())
+        daily = [{"date": period["start"], "nav": 1., "net_return": 0., "cash_weight": .9},
+                 {"date": period["end"], "nav": nav, "net_return": nav - 1., "cash_weight": .9}]
+        targets = [{"signal_date": "2026-09-24", "rows": [{"ticker": "T40", "target_weight": .1,
+                    "weight_before": 0., "action": "BUY"}]}]
+        strategies[sid] = {"label": sid, "daily": daily, "targets": targets,
+            "summary": {"end_nav": nav, "cumulative_return": nav - 1., "max_drawdown": 0.,
+                        "turnover": .1, "mean_cash": .9, "days": 2},
+            "outputs": {"daily": reference(daily_path), "targets": reference(target_path)}}
+    historical = [{"signal_date": "2026-09-24", "ticker": "T40", "pred_hgb": .03}]
+    manifest = {"schema_version": 1, "source_id": "NEW_PIT_COMPARISON", "status": "READY",
+        "policy_id": backend.DIRECT_POLICY, "model_fit_calls": 0, "broker_action_allowed": False,
+        "performance_period": period, "strategies": strategies, "shared_scores_historical": historical,
+        "source_refs": [], "requested_end_date": "2026-09-25", "blocked_next": None,
+        "cost_one_way": .0005, "initial_cash_coordinate": 1., "limitations": ["synthetic direct replay"]}
+    manifest_path = tmp_path / "direct_manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    current = _day()
+    monkeypatch.setattr(backend, "_current_day", lambda *args: (current, "2026-09-24", ""))
+    calls = []
+    def inference(day, state=None, *, source_root=None, policy=backend.LEGACY_POLICY):
+        calls.append(policy)
+        applications = {sid: {"status": "READY", "signal_date": "2026-09-24", "rows": [],
+            "target_cash_weight": 1., "policy_id": policy} for sid in backend.STRATEGY_IDS}
+        return applications, {"status": "READY", "signal_date": "2026-09-24", "rows": [], "reason": ""}
+    monkeypatch.setattr(backend, "_infer_with_scores", inference)
+    package = backend.build_package({"daily_root": tmp_path}, policy=backend.DIRECT_POLICY,
+                                     replay_manifest=manifest_path)
+    assert calls == [backend.DIRECT_POLICY]
+    assert package["policy_id"] == backend.DIRECT_POLICY
+    assert package["performance_period"] == period
+    assert package["shared_scores"]["historical"] == historical
+    assert package["performance_extension"]["manifest"] == reference(manifest_path)
+    for sid in backend.STRATEGY_IDS:
+        for field in ("daily", "targets", "summary"):
+            assert package["strategies"][sid][field] == manifest["strategies"][sid][field]
+        assert package["strategies"][sid]["application"]["policy_id"] == backend.DIRECT_POLICY
+    assert package["raw_reference"]["daily"] == strategies["RAW_A2"]["daily"]
+    # All returned performance fields are detached from the stored manifest data.
+    old_manifest = deepcopy(manifest)
+    package["strategies"]["HGB_DIAG_5"]["daily"][0]["nav"] = 999.
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == old_manifest

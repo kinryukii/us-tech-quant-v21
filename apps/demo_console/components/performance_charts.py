@@ -9,7 +9,10 @@ from apps.demo_console.i18n import tr
 from apps.demo_console.components.market_benchmarks import BENCHMARK_COLORS, benchmark_label
 from apps.demo_console.components.performance_lines import line_end_labels, line_label_x_range
 
-STRATEGY_COLORS = {"RAW_A2": "#2357d9", "HGB_DIAG_5": "#d97706", "HGB_FACTOR_5": "#087f71"}
+STRATEGY_COLORS = {"RAW_A2": "#2357d9", "HGB_DIAG_5": "#d97706", "HGB_FACTOR_5": "#087f71",
+    "R10_DIRECT_MEAN4_ELASTICNET_MID": "#087f71", "R10_DIRECT_H5_RIDGE_MID": "#7c3aed",
+    "R7_GROSS_LINEAR": "#c03b65", "R6_BUY_NEURAL": "#147d92",
+    "R6_DURATION_TREE": "#526920", "RAW_s10": "#687a91"}
 
 
 def _style(chart):
@@ -86,7 +89,7 @@ def nav_comparison_chart(series, *, baseline=1.0, title="NAV", percent=False, co
                     color=alt.Color("series:N", title=None,
                                     scale=alt.Scale(domain=list(series), range=palette),
                                     legend=alt.Legend(orient="top", labelExpr=_legend(legend_labels),
-                                                      labelLimit=150, columns=1, rowPadding=2, padding=4)),
+                                                      labelLimit=120, columns=2, columnPadding=10, rowPadding=2, padding=4)),
                     strokeDash=alt.StrokeDash("series:N",
                         scale=alt.Scale(domain=list(series),range=[[7,4] if label in dashed else [1,0] for label in series])),
                     tooltip=[alt.Tooltip("execution_date:T", title=tr("Execution date"), format="%Y-%m-%d"),

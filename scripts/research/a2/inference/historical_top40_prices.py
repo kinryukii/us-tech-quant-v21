@@ -205,13 +205,18 @@ def _rehab_frame(path, expected, code, row_count, verify):
     return frame
 
 
-def _prove_expanded_anchor(code, ticker, raw, factors, status, ledger, adapter, wolf):
+def _prove_expanded_anchor(code, ticker, raw, factors, status, ledger, adapter, wolf, *, frozen_code_map=None):
     rows = status.loc[status.code.eq(code)]
+    frozen = ledger.loc[ledger.ticker.eq(ticker)]
+    # Missing old evidence is a new current-native candidate, never a failed
+    # legacy qualification. The caller must bind the original frozen code map.
+    if (frozen_code_map is not None and code not in frozen_code_map
+            and rows.empty and frozen.empty):
+        raise ValueError("ORIGINAL_RAW_ANCHOR_UNBOUND")
     if len(rows) != 1 or rows.iloc[0].status != "PASS":
         raise ValueError("EXPANDED_ANCHOR_ORIGINAL_REHAB_NOT_PASS")
     if int(rows.iloc[0].row_count) != int(factors.code.eq(code).sum()):
         raise ValueError("EXPANDED_ANCHOR_REHAB_ROW_COUNT_MISMATCH")
-    frozen = ledger.loc[ledger.ticker.eq(ticker)]
     if frozen.empty:
         raise ValueError("EXPANDED_ANCHOR_NO_FROZEN_PRICE_ROWS")
     if frozen.signal_date.ge(pd.Timestamp("2026-01-01")).any():
@@ -341,7 +346,8 @@ def build_price_features(paths, members, start, end, sessions, acquisitions, reh
                 raw_refs.append({"path": name, "sha256": expected, "role": "ORIGINAL_ANCHOR"})
             raw = _merge_raw(parts)
             proof = {"kind": "ORIGINAL_613_HASH_BOUND_ANCHOR"} if anchor else _prove_expanded_anchor(
-                code, ticker, raw, factors, status, ledger, proof_adapter, wolf)
+                code, ticker, raw, factors, status, ledger, proof_adapter, wolf,
+                frozen_code_map=coverage["raw"]["code_map"])
             if anchor and raw.trade_date.min() != pd.Timestamp(anchor["first_date"]):
                 raise ValueError("ORIGINAL_PRICE_INDEX_ANCHOR_CHANGED")
             old_status = status.loc[status.code.eq(code)]

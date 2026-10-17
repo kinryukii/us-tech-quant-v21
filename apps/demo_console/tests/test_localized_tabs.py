@@ -32,13 +32,25 @@ def _label(source, language):
     return source if language == "en" else catalog()[source][language]
 
 
-def _switch_tab(app, label):
+def _switch_tab(app, label, *, key=None):
     # AppTest 1.63 exposes Tab blocks but no Tab.select(). Send the same native
     # string-value widget event the browser sends, through its real runner.
-    container = app.get("tab_container")[0].proto.tab_container
+    containers = [node.proto.tab_container for node in app.get("tab_container")]
+    container = next(node for node in containers if node.id.endswith("-" + key)) if key else containers[0]
     states = app._tree.get_widget_states()
     states.widgets.append(WidgetState(id=container.id, string_value=label))
     return app._run(states)
+
+
+def _open_expander(app, key):
+    """Send the native boolean event, including the owner's saved-state callback."""
+    panel = next(node for node in app.expander if node.proto.id.endswith("-" + key))
+    if not panel.proto.expanded:
+        states = app._tree.get_widget_states()
+        states.widgets.append(WidgetState(id=panel.proto.id, bool_value=True))
+        app._run(states)
+    assert not app.exception  # Owner validation errors remain visible and are checked by each caller.
+    return app
 
 
 class LocalizedTabsTests(unittest.TestCase):

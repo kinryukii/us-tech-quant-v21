@@ -204,6 +204,8 @@ def _read_prices(spec):
             raise ArtifactError("BENCHMARK_INVALID_OPEN_PRICE")
         if (row["ticker"], row["source"], row["adjustment"]) != (spec.symbol, "MOOMOO_OPEND", "qfq"):
             raise ArtifactError("BENCHMARK_SECURITY_OR_PROVIDER_MISMATCH")
+        if source_days is not None and row["source"] != expected_source(row["date"], source_days):
+            raise ArtifactError("BENCHMARK_FIXED_RAW_SOURCE_RULE_CHANGED")
     return calendar, {row["date"]: float(row["open"]) for row in rows}
 
 
@@ -301,10 +303,15 @@ def _updated_manifest(config):
     if (not isinstance(artifacts, list) or len(artifacts) != 2
             or {row.get("symbol") for row in artifacts} != set(_LABELS)):
         raise ArtifactError("BENCHMARK_UPDATED_ARTIFACT_SET_INVALID")
+    if manifest.get("source_fallbacks") or manifest.get("fixed_source_cutover"):
+        from scripts.storage.refresh_demo_benchmarks import source_exceptions, CUTOVER
+        if manifest.get("fixed_source_cutover") != CUTOVER:
+            raise ArtifactError("BENCHMARK_FIXED_RAW_SOURCE_RULE_CHANGED")
+        source_exceptions(manifest)
     return manifest
 
 
-def _updated_prices(spec):
+def _updated_prices(spec, source_days=None):
     first, last = spec.get("start_date"), spec.get("end_date")
     count = spec.get("row_count")
     if (iso_date(first) != first or iso_date(last) != last or first > last
@@ -329,6 +336,8 @@ def _updated_prices(spec):
     calendar = tuple(iso_date(row["date"]) for row in rows)
     if (calendar != tuple(sorted(set(calendar))) or (calendar[0], calendar[-1]) != (first, last)):
         raise ArtifactError("BENCHMARK_ARCHIVE_DATE_ORDER_OR_BOUNDARY")
+    if source_days is not None:
+        from scripts.storage.refresh_demo_benchmarks import expected_source
     for row in rows:
         price = row["open"]
         if isinstance(price, bool) or not isinstance(price, (int, float)) or not isfinite(price) or price <= 0:
@@ -336,6 +345,8 @@ def _updated_prices(spec):
         if (row["ticker"] != spec["symbol"] or row["adjustment"] != "raw"
                 or row["source"] not in ("MOOMOO_OPEND", "MASSIVE_GROUPED")):
             raise ArtifactError("BENCHMARK_SECURITY_OR_PROVIDER_MISMATCH")
+        if source_days is not None and row["source"] != expected_source(row["date"], source_days):
+            raise ArtifactError("BENCHMARK_FIXED_RAW_SOURCE_RULE_CHANGED")
     return calendar, {day: float(row["open"]) for day, row in zip(calendar, rows)}
 
 
@@ -343,7 +354,11 @@ def _updated_series(symbol, dates, baseline_date, config, manifest):
     metadata = dict(provider=manifest["provider"], adjustment="RAW", basis="OPEN_TO_OPEN_PRICE_RETURN")
     try:
         spec = next(row for row in manifest["artifacts"] if row["symbol"] == symbol)
-        calendar, prices = _updated_prices(spec)
+        source_days = None
+        if manifest.get("fixed_source_cutover"):
+            from scripts.storage.refresh_demo_benchmarks import source_exceptions
+            source_days = source_exceptions(manifest)[symbol]
+        calendar, prices = _updated_prices(spec, source_days)
         points = _aligned_points(calendar, prices, dates, baseline_date)
         return BenchmarkSeries(symbol, _LABELS[symbol], **metadata, points=points,
             total_return=points[-1].equity - 1, max_drawdown=min(point.drawdown for point in points),

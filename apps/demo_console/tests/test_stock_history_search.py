@@ -129,7 +129,7 @@ def test_applied_stock_chart_keeps_missing_breaks_observed_domains_and_stable_co
         assert spec['encoding']['x']['scale'] == {'domain': [APPLIED_DATES[0], APPLIED_DATES[-1]], 'nice': False}
         assert spec['encoding']['y']['scale']['domain'] == expected
         assert spec['encoding']['y']['scale']['reverse'] is (field == 'rank')
-        assert spec['encoding']['color']['scale']['range'] == list(STRATEGY_COLORS.values())
+        assert spec['encoding']['color']['scale']['range'] == [STRATEGY_COLORS[sid] for sid in APPLIED_IDS]
         assert spec['encoding']['detail']['field'] == field + '_segment'
         assert len(spec['data']['values']) == 9
         for sid in APPLIED_IDS:
@@ -156,6 +156,9 @@ def _applied_workspace_app():
     st.session_state.setdefault('decision_date', '2026-01-07')
     st.session_state.setdefault('workspace', 'Overview')
     st.session_state.setdefault('language', 'en')
+    # These existing record-value cases explicitly open their auxiliary logs.
+    st.session_state.setdefault('applied_stock_daily_records', True)
+    st.session_state.setdefault('applied_stock_native_records', True)
     with language_scope(st.session_state['language']):
         render_applied_rankings(st.session_state['decision_date'], {}, DecisionOverview())
         if not st.checkbox('Hide stock search', key='hide_stock_search'):
@@ -167,6 +170,7 @@ def applied_ui(monkeypatch):
     from apps.demo_console.adapters import workspace_reader
     monkeypatch.setattr(workspace_reader, 'load_applied_rankings', lambda day, **kw: fixture_applied_rankings(day))
     monkeypatch.setattr(workspace_reader, 'load_applied_stock_history', lambda **kw: fixture_applied_history())
+    monkeypatch.setattr(workspace_reader, 'load_applied_stock_catalog', lambda **kw: workspace_reader.load_applied_stock_history(**kw))
     monkeypatch.setattr(workspace_reader, 'query_applied_stock_history', fixture_applied_query)
     app = AppTest.from_function(_applied_workspace_app).run()
     assert not app.exception and not app.error and not app.warning
@@ -189,16 +193,18 @@ def _ranking_click(app, index, row):
 
 def test_applied_native_selection_keeps_workspace_date_and_manual_focus(applied_ui):
     app = applied_ui
-    assert list(app.dataframe[1].value.ticker) == ['BETA', 'ALPHA']
-    assert list(app.dataframe[2].value.ticker) == ['BETA', 'ALPHA']
-    assert list(app.dataframe[1].value.score) == list(app.dataframe[2].value.score)
-    assert list(app.dataframe[1].value.target_weight) != list(app.dataframe[2].value.target_weight)
+    combined = app.dataframe[0].value
+    diag = combined[combined.strategy_id == 'HGB_DIAG_5']
+    factor = combined[combined.strategy_id == 'HGB_FACTOR_5']
+    assert list(diag.ticker) == list(factor.ticker) == ['BETA', 'ALPHA']
+    assert list(diag.score) == list(factor.score)
+    assert list(diag.target_weight) != list(factor.target_weight)
     _ranking_click(app, 0, 2)  # Outside Top40; native selection still queries it.
     assert not app.exception and not app.error
     assert app.selectbox(key='applied_stock_ticker').value == 'NEVER'
     assert app.session_state['workspace'] == 'Overview'
     assert app.session_state['decision_date'] == '2026-01-07'
-    assert list(app.dataframe[3].value.selection_coverage) == ['0 / 2'] * 3
+    assert list(app.dataframe[1].value.selection_coverage) == ['0 / 2'] * 3
     app.selectbox(key='applied_stock_ticker').set_value('ALPHA').run()
     assert app.selectbox(key='applied_stock_ticker').value == 'ALPHA'
     app.checkbox(key='hide_stock_search').check().run()
@@ -209,10 +215,13 @@ def test_applied_native_selection_keeps_workspace_date_and_manual_focus(applied_
 
 def test_applied_common_filters_orders_and_missing_date_clear_stale_tables(applied_ui, monkeypatch):
     app = applied_ui
+    from apps.demo_console.tests.test_localized_tabs import _open_expander
+    _open_expander(app, 'applied_rank_sources')
     assert any('3 / 4 mapped securities' in caption.value for caption in app.caption)
     app.selectbox(key='applied_rank_order').set_value('Portfolio weight').run()
-    assert list(app.dataframe[1].value.ticker) == ['ALPHA', 'BETA']
-    assert list(app.dataframe[2].value.ticker) == ['BETA', 'ALPHA']
+    combined = app.dataframe[0].value
+    assert list(combined[combined.strategy_id == 'HGB_DIAG_5'].ticker) == ['ALPHA', 'BETA']
+    assert list(combined[combined.strategy_id == 'HGB_FACTOR_5'].ticker) == ['BETA', 'ALPHA']
     app.text_input(key='applied_rank_query').set_value('Outside Top40').run()
     assert list(app.dataframe[0].value.ticker) == ['NEVER']
     assert len(app.dataframe) == 1
@@ -244,11 +253,11 @@ def test_applied_stock_private_dates_clip_to_asof_and_unknown_ticker_is_explicit
     app.run()
     app.date_input(key='applied_stock_dates').set_value((date(2026, 1, 6), date(2026, 1, 7))).run()
     assert app.session_state['decision_date'] == '2026-01-07'
-    assert list(app.dataframe[3].value.selection_coverage) == ['1 / 1'] * 3
+    assert list(app.dataframe[1].value.selection_coverage) == ['1 / 1'] * 3
     app.session_state['decision_date'] = '2026-01-06'
     app.run()
     assert app.date_input(key='applied_stock_dates').value == (date(2026, 1, 6), date(2026, 1, 6))
-    assert list(app.dataframe[3].value.selection_coverage) == ['—'] * 3
+    assert list(app.dataframe[1].value.selection_coverage) == ['—'] * 3
     assert len(app.get('vega_lite_chart')) == 0
     assert not app.warning
     # AppTest's selectbox.index cannot serialize accept_new_options. Exercise
@@ -263,7 +272,7 @@ def test_applied_stock_private_dates_clip_to_asof_and_unknown_ticker_is_explicit
         found.string_value = 'UNKNOWN'
     app._run(states)
     assert not app.exception and not app.error and not app.warning
-    assert len(app.dataframe) == 3  # Rankings remain; the old stock tables disappear.
+    assert len(app.dataframe) == 1  # The unified ranking remains; old stock tables disappear.
     assert any('no verified record' in message.value for message in app.info)
     assert not any('was created with a default value' in record.message for record in caplog.records)
 
@@ -277,7 +286,7 @@ def test_applied_stock_search_remains_visible_without_verified_source(applied_ui
     app.run()
     assert not app.exception and not app.error and not app.warning
     assert app.selectbox(key='applied_stock_ticker').value == 'ALPHA'
-    assert len(app.dataframe) == 3
+    assert len(app.dataframe) == 1
     assert len(app.get('vega_lite_chart')) == 0
     assert any('history is unavailable' in message.value for message in app.info)
 
@@ -337,16 +346,110 @@ def test_applied_identity_price_and_13f_sources_follow_private_range_without_cha
 @pytest.mark.parametrize('language', ('en', 'zh', 'ja'))
 def test_applied_labels_translate_without_altering_focus_or_economic_fields(applied_ui, language):
     from apps.demo_console.i18n import language_scope, tr
-    from apps.demo_console.pages.selected_strategies import WORKSPACE_STRATEGIES
+    from apps.demo_console.pages.selected_strategies import WORKSPACE_STRATEGIES, strategy_label
     app = applied_ui
     app.session_state['language'] = language
     app.selectbox(key='applied_stock_ticker').set_value('ALPHA').run()
     assert not app.exception and not app.error
     with language_scope(language):
-        labels = [tr(WORKSPACE_STRATEGIES[sid]) for sid in APPLIED_IDS]
-        assert list(app.dataframe[3].value.strategy) == labels
-        assert list(app.dataframe[5].value.strategy)[:3] == labels
+        labels = [tr(strategy_label(sid)) for sid in APPLIED_IDS]
+        assert list(app.dataframe[1].value.strategy) == labels
+        assert list(app.dataframe[3].value.strategy)[:3] == labels
         assert app.selectbox(key='applied_rank_order').options == [tr('Score ranking'), tr('Portfolio weight')]
     assert app.session_state['applied_stock_ticker'] == 'ALPHA'
-    assert list(app.dataframe[4].value['weight']) == [.05, .2, .4]
+    assert list(app.dataframe[2].value['weight']) == [.05, .2, .4]
     assert app.session_state['decision_date'] == '2026-01-07'
+
+
+def _ranking_validation_app():
+    import streamlit as st
+    from apps.demo_console.components.top20_table import render_applied_rankings
+    from apps.demo_console.models import DecisionOverview
+    render_applied_rankings('2026-01-07', {}, DecisionOverview())
+
+
+def test_ranking_validation_failure_is_not_reported_as_no_rankings(monkeypatch):
+    from apps.demo_console.adapters import workspace_reader
+    snapshot = {'status': 'UNAVAILABLE', 'error': 'SYNTHETIC_BINDING_CONFLICT',
+        'strategies': {sid: {'status': 'UNAVAILABLE', 'rows': []} for sid in APPLIED_IDS}}
+    monkeypatch.setattr(workspace_reader, 'load_applied_rankings', lambda *a, **kw: snapshot)
+    app = AppTest.from_function(_ranking_validation_app).run()
+    assert not app.exception
+    assert any('does not mean this date has no rankings' in warning.value for warning in app.warning)
+    from apps.demo_console.tests.test_localized_tabs import _open_expander
+    _open_expander(app, 'applied_rank_sources')
+    assert any('SYNTHETIC_BINDING_CONFLICT' in block.value for block in app.code)
+    assert not any('No verified ranking is available for this date.' in item.value for item in app.info)
+    assert len(app.dataframe) == 0
+
+
+def test_genuinely_absent_ranking_retains_no_ranking_message(monkeypatch):
+    from apps.demo_console.adapters import workspace_reader
+    snapshot = {'status': 'UNAVAILABLE', 'error': None,
+        'strategies': {sid: {'status': 'UNAVAILABLE', 'rows': []} for sid in APPLIED_IDS}}
+    monkeypatch.setattr(workspace_reader, 'load_applied_rankings', lambda *a, **kw: snapshot)
+    app = AppTest.from_function(_ranking_validation_app).run()
+    assert not app.exception and not app.warning
+    assert len(app.info) == 1
+    assert all(item.value == 'No verified ranking is available for this date.' for item in app.info)
+
+
+def test_stock_records_keep_hgb_original_input_rank_separate_from_model_rank():
+    daily=fixture_applied_daily('ALPHA')
+    daily[0]['strategies']['HGB_DIAG_5']['raw_rank']=8
+    records=applied_stock_records(daily)
+    hgb=next(row for row in records if row['strategy_id']=='HGB_DIAG_5')
+    raw=next(row for row in records if row['strategy_id']=='RAW_A2')
+    assert hgb['raw_input_rank']==8 and hgb['rank']!=8
+    assert raw['raw_input_rank'] is None
+
+
+def test_hgb_source_gap_keeps_search_and_version_explanation(applied_ui,monkeypatch):
+    from apps.demo_console.adapters import workspace_reader
+    def partial(*args,**kwargs):
+        result=fixture_applied_query(*args,**kwargs)
+        result['score_source_errors']={'2026-01-06':'SYNTHETIC_ORIGINAL_INPUT_UNAVAILABLE'}
+        return result
+    monkeypatch.setattr(workspace_reader,'query_applied_stock_history',partial)
+    app=applied_ui.selectbox(key='applied_stock_ticker').set_value('ALPHA').run()
+    assert not app.exception and not app.error
+    assert any('Some HGB historical inputs failed verification' in item.value for item in app.warning)
+    assert any('Raw ranks use the latest verified coverage' in item.value for item in app.caption)
+    snapshot=next(item.value for item in app.dataframe if 'raw_input_rank' in item.value.columns)
+    assert len(snapshot)==3 and 'rank' in snapshot.columns
+    assert app.selectbox(key='applied_stock_ticker').value=='ALPHA'
+
+
+def test_closed_stock_auxiliary_logs_are_not_serialized_and_original_daily_records_open(applied_ui):
+    from apps.demo_console.tests.test_localized_tabs import _open_expander
+    app = applied_ui
+    app.selectbox(key='applied_stock_ticker').set_value('ALPHA').run()
+    app.session_state['applied_stock_daily_records'] = False
+    app.session_state['applied_stock_native_records'] = False
+    app.run()
+    assert not app.exception and not app.error
+    assert not any('in_pool' in node.value.columns for node in app.dataframe)
+    assert not any('native_action' in node.value.columns for node in app.dataframe)
+    day, ticker = app.session_state['decision_date'], app.selectbox(key='applied_stock_ticker').value
+    _open_expander(app, 'applied_stock_daily_records')
+    assert any('in_pool' in node.value.columns for node in app.dataframe)
+    assert app.session_state['decision_date'] == day
+    assert app.selectbox(key='applied_stock_ticker').value == ticker
+
+
+@pytest.mark.parametrize('field', ['rank', 'target_weight'])
+def test_stock_trajectory_legend_retains_all_five_labels_without_ellipsis(field):
+    from apps.demo_console.pages.selected_strategies import WORKSPACE_STRATEGIES, strategy_label
+    from apps.demo_console.i18n import tr
+    rows = [{'date': '2026-01-05', 'execution_date': '2026-01-05', 'strategy_id': sid,
+             'rank': index + 1, 'target_weight': .05, 'rank_segment': 0, 'target_weight_segment': 0}
+            for index, sid in enumerate(WORKSPACE_STRATEGIES)]
+    spec = applied_stock_chart(rows, field).to_dict(validate=True)
+    assert spec['encoding']['color']['scale']['domain'] == [tr(strategy_label(sid)) for sid in WORKSPACE_STRATEGIES]
+    assert spec['height'] == 400
+    from apps.demo_console.components.chart_display import chart_for_display
+    display = chart_for_display(applied_stock_chart(rows, field), presentation=True).to_dict(validate=True)
+    assert display['height'] == 400
+    assert len(spec['encoding']['color']['scale']['domain']) == 5
+    assert spec['encoding']['color']['legend'] == {'orient': 'bottom', 'columns': 2, 'labelLimit': 0, 'columnPadding': 16, 'rowPadding': 6}
+    assert {row['strategy_id'] for row in spec['data']['values']} == set(WORKSPACE_STRATEGIES)

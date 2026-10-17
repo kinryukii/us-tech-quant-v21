@@ -19,8 +19,9 @@ def localized_tabs(sources: Sequence[str], *, key: str,
     """Return all native tab containers, retaining the selected English source.
 
     Pass untranslated source messages and a stable, unique widget key. Callers
-    render every returned container normally; this helper does not gate content
-    on ``tab.open``. The private source state survives widget cleanup when the
+    gate expensive content with ``if tab.open`` before entering its container.
+    The native callback exposes that state without adding a second selector.
+    The private source state survives widget cleanup when the
     containing page is temporarily absent.
 
     ``format_func`` may format a source containing placeholders into its final
@@ -47,3 +48,21 @@ def localized_tabs(sources: Sequence[str], *, key: str,
         st.session_state[key] = label
     return st.tabs(labels, key=key, default=label, on_change=_remember_tab,
                    args=(key, source_key, dict(zip(labels, sources))))
+
+
+def _remember_expander(key: str, saved_key: str) -> None:
+    st.session_state[saved_key] = bool(st.session_state.get(key, False))
+
+
+def localized_expander(source: str, *, key: str, expanded: bool = False):
+    """Original native details, preserving open state when labels translate."""
+    label = tr(source)
+    saved_key = f"_localized_expander:{key}"
+    label_key = saved_key + ":label"
+    # Same saved-state pattern as the existing monthly period inspector.
+    if st.session_state.get(label_key) != label or key not in st.session_state:
+        if saved_key in st.session_state:
+            st.session_state[key] = st.session_state[saved_key]
+        st.session_state[label_key] = label
+    return st.expander(label, key=key, expanded=expanded,
+                       on_change=_remember_expander, args=(key, saved_key))

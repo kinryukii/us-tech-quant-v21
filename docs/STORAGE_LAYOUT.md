@@ -19,8 +19,8 @@ canonical data remains read-only.
 | --- | --- |
 | Maintained source, tests, small configs/manifests and small synthetic fixtures | Appropriate source/test directory in the selected checkout; use REPOSITORY_LAYOUT.md |
 | Canonical raw/published/PIT data | `data_root`; writes require explicit data-management authorization |
-| Model/checkpoint, OOF/prediction, ledger, run-owned derived research inputs and diagnostic charts/logs | `backtest_root`, under the existing experiment's identity; reuse `scripts/storage/backtest_run_manager.py` for new managed runs |
-| Final readable report, delivery figures and governance/audit evidence | `results_root`; governance reports use `_maintenance/<task_id>/` |
+| Model/checkpoint, OOF/prediction, ledger, input/output manifests, receipts, run-owned derived research inputs and diagnostic charts/logs | `backtest_root`, under the existing experiment's identity; reuse `scripts/storage/backtest_run_manager.py` for new managed runs |
+| Final readable report, delivery figures, governance task record/receipt and audit evidence | `results_root`; governance reports use `_maintenance/<task_id>/` |
 | Rebuildable acquisition cache, scratch files, pytest temp/cache and package cache | `cache_root`; task-owned transient files use a bounded task subdirectory; shared rebuildable derived inputs use `cache_root/derived` and the existing `derived` contract |
 | Daily state, recovery records, daily logs and current-chain outputs | `daily_root`, under the existing chain's lifecycle |
 | Python environments and installed dependencies | `envs_root`; use the canonical interpreter, no repository-local `.venv` |
@@ -38,10 +38,21 @@ Before writing, resolve the full destination (including junction/symlink targets
 and `..` segments) and verify containment in the approved root for that purpose.
 Being outside the repository alone is insufficient. Reuse
 `scripts/storage/storage_r2a.py::assert_write_path` where applicable to
-backtest/daily/derived output. The common `assert_safe_output_path` only rejects
-repository-local writes; it does not establish purpose-specific containment.
-Do not claim a Python helper or PowerShell resolver intercepts every possible
-write. Missing destinations or access stop that write; continue independent work
+backtest/daily/derived output. Common `resolve_*_path` helpers enforce physical
+containment within their corresponding root, including absolute parts, `..` and
+link targets; `resolve_data_path` is a read-path resolver, not write permission.
+`assert_safe_output_path(path, kind="results")` pins the declared output purpose;
+without kind it accepts only configured cache/daily/backtest/results roots and
+rejects data/repository/environment/unapproved output. PowerShell uses the same
+physical-root checks through `Assert-UstqExternalPath -Kind results`. Writable
+root initialization touches only those four output roots; it never creates or
+probe-writes canonical data or the installed environment.
+
+Do not claim these caller helpers intercept arbitrary writes or authorize a
+protected artifact overwrite. A direct writer still needs the appropriate guard
+and task authority; explicit data management uses its existing separate contract.
+Do not overwrite frozen artifacts: validate their identity and preserve original
+bytes, recording a distinct authorized run identity if new outputs are required. Missing destinations or access stop that write; continue independent work
 without falling back to the C: chat workspace, repository, Desktop or an
 unapproved root. Creating research products locally and migrating later is not
 the default workflow.

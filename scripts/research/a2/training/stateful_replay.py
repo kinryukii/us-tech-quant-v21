@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+from dataclasses import asdict
 from pathlib import Path
 import sys
 import joblib
@@ -325,15 +326,24 @@ def read_market(reader):
     return market,top,qualified,vol,stock,raw
 
 
-def execute_market(market,candidates,packets,top,qualified,vol,account,*,stock_present=None,raw_selector_present=None,events=(),known_at=None,unsupported=(),risk_provider=None):
+def execute_market(market,candidates,packets,top,qualified,vol,account,*,stock_present=None,raw_selector_present=None,events=(),known_at=None,unsupported=(),risk_provider=None,execution_friction=None,
+                   entitlement_enabled=False,entitlement_events=(),entitlement_security_tickers=None,entitlement_source_binding=None,research_account_authority=None,research_quote_domain=None,research_ca_accounting_convention=None,policy_factory=None,descriptive_evaluation_authority=None):
     """No I/O: real shared fills update previous action; targets never update it."""
     if stock_present is None or raw_selector_present is None or not np.array_equal(market.input_present,np.asarray(stock_present,bool)|np.asarray(raw_selector_present,bool)):
         raise ValueError('EXPLICIT_COMMON_INFORMATION_SOURCE_BITS_REQUIRED')
+    if execution_friction is not None:
+        from scripts.research.a2.training.stateful_account import _friction_rates
+        _friction_rates(execution_friction)
+        if any(c.get('execution_friction')!=execution_friction for c in candidates):
+            raise ValueError('POLICY_AND_ACCOUNT_FRICTION_IDENTITIES_DIFFER')
+    elif any(c.get('execution_friction') is not None for c in candidates):
+        raise ValueError('EXPLICIT_POLICY_FRICTION_REQUIRES_ACCOUNT_EXECUTION_BINDING')
     ids=tuple(c['candidate_id'] for c in candidates);pi={p:i for i,p in enumerate(ids)};ti={t:i for i,t in enumerate(market.tickers)}
     previous=np.full((len(ids),len(ti)),'NO_ACTUAL_FILL',dtype=object)
     last_fill=np.full(previous.shape,np.datetime64('NaT','ns'),dtype='datetime64[ns]')
     holding_chunks=[];action_chunks=[]
-    overlay=StatefulOverlay(candidates,packets,top,qualified,vol,risk_provider=risk_provider)
+    policy_kwargs={} if descriptive_evaluation_authority is None else {"descriptive_evaluation_authority":descriptive_evaluation_authority}
+    overlay=(StatefulOverlay if policy_factory is None else policy_factory)(candidates,packets,top,qualified,vol,risk_provider=risk_provider,**policy_kwargs)
     def callback(name,frame):
         if name=='fills':
             for r in frame.itertuples():
@@ -362,8 +372,24 @@ def execute_market(market,candidates,packets,top,qualified,vol,account,*,stock_p
                 'signal_close_available':np.isfinite(market.close[di,indexes])&(market.close[di,indexes]>0),
                 'planned_execution_date':market.dates[di+1] if di+1<len(market.dates) else pd.NaT}))
         return target
+    execution_kwargs={} if execution_friction is None else {'execution_friction':execution_friction}
+    if descriptive_evaluation_authority is not None:
+        execution_kwargs['descriptive_evaluation_authority']=descriptive_evaluation_authority
+    entitlement_events=tuple(entitlement_events)
+    if (entitlement_enabled is not False or entitlement_events or entitlement_security_tickers
+            or entitlement_source_binding is not None):
+        # The shared owner validates terms/binding and retains unsupported events.
+        # This adapter never discovers, certifies or reclassifies real sources.
+        execution_kwargs.update(entitlement_enabled=entitlement_enabled,entitlement_events=entitlement_events,
+            entitlement_security_tickers=entitlement_security_tickers,entitlement_source_binding=entitlement_source_binding)
+    if research_account_authority is not None:
+        execution_kwargs['research_account_authority']=research_account_authority
+    if research_quote_domain is not None:
+        execution_kwargs['research_quote_domain']=research_quote_domain
+    if research_ca_accounting_convention is not None:
+        execution_kwargs['research_ca_accounting_convention']=research_ca_accounting_convention
     replay=run_continuous_account(market,ids,policy,account,corporate_actions=events,
-        corporate_action_known_at=known_at,unsupported_events=unsupported,ledger_callback=callback)
+        corporate_action_known_at=known_at,unsupported_events=unsupported,ledger_callback=callback,**execution_kwargs)
     actions=pd.concat(action_chunks,ignore_index=True) if action_chunks else pd.DataFrame()
     holdings=pd.concat(holding_chunks,ignore_index=True) if holding_chunks else replay.positions
     if len(actions):
@@ -382,12 +408,35 @@ def execute_market(market,candidates,packets,top,qualified,vol,account,*,stock_p
                 'previous_actual_action':previous[p,t],'previous_actual_fill_date':last_fill[p,t]})
     continuation=pd.DataFrame(terminal);continuation['annual_reset']=False
     continuation['accounting_qualified']=continuation.path_id.map({path:bool(replay.final_state['accounting_qualified'][i]) for i,path in enumerate(ids)})
-    continuation['pending_orders_semantics']='FROZEN_FULL_PREFIX_RECONSTRUCTION_REQUIRED; NO_FABRICATED_2026_FILL'
+    continuation['pending_orders_semantics']=('FRESH_START_FROZEN_TEST_ACCOUNT_NO_INHERITED_PREFIX;NO_FABRICATED_FILLS' if descriptive_evaluation_authority is not None else 'FROZEN_FULL_PREFIX_RECONSTRUCTION_REQUIRED; NO_FABRICATED_2026_FILL')
     frames={'daily':replay.daily,'positions':holdings,'fills':replay.fills,'orders':replay.orders,
         'execution_results':replay.execution_results,'actions':actions,'source_intents':actions[['path_id','signal_date','ticker','is_raw_top20','qualified','new_buy_eligible','raw_top20_count','source_intent_equal_weight','stock_forecast_input_present','raw_selector_input_present','decision_information_present_union']].copy(),'gross':pd.DataFrame(overlay.audit),
         'cash':replay.daily[['path_id','date','cash','accounting_qualified']].copy(),'continuation':continuation,
         'contexts':replay.contexts,'costs':replay.daily[['path_id','date','transaction_cost_amount','buy_notional','sell_notional']].copy()}
-    for f in frames.values():f['scenario']='V24_PRE2026_USD3000_FRACTIONAL_RESEARCH_REPLAY'
+    if entitlement_enabled is True:
+        frames['entitlements']=replay.entitlements.copy()
+        for column in ('receivable_value_usd','entitlement_cash_flow_usd','actual_cash_flow_identity_error'):
+            frames['cash'][column]=replay.daily[column]
+        continuation['receivable_value_usd']=np.where(continuation.row_type.eq('CASH'),
+            continuation.path_id.map({path:float(replay.final_state['receivable_value_usd'][i])
+                                      for i,path in enumerate(ids)}),0.)
+        # Preserve the owner's full lifecycle state; there is no incremental
+        # state-loader API. Continuation still reconstructs the frozen prefix.
+        frames['entitlement_state']=pd.DataFrame([
+            {'path_id':path,'as_of':market.dates[-1],
+             'state_json':json.dumps(asdict(replay.final_state['entitlement_states'][i]),sort_keys=True,allow_nan=False),
+             'source_binding_json':json.dumps(replay.metadata['entitlement_source_binding'],sort_keys=True,allow_nan=False),
+             'quantity_coordinate':replay.metadata['entitlement_quantity_coordinate'],
+             'pending_orders_semantics':continuation.pending_orders_semantics.iloc[0]}
+            for i,path in enumerate(ids)])
+    if execution_friction is not None:
+        for column in ('slippage_amount','transaction_fee'):
+            frames['costs'][column]=replay.daily[column]
+        frames['costs']['execution_friction_scenario']=execution_friction['scenario_id']
+        frames['costs']['one_way_slippage_bps']=execution_friction['one_way_bps']
+        frames['costs']['costs_already_charged_in_cash']=True
+    scenario=('V24_2026_FRESH_USD3000_FROZEN_DESCRIPTIVE_REPLAY' if descriptive_evaluation_authority is not None else 'V24_PRE2026_USD3000_FRACTIONAL_RESEARCH_REPLAY')
+    for f in frames.values():f['scenario']=scenario
     return replay,frames
 
 
@@ -401,24 +450,203 @@ def _append(path,event):
         stream.write(json.dumps(event,sort_keys=True,allow_nan=False)+'\n');stream.flush()
 
 
-def run(run_dir,candidate_ids=None):
-    run_dir,config,auth,candidates=frozen_contract(run_dir)
+def _read_parent_inputs_readonly(source_run):
+    """Reuse unchanged InputReader; intercept its optional metadata refresh only.
+
+    The scoped guard is active before prepare_inputs can write the frozen parent.
+    Any regenerated metadata difference fails, without modifying original bytes.
+    The single numerical worker has no concurrent fitting or secondary writer.
+    """
+    from unittest.mock import patch
+    manifest=(Path(source_run)/'input_manifest.json').resolve()
+    before=manifest.read_bytes();writer=Path.write_text
+    def guarded(path,content,*args,**kwargs):
+        if path.resolve()==manifest:
+            encoding=kwargs.get('encoding') or 'utf-8'
+            if content.encode(encoding)!=before:
+                raise ValueError('FROZEN_PARENT_INPUT_MANIFEST_REFRESH_REFUSED')
+            return len(content)
+        return writer(path,content,*args,**kwargs)
+    with patch.object(Path,'write_text',guarded):
+        reader=InputReader(source_run)
+    if manifest.read_bytes()!=before:raise ValueError('FROZEN_PARENT_INPUT_MANIFEST_CHANGED')
+    return reader
+
+
+def _bound_entitlement_inputs(auth,market,events,original_unsupported):
+    """Consume B source catalogue; retain A share/quote identity and unknowns."""
+    from scripts.research.a2.evaluation.joint_method_accounts import with_effective_event_quality
+    b=auth['source_account_binding'];ref=b['cash_source_bundle']
+    _pin(ref['path'],ref['sha256']);kwargs=joblib.load(ref['path'])
+    required=('entitlement_enabled','entitlement_events','entitlement_security_tickers','entitlement_source_binding')
+    if any(k not in kwargs for k in required) or kwargs['entitlement_enabled'] is not True:
+        raise ValueError('SOURCE_ACCOUNT_ENTITLEMENT_INPUTS_MISSING')
+    source=kwargs['entitlement_source_binding'];catalogue=tuple(kwargs['entitlement_events'])
+    if (source.get('source_fingerprint')!=b['cash_binding_semantic_fingerprint']
+            or [e.event_fingerprint for e in catalogue]!=b['entitlement_catalogue_fingerprints']
+            or kwargs['entitlement_security_tickers']!=b['security_tickers']):
+        raise ValueError('SOURCE_ACCOUNT_CATALOGUE_PAYLOAD_CHANGED')
+    from scripts.v22.corporate_action_transition_r1 import SourceBackedEntitlementEvent, SourceBackedTerminalEvent
+    for e in catalogue:
+        if not isinstance(e,(SourceBackedEntitlementEvent,SourceBackedTerminalEvent)):
+            raise ValueError('SOURCE_ACCOUNT_EVENT_TYPE_REQUIRED')
+        e.__post_init__()  # Deserialization must not bypass typed source guards.
+        dates=([e.effective_date] if isinstance(e,SourceBackedTerminalEvent) else [e.ex_date,e.record_date])
+        if (e.currency!='USD' or e.amount_unit!='USD_PER_RAW_OLD_SHARE'
+                or e.quantity_coordinate!='RAW_OLD_SECURITY_SHARES'
+                or any(pd.Timestamp(d)>=BOUNDARY for d in dates)
+                or pd.Timestamp(e.available_at).tz_convert('UTC')>=BOUNDARY.tz_localize('UTC')):
+            raise ValueError('SOURCE_ACCOUNT_EVENT_COORDINATE_OR_BOUNDARY')
+        if isinstance(e,SourceBackedTerminalEvent) and e.settlement is not None:
+            e.settlement.__post_init__()
+            if (pd.Timestamp(e.settlement.available_at).tz_convert('UTC')>=BOUNDARY.tz_localize('UTC')
+                    or pd.Timestamp(e.settlement.pay_date)>=BOUNDARY):
+                raise ValueError('SOURCE_ACCOUNT_TERMINAL_SETTLEMENT_PRE2026_REQUIRED')
+    removal={tuple(x) for x in source['manifest']['removal_keys']}
+    # Preserve ORIGINAL quote/trading domain BEFORE removing source-backed cash
+    # exceptions. No event-day quote becomes legal merely because cash is bound.
+    market=with_effective_event_quality(market,{'corporate_actions':events,'unsupported_events':original_unsupported})
+    def key(x):return (x.get('ticker'),str(pd.Timestamp(x.get('effective_date')).date()),x.get('source_fingerprint'))
+    remaining=tuple(x for x in original_unsupported if key(x) not in removal)
+    removed=tuple(key(x) for x in original_unsupported if key(x) in removal)
+    return market,remaining,{k:kwargs[k] for k in required},dict(
+        cash_source_bundle=ref,cash_binding_semantic_fingerprint=source['source_fingerprint'],
+        exact_A_unsupported_keys_removed=removed,remaining_A_unsupported_keys=len(remaining),
+        original_quote_domain_preserved=True,qualification_basis='SOURCE_DECLARED_GROSS',
+        vendor_numeric_conflict_reconciled=False,final_paid_rate_verified=False,
+        training_label_contract=b['training_label_contract'])
+
+
+def qualification_checks(replay,path):
+    """Qualification only: no NAV or return amount is returned to orchestration."""
+    daily=replay.daily.loc[replay.daily.path_id.eq(path)].sort_values('date')
+    positions=replay.positions.loc[replay.positions.path_id.eq(path)]
+    held=positions.index_units.gt(1e-10)
+    stale=positions.loc[held&positions.stale,['date','ticker']]
+    unknown=positions.loc[held&positions.unknown,['date','ticker']]
+    def identity(column):
+        values=daily[column].to_numpy(float)
+        return bool(np.isfinite(values).all() and np.abs(values).max(initial=0)<=1e-8)
+    cash=identity('cash_flow_identity_error') and identity('actual_cash_flow_identity_error')
+    entitlement=True
+    table=replay.entitlements.loc[replay.entitlements.path_id.eq(path)]
+    path_index=list(replay.metadata['path_ids']).index(path)
+    exceptions=replay.accounting_exceptions
+    if not exceptions.empty:exceptions=exceptions.loc[exceptions.path_id.eq(path)]
+    for phase in ('EX_PRETRADE_RAW_SHARE_SNAPSHOT','RECEIVABLE_RECOGNIZED','CASH_PAID'):
+        if table.loc[table.phase.eq(phase),'event_id'].duplicated().any():entitlement=False
+    for state in (replay.final_state['entitlement_states'][path_index],):
+        quantities=dict(state.ex_quantities)
+        if state.blocked_events or len(quantities)!=len(state.ex_quantities) or len(set(state.paid_event_ids))!=len(state.paid_event_ids):entitlement=False
+        if any(claim.event_id not in quantities or abs(claim.entitled_raw_shares-quantities[claim.event_id])>1e-8 for claim in state.receivables):entitlement=False
+    if not table.empty:
+        for phase,columns in [('EX_PRETRADE_RAW_SHARE_SNAPSHOT',['entitled_raw_shares']),
+                ('RECEIVABLE_RECOGNIZED',['amount_usd','spendable_cash_delta']),
+                ('CASH_PAID',['entitled_raw_shares','amount_usd','spendable_cash_delta'])]:
+            if not np.isfinite(table.loc[table.phase.eq(phase),columns].to_numpy(float)).all():entitlement=False
+        if not table.loc[table.phase.eq('RECEIVABLE_RECOGNIZED'),'spendable_cash_delta'].eq(0).all():entitlement=False
+        paid=table.loc[table.phase.eq('CASH_PAID')]
+        if not np.allclose(paid.spendable_cash_delta,paid.amount_usd,rtol=0,atol=1e-8):entitlement=False
+    terminal_identity=True
+    terminal_settlement=True
+    if replay.metadata.get('terminal_lifecycle_enabled',False):
+        terminal_settlement=replay.metadata['terminal_settlement_qualified_by_path'][path] is True
+        path_state=replay.final_state['entitlement_states'][list(replay.metadata['path_ids']).index(path)]
+        for event in replay.metadata['terminal_events']:
+            quantity=dict(path_state.ex_quantities).get(event['event_id'],0.)
+            snapshots=table.loc[table.event_id.eq(event['event_id']) & table.phase.eq('TERMINAL_PRE_EFFECTIVE_RAW_SHARE_SNAPSHOT')]
+            if quantity > 0 and (len(snapshots)!=1 or not np.allclose(snapshots.entitled_raw_shares,quantity,rtol=0,atol=1e-8)):
+                terminal_identity=False
+        for phase in ('TERMINAL_PRE_EFFECTIVE_RAW_SHARE_SNAPSHOT','SECURITY_EXTINGUISHED',
+                      'MERGER_RECEIVABLE_RECOGNIZED','SETTLEMENT_AUTHORITY_AVAILABLE'):
+            if table.loc[table.phase.eq(phase),'event_id'].duplicated().any():terminal_identity=False
+        for snapshot in table.loc[table.phase.eq('TERMINAL_PRE_EFFECTIVE_RAW_SHARE_SNAPSHOT')].itertuples():
+            same=table.loc[table.event_id.eq(snapshot.event_id)]
+            extinct=same.loc[same.phase.eq('SECURITY_EXTINGUISHED')]
+            claims=same.loc[same.phase.eq('MERGER_RECEIVABLE_RECOGNIZED')]
+            if len(extinct)!=1 or len(claims)!=1:
+                terminal_identity=False;continue
+            if (not extinct.remaining_raw_shares.eq(0).all()
+                    or not extinct.spendable_cash_delta.eq(0).all()
+                    or not claims.spendable_cash_delta.eq(0).all()
+                    or not np.allclose(extinct.entitled_raw_shares,snapshot.entitled_raw_shares,rtol=0,atol=1e-8)
+                    or not np.allclose(claims.amount_usd,snapshot.entitled_raw_shares*snapshot.cash_per_old_share,rtol=0,atol=1e-8)
+                    or not np.isclose(snapshot.pre_effective_engine_units*snapshot.pre_effective_quantity_factor,
+                                      snapshot.entitled_raw_shares,rtol=0,atol=1e-8)
+                    or not same.currency.eq('USD').all() or not same.amount_unit.eq('USD_PER_RAW_OLD_SHARE').all()
+                    or not same.quantity_coordinate.eq('RAW_OLD_SECURITY_SHARES').all()
+                    or not same.receivable_id.eq(snapshot.receivable_id).all()):terminal_identity=False
+            effect=pd.Timestamp(snapshot.effective_date)
+            if (positions.loc[held & positions.ticker.eq(snapshot.ticker),'date'].ge(effect).any()
+                    or replay.fills.loc[replay.fills.path_id.eq(path)&replay.fills.ticker.eq(snapshot.ticker),'execution_date'].ge(effect).any()):
+                terminal_identity=False
+            for payment in same.loc[same.phase.eq('CASH_PAID')].itertuples():
+                opening=(pd.Timestamp(payment.session)+pd.Timedelta(hours=9,minutes=30)).tz_localize('America/New_York')
+                if (pd.isna(payment.pay_date) or pd.Timestamp(payment.session)<pd.Timestamp(payment.pay_date)
+                        or pd.isna(payment.settlement_available_at)
+                        or pd.Timestamp(payment.settlement_available_at)>opening
+                        or not isinstance(payment.settlement_source_fingerprint,str)
+                        or len(payment.settlement_source_fingerprint)!=64):terminal_identity=False
+        entitlement=entitlement and terminal_identity
+    quote=bool(not len(stale) and not len(unknown) and daily[['open_stale_count','open_unknown_count']].eq(0).all().all())
+    nav=bool((np.isfinite(daily.certified_nav)&daily.certified_nav.gt(0)).all())
+    accounting=bool(daily.accounting_qualified.all())
+    checks=dict(accounting_qualified=accounting,quote_qualified=quote,certified_NAV_all_window_finite=nav,
+        cash_identity_correct=cash,entitlement_identity_correct=entitlement,
+        full_window_sessions=len(daily),full_window_752_sessions=len(daily)==752,
+        stale_holding_rows=len(stale),stale_holding_days=int(stale.date.nunique()),unknown_holding_rows=len(unknown),
+        open_stale_sessions=int(daily.open_stale_count.gt(0).sum()),open_unknown_sessions=int(daily.open_unknown_count.gt(0).sum()),
+        actual_CA_exception_rows=len(exceptions),
+        stale_keys=[dict(date=str(pd.Timestamp(x.date).date()),ticker=x.ticker) for x in stale.itertuples()],
+        unknown_keys=[dict(date=str(pd.Timestamp(x.date).date()),ticker=x.ticker) for x in unknown.itertuples()],
+        accounting_exception_keys=[{k:v for k,v in x.items() if k in ('path_id','ticker','effective_date','date','reason')} for x in exceptions.to_dict('records')],
+        selection_performed=False,new_fit_units=0,test_2026_rows_read=0)
+    if replay.metadata.get('terminal_lifecycle_enabled',False):
+        checks.update(terminal_identity_correct=bool(terminal_identity),terminal_settlement_qualified=bool(terminal_settlement))
+    checks['eligible_for_selection']=bool(terminal_settlement and all(checks[k] for k in ('accounting_qualified','quote_qualified','certified_NAV_all_window_finite','cash_identity_correct','entitlement_identity_correct','full_window_752_sessions')))
+    checks['status']='QUALIFIED_BASELINE_ONLY_NO_CANDIDATE_ACTIVATION' if checks['eligible_for_selection'] else 'NOT_TESTABLE_REQUIRED_BASELINE'
+    return checks
+
+
+def _run_account_batch(run_dir,candidate_ids=None,*,continuation=False):
+    if continuation:
+        from scripts.research.a2.training.stateful_execution import continuation_contract,continuation_worker_guard
+        continuation_worker_guard(run_dir)
+        contract=continuation_contract
+    else:
+        contract=frozen_contract
+    run_dir,config,auth,candidates=contract(run_dir)
+    if continuation:
+        auth={**auth,**auth['source_pins']}
+        auth['controller_module_sha256']=auth['module_sha256']
+        auth['module_sha256']=auth['replay_module_sha256']
+    source_run=Path(config['parent_run_dir']).resolve() if continuation else run_dir
     if candidate_ids is not None:
         requested=set(candidate_ids)
         if not requested or not requested.issubset({c['candidate_id'] for c in candidates}):raise ValueError('UNKNOWN_REQUESTED_FROZEN_CANDIDATE')
         candidates=[c for c in candidates if c['candidate_id'] in requested]
-    log=run_dir/'ACCOUNT_PATH_LOG.jsonl';history=_events(log)
+    log=run_dir/'ACCOUNT_PATH_LOG.jsonl'
+    def log_event(event):
+        if continuation:
+            event.update(continuation=True,namespace=auth.get('namespace','R2'),module_sha256=auth['module_sha256'],controller_module_sha256=auth['controller_module_sha256'])
+        _append(log,event)
+    history=_events(log)
     started=[e for e in history if e['event']=='ACCOUNT_PATH_ATTEMPT_STARTED']
     if any(c['candidate_id'] in {e['candidate_id'] for e in started} or c['scientific_tuple_sha256'] in {e['scientific_tuple_sha256'] for e in started} for c in candidates):
         raise ValueError('ALREADY_ATTEMPTED_ACCOUNT_ID_OR_TUPLE_NO_ALIAS_RETRY')
-    if config['prior_account_paths']+len(started)+len(candidates)>MAX_PATHS:raise ValueError('FULL_ACCOUNT_PATH_BUDGET_EXHAUSTED')
+    prior=0 if continuation else config['prior_account_paths']
+    limit=config['budget']['new_account_attempts_hard_limit'] if continuation else MAX_PATHS
+    if prior+len(started)+len(candidates)>limit:raise ValueError('FULL_ACCOUNT_PATH_BUDGET_EXHAUSTED')
+    friction=candidates[0].get('execution_friction') if continuation else None
+    if continuation and (friction is None or any(c.get('execution_friction')!=friction for c in candidates)):
+        raise ValueError('CONTINUATION_BATCH_REQUIRES_ONE_FROZEN_FRICTION_SCENARIO')
     batch=len({e['batch'] for e in started})+1;folder=run_dir/'ledgers/stateful'/f'attempt_{batch:04d}'
     assert_write_path(folder,'backtest')
     if folder.exists():raise ValueError('EXISTING_ACCOUNT_OUTPUTS_PRESERVED')
     folder.mkdir(parents=True)
-    for c in candidates:_append(log,{'event':'ACCOUNT_PATH_ATTEMPT_STARTED','path_units':1,'batch':batch,'candidate_id':c['candidate_id'],'scientific_tuple_sha256':c['scientific_tuple_sha256'],'reference_replay':c.get('reference_identity'),'module_sha256':auth['module_sha256']})
+    for c in candidates:log_event({'event':'ACCOUNT_PATH_ATTEMPT_STARTED','path_units':1,'batch':batch,'candidate_id':c['candidate_id'],'scientific_tuple_sha256':c['scientific_tuple_sha256'],'reference_replay':c.get('reference_identity'),'module_sha256':auth['module_sha256'],**({'continuation':True,'namespace':auth.get('namespace','R2'),'controller_module_sha256':auth['controller_module_sha256']} if continuation else {})})
     try:
-        reader=InputReader(run_dir);market,top,qualified,vol,stock,raw=read_market(reader)
+        reader=_read_parent_inputs_readonly(source_run) if continuation else InputReader(source_run);market,top,qualified,vol,stock,raw=read_market(reader)
         packets={};model_failures={};risk_failures={};providers={};risk_metadata=[]
         for model in {c['value_model'] for c in candidates}:
             try:
@@ -428,14 +656,14 @@ def run(run_dir,candidate_ids=None):
                 model_failures[model]={'type':type(exc).__name__,'message':str(exc)}
         for method in {c['risk'] for c in candidates if c['risk'] not in ('diag','diag20_reference')}:
             try:
-                provider,details=read_risk_packets(auth,reader,[c for c in candidates if c['risk']==method],market.dates,vol,run_dir)
+                provider,details=read_risk_packets(auth,reader,[c for c in candidates if c['risk']==method],market.dates,vol,source_run)
                 providers[method]=provider;risk_metadata.append(details)
             except Exception as exc:
                 risk_failures[method]={'type':type(exc).__name__,'message':str(exc)}
         blocked={c['candidate_id']:model_failures.get(c['value_model'],risk_failures.get(c['risk'])) for c in candidates if c['value_model'] in model_failures or c['risk'] in risk_failures}
         for c in candidates:
             if c['candidate_id'] in blocked:
-                _append(log,{'event':'ACCOUNT_PATH_FAILED','batch':batch,'candidate_id':c['candidate_id'],'scientific_tuple_sha256':c['scientific_tuple_sha256'],'failure':blocked[c['candidate_id']],'stage':'MODEL_OR_RISK_SOURCE_BEFORE_ACCOUNT'})
+                log_event({'event':'ACCOUNT_PATH_FAILED','batch':batch,'candidate_id':c['candidate_id'],'scientific_tuple_sha256':c['scientific_tuple_sha256'],'failure':blocked[c['candidate_id']],'stage':'MODEL_OR_RISK_SOURCE_BEFORE_ACCOUNT'})
         active=[c for c in candidates if c['candidate_id'] not in blocked]
         if not active:
             audit={'status':'BLOCKED_ALL_REQUESTED_CANDIDATES_DATA_OR_MODEL','account_paths_created':0,'attempt_units':len(candidates),'blocked':blocked,'fit_units':0,'2026_rows_read':0}
@@ -446,7 +674,10 @@ def run(run_dir,candidate_ids=None):
             return providers[method](di,selected,tickers,method)
         old=_old();account=old.config_adapter(_json(PARENT/'R1_ACCOUNT_CONFIG.json'))
         events,known,unsupported,event_receipt=old.frozen_events(_json(PARENT/'INPUT_BINDING_R1.json'))
-        replay,frames=execute_market(market,active,packets,top,qualified,vol,account,stock_present=stock,raw_selector_present=raw,events=events,known_at=known,unsupported=unsupported,risk_provider=risk_provider)
+        source_binding_metadata={};entitlement_kwargs={}
+        if auth.get('qualification_only') is True:
+            market,unsupported,entitlement_kwargs,source_binding_metadata=_bound_entitlement_inputs(auth,market,events,unsupported)
+        replay,frames=execute_market(market,active,packets,top,qualified,vol,account,stock_present=stock,raw_selector_present=raw,events=events,known_at=known,unsupported=unsupported,risk_provider=risk_provider,execution_friction=friction,**entitlement_kwargs)
         risk_records=[record for group in risk_metadata for record in group]
         if risk_records:frames['risk_metadata']=pd.DataFrame(risk_records)
         expected=pd.MultiIndex.from_product([market.dates,[c['candidate_id'] for c in active]],names=['date','path_id'])
@@ -456,7 +687,7 @@ def run(run_dir,candidate_ids=None):
         for name,frame in frames.items():
             path=folder/(name+'.parquet');assert_write_path(path,'backtest');frame.to_parquet(path,index=False)
             records[name]={'path':str(path),'sha256':sha(path),'rows':len(frame),'schema':list(frame.columns)}
-        frozen_contract(run_dir)
+        contract(run_dir)
         eligibility={}
         for c in active:
             d=replay.daily.loc[replay.daily.path_id.eq(c['candidate_id'])].sort_values('date')
@@ -465,7 +696,9 @@ def run(run_dir,candidate_ids=None):
                 'certified_nav_positive_and_finite_all':bool((np.isfinite(d.loc[d.date.dt.year.eq(y),'certified_nav'])&(d.loc[d.date.dt.year.eq(y),'certified_nav']>0)).all()),
                 'net_return_finite_except_initial':bool(np.isfinite(d.loc[d.date.dt.year.eq(y)&d.date.ne(market.dates[0]),'net_return']).all())} for y in (2023,2024,2025)}
         audit={'status':'ACTUAL_CONTINUOUS_PRE2026_REPLAY_COMPLETE','batch':batch,'candidate_ids':[c['candidate_id'] for c in candidates],
-            'account_paths_created':len(active),'blocked_candidates':blocked,'account_path_attempts_cumulative':config['prior_account_paths']+len(started)+len(candidates),
+            'account_paths_created':len(active),'blocked_candidates':blocked,'account_path_attempts_cumulative':prior+len(started)+len(candidates),
+            'continuation':continuation,'source_run':str(source_run),
+            'execution_friction':friction,'policy_and_execution_cost_schedule_identical':True,
             'source_closure':{k:sha(p) for k,p in SOURCE_PATHS.items()},'input_manifest_sha256':auth['input_manifest_sha256'],
             'candidates_sha256':auth['candidates_sha256'],'account_config':account,'source_events':event_receipt,
             'packet_sources':{k:v['source_receipts'] for k,v in packets.items()},'calendar_sessions':752,'annual_reset':False,
@@ -475,20 +708,36 @@ def run(run_dir,candidate_ids=None):
             'reference_paths_are_new_account_replays_not_old_artifact_reuse':True,
             'cash_authority':'ZERO_INTEREST; NO_CASH_COMPONENT_INFERENCE; UNSUPPORTED_EVENTS_FAIL_CLOSED',
             'deployment_role':'PRE2026_RESEARCH_ONLY; NO_LOCKED_TEST_OR_LIVE_DEPLOYMENT'}
+        if auth.get('qualification_only') is True:
+            audit['qualification_checks']=qualification_checks(replay,active[0]['candidate_id'])
+            audit['source_account_binding']=source_binding_metadata
         write_json_atomic(folder/'audit.json',audit)
-        for c in active:_append(log,{'event':'ACCOUNT_PATH_COMPLETE','batch':batch,'candidate_id':c['candidate_id'],'scientific_tuple_sha256':c['scientific_tuple_sha256'],'audit_path':str(folder/'audit.json'),'audit_sha256':sha(folder/'audit.json')})
+        for c in active:log_event({'event':'ACCOUNT_PATH_COMPLETE','batch':batch,'candidate_id':c['candidate_id'],'scientific_tuple_sha256':c['scientific_tuple_sha256'],'audit_path':str(folder/'audit.json'),'audit_sha256':sha(folder/'audit.json')})
         return {'status':audit['status'],'audit_path':str(folder/'audit.json'),'rows':{k:v['rows'] for k,v in records.items()},'selection_eligibility':eligibility}
     except Exception as exc:
         failure={'type':type(exc).__name__,'message':str(exc)}
         write_json_atomic(folder/'audit.json',{'status':'FAILED_ACCOUNT_ATTEMPT_RETAINED','batch':batch,'candidate_ids':[c['candidate_id'] for c in candidates],'account_path_units_consumed':len(candidates),'failure':failure,'fit_units':0,'2026_rows_read':0})
         for c in candidates:
-            if c['candidate_id'] not in locals().get('blocked',{}):_append(log,{'event':'ACCOUNT_PATH_FAILED','batch':batch,'candidate_id':c['candidate_id'],'scientific_tuple_sha256':c['scientific_tuple_sha256'],'failure':failure})
+            if c['candidate_id'] not in locals().get('blocked',{}):log_event({'event':'ACCOUNT_PATH_FAILED','batch':batch,'candidate_id':c['candidate_id'],'scientific_tuple_sha256':c['scientific_tuple_sha256'],'failure':failure})
         raise
 
 
+def run(run_dir,candidate_ids=None):
+    return _run_account_batch(run_dir,candidate_ids,continuation=False)
+
+
+def run_continuation(run_dir,candidate_ids=None):
+    return _run_account_batch(run_dir,candidate_ids,continuation=True)
+
+
 def main(argv=None):
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--run-dir',type=Path,required=True);p.add_argument('--candidate',action='append')
-    args=p.parse_args(argv);print(json.dumps(run(args.run_dir,args.candidate),sort_keys=True));return 0
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--run-dir',type=Path,required=True);p.add_argument('--candidate',action='append');p.add_argument('--continuation',action='store_true');p.add_argument('--research-account',action='store_true')
+    args=p.parse_args(argv)
+    if args.research_account:
+        if args.continuation:raise ValueError('RESEARCH_AND_STRICT_CONTINUATION_EXCLUSIVE')
+        from scripts.research.a2.training.stateful_research_account import run_batch as worker
+    else:worker=run_continuation if args.continuation else run
+    print(json.dumps(worker(args.run_dir,args.candidate),sort_keys=True));return 0
 
 
 if __name__=='__main__':raise SystemExit(main())

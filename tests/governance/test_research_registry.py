@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Iterator
@@ -19,7 +20,13 @@ from scripts.maintenance import research_registry as rr
 def tmp_path() -> Iterator[Path]:
     """Sandbox-safe synthetic root; pytest's Windows 0700 basetemp is unreadable here."""
     base = Path(os.environ.get("US_TECH_QUANT_TEST_TMP_ROOT", r"D:\us-tech-quant-cache")).resolve()
-    root = (base / f"pytest-research-registry-{uuid.uuid4().hex}").resolve()
+    # Keep the full UUID entropy in an opaque 64-character base4 component.
+    # Digits in a UUID can accidentally form F1/scientific-number text when
+    # the existing compact outcome matcher scans a complete reference path.
+    # This names synthetic scratch only; production outcome guards stay intact.
+    token = "".join("abcd"[int(ch, 16) >> 2] + "abcd"[int(ch, 16) & 3]
+                    for ch in uuid.uuid4().hex)
+    root = (base / token).resolve()
     if root.parent != base or root.exists():
         raise RuntimeError(f"unsafe or pre-existing synthetic test root: {root}")
     root.mkdir()
@@ -28,7 +35,17 @@ def tmp_path() -> Iterator[Path]:
     finally:
         if root.parent != base:
             raise RuntimeError(f"refusing unsafe synthetic test cleanup: {root}")
-        shutil.rmtree(root)
+        for attempt in range(4):
+            try:
+                shutil.rmtree(root)
+                break
+            except PermissionError as exc:
+                # Windows scanner/Arrow handles may briefly hold a test file.
+                # Retry only sharing violations on this verified task-owned
+                # root; access denials and a persistent lock remain errors.
+                if getattr(exc, "winerror", None) != 32 or attempt == 3:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
 
 
 def fp(label: str) -> str:
@@ -2263,3 +2280,900 @@ def test_public_read_fails_closed_when_event_chain_is_missing(tmp_path: Path) ->
     (tmp_path / rr.EVENTS_FILE).unlink()
     with pytest.raises(rr.RegistryError, match="EVENT_CHAIN_HEAD_MISMATCH"):
         rr.query_registry(tmp_path, entity_id="RAW_A2")
+
+
+# Synthetic evidence only: this exercises the explicitly bounded R3 review path.
+def r3_review_fixture(tmp_path: Path, *, parent_status: str = "ACTIVE") -> tuple[Path, dict]:
+    root = tmp_path / "registry"
+    parent = entity(rr.R3_REVIEW_PARENT_ID, status=parent_status,
+                    information_family="canonical_raw_score",
+                    target_definition="Mean QQQ-relative excess return over 3D 5D 10D and 20D")
+    parent["information_source_fingerprint"] = rr.R3_REVIEW_INFORMATION_SHA256
+    base = rr.apply_patch(root, reviewed_patch(rr.GENESIS, [{"op": "add_entity", "entity": parent}]))
+    candidate = entity(rr.R3_REVIEW_ENTITY_ID, status="OPEN", layer="PURE_SELECTOR", failures=0,
+                       information_family="canonical PIT32 + calibrated base OOF")
+    candidate.update({
+        "specification": json.loads(json.dumps(rr.R3_REVIEW_SPECIFICATION)),
+        "mechanism": json.loads(json.dumps(rr.R3_REVIEW_MECHANISM)),
+        "specification_fingerprint": rr.sha256_value(rr.R3_REVIEW_SPECIFICATION),
+        "mechanism_fingerprint": rr.sha256_value(rr.R3_REVIEW_MECHANISM),
+        "information_source_fingerprint": rr.R3_REVIEW_INFORMATION_SHA256,
+        "parent_entity_id": rr.R3_REVIEW_PARENT_ID, "entity_type": "RESEARCH_BRANCH",
+        "metadata": {"fit_authority": False, "formal_freeze_authority": False,
+                     "source_gate": "BLOCKED_SOURCE_QUALIFICATION"},
+    })
+    operation = {"op": "add_entity", "change_type": "EXPLICIT_HUMAN_NEW_MONTHLY_CADENCE",
+                 "parent_entity_id": rr.R3_REVIEW_PARENT_ID, "entity": candidate}
+    proposal = {"candidate": candidate, "change_type": operation["change_type"],
+                "parent_entity_id": rr.R3_REVIEW_PARENT_ID}
+    decision = rr.preflight_proposal(root, proposal)
+    binding = {
+        "schema_version": 1, "research_id": rr.R3_REVIEW_ENTITY_ID,
+        "registry_head_sha256": base["head_sha256"], "proposal_sha256": decision["proposal_sha256"],
+        "specification_fingerprint": candidate["specification_fingerprint"],
+        "mechanism_fingerprint": candidate["mechanism_fingerprint"],
+        "information_source_fingerprint": rr.R3_REVIEW_INFORMATION_SHA256,
+        "parent_entity_id": rr.R3_REVIEW_PARENT_ID,
+        "review_operations_subject_sha256": rr.sha256_value([operation]),
+        "constraints_sha256": rr.sha256_value(rr.R3_REVIEW_SPECIFICATION),
+        "fit_authority": False, "formal_freeze_authority": False, "source_gate_required": True,
+    }
+    human = {**binding, "kind": "HUMAN_AUTHORIZATION_RECORD", "human_user_authorized": True,
+             "authorization_source": "CURRENT_HUMAN_REQUEST", "recorded_by": "synthetic-author",
+             "human_request_sha256": rr.sha256_value({"synthetic_user_instruction": "R3 only"})}
+    human_path = tmp_path / "R3_HUMAN_AUTHORIZATION.json"
+    human_path.write_bytes(rr.canonical_json(human))
+    human_sha = rr.sha256_file(human_path)
+    review = {**binding, "kind": "INDEPENDENT_R3_REGISTRY_REVIEW", "status": "PASS",
+              "independent": True, "author": "synthetic-author", "reviewer": "synthetic-reviewer",
+              "scope": "OPEN_METADATA_ONLY", "human_authorization_sha256": human_sha,
+              "nonredundancy_basis": "MONTHLY_VS_ANNUAL_TIMING_WITH_FLAG_ONLY_CONTROL",
+              "prior_artifact_reopened": False, "legacy_exposure_retained": True}
+    review_path = tmp_path / "R3_INDEPENDENT_REGISTRY_REVIEW.json"
+    review_path.write_bytes(rr.canonical_json(review))
+    operation["review_resolution"] = {
+        "kind": "R3_SAME_SOURCE_MONTHLY_CADENCE", "automatic_decision": decision,
+        "human_authorization_ref": str(human_path), "human_authorization_sha256": human_sha,
+        "independent_review_ref": str(review_path), "independent_review_sha256": rr.sha256_file(review_path),
+    }
+    return root, reviewed_patch(base["head_sha256"], [operation])
+
+
+def r3_refresh_patch_integrity(patch: dict) -> None:
+    patch["operations_sha256"] = rr.sha256_value(patch["operations"])
+
+
+def test_r3_independent_review_accepts_open_metadata_without_fit_authority(tmp_path: Path) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    original = patch["operations"][0]["review_resolution"]["automatic_decision"]
+    assert original["status"] == "REVIEW_REQUIRED"
+    assert original["decision"] == "REVIEW_REQUIRED_INSUFFICIENT_EVIDENCE"
+    result = rr.apply_patch(root, patch)
+    assert result["status"] == "PASS"
+    row = rr.query_registry(root, entity_id=rr.R3_REVIEW_ENTITY_ID)["entities"][0]
+    assert row["status"] == "OPEN"
+    assert row["information_source_fingerprint"] == rr.R3_REVIEW_INFORMATION_SHA256
+    assert row["metadata"]["automatic_preflight_decision"] == original
+    assert row["metadata"]["explicit_review_decision"] == "ACCEPT_OPEN_METADATA_ONLY"
+    assert row["metadata"]["fit_authority"] is False
+    assert row["metadata"]["formal_freeze_authority"] is False
+    assert row["metadata"]["source_gate_required"] is True
+    assert rr.validate_registry(root)["status"] == "PASS"
+
+
+def test_r3_missing_resolution_remains_automatic_review_required(tmp_path: Path) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    patch["operations"][0].pop("review_resolution")
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="PROPOSAL_NOT_APPLYABLE:REVIEW_REQUIRED"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("role_ids", ["MONTHLY_FIXED_CORE_RIDGE", "UNAUTHORIZED_ROLE"]),
+    ("seeds", [20260928, 7]), ("configs_per_role", 2),
+    ("monthly_risk_state_slots", 241), ("matched_annual_risk_state_slots", 21),
+    ("backend_fit_calls", 193), ("retry_allowance", 1), ("test2026", "UNLOCKED"),
+    ("legacy_role_exposure_count", 0), ("identity_policy", "ALLOW_STITCHING"),
+    ("target", "NEW_TARGET"), ("evaluation_years", [2023, 2024, 2025, 2026]),
+])
+def test_r3_review_rejects_scope_expansion(tmp_path: Path, field: str, value: object) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    row = patch["operations"][0]["entity"]
+    row["specification"][field] = value
+    row["specification_fingerprint"] = rr.sha256_value(row["specification"])
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_CONTRACT_MISMATCH:specification"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("entity_id", "UNAUTHORIZED_ID", "R3_REVIEW_ENTITY_NOT_AUTHORIZED"),
+    ("status", "ACTIVE", "R3_REVIEW_ENTITY_NOT_AUTHORIZED"),
+    ("information_source_fingerprint", "f" * 64, "PROPOSAL_NOT_APPLYABLE:PASS_DISTINCT_INFORMATION_SOURCE"),
+])
+def test_r3_review_rejects_identity_source_and_active_authority(
+    tmp_path: Path, field: str, value: object, error: str,
+) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    patch["operations"][0]["entity"][field] = value
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match=error):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field", ["fit_authority", "formal_freeze_authority"])
+def test_r3_review_cannot_confer_source_or_fit_authority(tmp_path: Path, field: str) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    patch["operations"][0]["entity"]["metadata"][field] = True
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_OPEN_METADATA_ONLY_REQUIRED"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("evidence", ["human_authorization", "independent_review"])
+def test_r3_review_rejects_evidence_hash_tamper(tmp_path: Path, evidence: str) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    proof = patch["operations"][0]["review_resolution"]
+    proof[evidence + "_sha256"] = "f" * 64
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_METADATA_SHA256_MISMATCH"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("registry_head_sha256", "f" * 64), ("proposal_sha256", "f" * 64),
+    ("specification_fingerprint", "f" * 64), ("mechanism_fingerprint", "f" * 64),
+    ("review_operations_subject_sha256", "f" * 64),
+])
+def test_r3_review_rejects_rehashed_cross_binding(tmp_path: Path, field: str, value: str) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    proof = patch["operations"][0]["review_resolution"]
+    path = Path(proof["independent_review_ref"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record[field] = value
+    path.write_bytes(rr.canonical_json(record))
+    proof["independent_review_sha256"] = rr.sha256_file(path)
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_EVIDENCE_BINDING_MISMATCH:" + field):
+        rr.apply_patch(root, patch)
+
+
+def test_r3_review_rejects_forged_automatic_pass_and_self_review(tmp_path: Path) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    patch["operations"][0]["review_resolution"]["automatic_decision"]["status"] = "PASS"
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_AUTOMATIC_DECISION_MISMATCH"):
+        rr.apply_patch(root, patch)
+    patch["independent_review"]["reviewer"] = patch["author"]
+    with pytest.raises(rr.RegistryError, match="INDEPENDENT_REVIEWER_MUST_DIFFER_FROM_AUTHOR"):
+        rr.apply_patch(root, patch)
+
+
+def test_r3_review_does_not_override_terminal_lineage_or_alias_collision(tmp_path: Path) -> None:
+    root, patch = r3_review_fixture(tmp_path, parent_status="CLOSED")
+    with pytest.raises(rr.RegistryError, match="PROPOSAL_NOT_APPLYABLE:BLOCKED_CLOSED_BRANCH"):
+        rr.apply_patch(root, patch)
+    other = tmp_path / "other"
+    other.mkdir()
+    root, patch = r3_review_fixture(other)
+    patch["operations"][0]["entity"]["aliases"] = [rr.R3_REVIEW_PARENT_ID]
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="PROPOSAL_NOT_APPLYABLE:BLOCKED_ALIAS_CONFLICT"):
+        rr.apply_patch(root, patch)
+
+
+def test_r3_review_retains_firewall_and_single_operation_gate(tmp_path: Path) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    patch["operations"][0]["entity"]["realized_holdout_sharpe"] = 1.0
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="PERFORMANCE_METRIC_FIELDS_FORBIDDEN"):
+        rr.apply_patch(root, patch)
+    patch["operations"][0]["entity"].pop("realized_holdout_sharpe")
+    patch["operations"].append({"op": "set_status", "entity_id": rr.R3_REVIEW_PARENT_ID, "status": "CLOSED"})
+    patch["operation_count"] = 2
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_SINGLE_NEW_ENTITY_OPERATION_REQUIRED"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field", ["human_authorization_ref", "human_authorization_sha256",
+                                   "independent_review_ref", "independent_review_sha256"])
+def test_r3_review_requires_both_real_evidence_references(tmp_path: Path, field: str) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    patch["operations"][0]["review_resolution"].pop(field)
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value", [("independent", False), ("reviewer", "synthetic-author"),
+                                         ("prior_artifact_reopened", True),
+                                         ("legacy_exposure_retained", False),
+                                         ("nonredundancy_basis", "RENAME_ONLY")])
+def test_r3_review_requires_actual_independent_nonredundancy_attestation(
+    tmp_path: Path, field: str, value: object,
+) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    proof = patch["operations"][0]["review_resolution"]
+    path = Path(proof["independent_review_ref"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record[field] = value
+    path.write_bytes(rr.canonical_json(record))
+    proof["independent_review_sha256"] = rr.sha256_file(path)
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_INDEPENDENT_PATCH_REVIEW_REQUIRED"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value", [("training_authorized_now", True), ("extra_role", "NEW_ROLE"),
+                                         ("source_qualification_status", "PASS")])
+def test_r3_review_rejects_shadow_authority_and_unreviewed_metadata(
+    tmp_path: Path, field: str, value: object,
+) -> None:
+    root, patch = r3_review_fixture(tmp_path)
+    patch["operations"][0]["entity"]["metadata"][field] = value
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_UNSUPPORTED_METADATA"):
+        rr.apply_patch(root, patch)
+
+
+# Reuse the synthetic R3 fixture; change only the explicitly authorized authority
+# premise and exact new identity. The real registry is never loaded by tests.
+def fh_review_fixture(tmp_path: Path, *, parent_status="ACTIVE"):
+    root, patch = r3_review_fixture(tmp_path, parent_status=parent_status)
+    operation = patch["operations"][0]
+    old = operation.pop("review_resolution")
+    candidate = operation["entity"]
+    candidate.update(entity_id=rr.FH_REVIEW_ENTITY_ID, canonical_name=rr.FH_REVIEW_ENTITY_ID,
+        specification=dict(rr.FH_REVIEW_SPECIFICATION), mechanism=dict(rr.FH_REVIEW_MECHANISM),
+        specification_fingerprint=rr.sha256_value(rr.FH_REVIEW_SPECIFICATION),
+        mechanism_fingerprint=rr.sha256_value(rr.FH_REVIEW_MECHANISM))
+    candidate["metadata"].update(source_gate="FROZEN_HISTORY_CONTRACT_AND_FORMAL_FREEZE_REQUIRED",
+        mechanism_research_eligible=True, strict_PIT_promotion_eligible=False)
+    operation["change_type"] = "EXPLICIT_HUMAN_FROZEN_HISTORY_MONTHLY_CADENCE"
+    decision = rr.preflight_proposal(root, {"candidate":candidate,
+        "change_type":operation["change_type"],"parent_entity_id":rr.R3_REVIEW_PARENT_ID})
+    shared = dict(research_id=rr.FH_REVIEW_ENTITY_ID, proposal_sha256=decision["proposal_sha256"],
+        specification_fingerprint=candidate["specification_fingerprint"],
+        mechanism_fingerprint=candidate["mechanism_fingerprint"],
+        review_operations_subject_sha256=rr.sha256_value([operation]),
+        constraints_sha256=rr.sha256_value(rr.FH_REVIEW_SPECIFICATION),
+        mechanism_research_eligible=True, strict_PIT_promotion_eligible=False,
+        source_contract_mode="FROZEN_HISTORY_MECHANISM_RESEARCH_ONLY")
+    human = json.loads(Path(old["human_authorization_ref"]).read_text())
+    human.update(shared)
+    hp=tmp_path/"FH_HUMAN_AUTHORIZATION.json";hp.write_bytes(rr.canonical_json(human))
+    review=json.loads(Path(old["independent_review_ref"]).read_text())
+    review.update(shared, kind="INDEPENDENT_FH_REGISTRY_REVIEW",
+                  human_authorization_sha256=rr.sha256_file(hp))
+    rp=tmp_path/"FH_INDEPENDENT_REGISTRY_REVIEW.json";rp.write_bytes(rr.canonical_json(review))
+    operation["review_resolution"]=dict(kind="FH_SAME_BYTES_MONTHLY_CADENCE",
+        automatic_decision=decision,human_authorization_ref=str(hp),
+        human_authorization_sha256=rr.sha256_file(hp),independent_review_ref=str(rp),
+        independent_review_sha256=rr.sha256_file(rp))
+    r3_refresh_patch_integrity(patch)
+    return root,patch
+
+
+def test_fh_review_preserves_same_bytes_and_denies_promotion(tmp_path):
+    root,patch=fh_review_fixture(tmp_path)
+    rr.apply_patch(root,patch)
+    row=rr.query_registry(root,entity_id=rr.FH_REVIEW_ENTITY_ID)["entities"][0]
+    assert row["status"]=="OPEN"
+    assert row["information_source_fingerprint"]==rr.R3_REVIEW_INFORMATION_SHA256
+    assert row["metadata"]["mechanism_research_eligible"] is True
+    assert row["metadata"]["strict_PIT_promotion_eligible"] is False
+    assert row["metadata"]["fit_authority"] is False
+    assert row["metadata"]["automatic_preflight_decision"]["status"]=="REVIEW_REQUIRED"
+
+
+@pytest.mark.parametrize("field,value",[("strict_PIT_promotion_eligible",True),("mechanism_research_eligible",False)])
+def test_fh_review_rejects_eligibility_expansion(tmp_path,field,value):
+    root,patch=fh_review_fixture(tmp_path)
+    patch["operations"][0]["entity"]["metadata"][field]=value
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError,match="FH_REVIEW_MECHANISM_ONLY_REQUIRED"):
+        rr.apply_patch(root,patch)
+
+
+def test_fh_review_cannot_reopen_terminal_parent(tmp_path):
+    root,patch=fh_review_fixture(tmp_path,parent_status="CLOSED")
+    with pytest.raises(rr.RegistryError,match="PROPOSAL_NOT_APPLYABLE:BLOCKED_CLOSED_BRANCH"):
+        rr.apply_patch(root,patch)
+
+
+def test_fh_review_rejects_false_historical_authority_in_human_record(tmp_path):
+    root,patch=fh_review_fixture(tmp_path)
+    resolution=patch["operations"][0]["review_resolution"]
+    path=Path(resolution["human_authorization_ref"])
+    record=json.loads(path.read_text());record["strict_PIT_promotion_eligible"]=True
+    path.write_bytes(rr.canonical_json(record))
+    resolution["human_authorization_sha256"]=rr.sha256_file(path)
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError,match="FH_REVIEW_AUTHORITY_PREMISE_REQUIRED"):
+        rr.apply_patch(root,patch)
+
+
+# R5 uses the existing review resolver and entirely synthetic registry/evidence.
+def breadth_review_fixture(tmp_path: Path, *, prior_status: str = "CLOSED",
+                           prior_disposition: str = "R4_CLOSED_NO_MECHANISM_SUPPORT",
+                           changed_prior_contract: bool = False) -> tuple[Path, dict]:
+    root, prior_patch = fh_review_fixture(tmp_path)
+    rr.apply_patch(root, prior_patch)
+    prior = rr.query_registry(root, entity_id=rr.FH_REVIEW_ENTITY_ID)["entities"][0]
+    prior_metadata = json.loads(json.dumps(prior["metadata"]))
+    prior_metadata["scientific_disposition"] = prior_disposition
+    update = {"entity_id": rr.FH_REVIEW_ENTITY_ID, "metadata": prior_metadata}
+    if changed_prior_contract:
+        prior_metadata["specification"]["target"] = "DIFFERENT_PRIOR_TARGET"
+        update["specification_fingerprint"] = rr.sha256_value(prior_metadata["specification"])
+    closing = [{"op": "update_entity", "entity": update}]
+    if prior_status != "OPEN":
+        closing.append({"op": "close" if prior_status == "CLOSED" else "tombstone",
+                        "entity_id": rr.FH_REVIEW_ENTITY_ID})
+    base = rr.apply_patch(root, reviewed_patch(rr.current_state(root)["head_sha256"], closing))
+    candidate = json.loads(json.dumps(prior_patch["operations"][0]["entity"]))
+    scope_path = tmp_path / "REGISTRY_SCOPE.json"
+    scope_path.write_bytes(rr.canonical_json(rr.BREADTH_REVIEW_SCOPE))
+    candidate.update(
+        entity_id=rr.BREADTH_REVIEW_ENTITY_ID, canonical_name=rr.BREADTH_REVIEW_ENTITY_ID,
+        specification=json.loads(json.dumps(rr.BREADTH_REVIEW_SPECIFICATION)),
+        mechanism=json.loads(json.dumps(rr.BREADTH_REVIEW_MECHANISM)),
+        specification_fingerprint=rr.sha256_value(rr.BREADTH_REVIEW_SPECIFICATION),
+        mechanism_fingerprint=rr.sha256_value(rr.BREADTH_REVIEW_MECHANISM),
+        information_family="canonical_raw_score",
+        authoritative_artifact_refs=["synthetic://authority/breadth-r5-metadata"],
+        metadata={"fit_authority": False, "formal_freeze_authority": False,
+                  "source_gate": "FROZEN_HISTORY_CONTRACT_AND_FORMAL_FREEZE_REQUIRED",
+                  "mechanism_research_eligible": True, "strict_PIT_promotion_eligible": False,
+                  "scope_metadata_ref": str(scope_path), "scope_metadata_sha256": rr.sha256_file(scope_path)},
+    )
+    operation = {"op": "add_entity", "entity": candidate,
+                 "change_type": "EXPLICIT_HUMAN_SAME_INFORMATION_LEARNER_OBJECTIVE_BREADTH",
+                 "parent_entity_id": rr.R3_REVIEW_PARENT_ID}
+    decision = rr.preflight_proposal(root, {"candidate": candidate,
+        "change_type": operation["change_type"], "parent_entity_id": rr.R3_REVIEW_PARENT_ID})
+    binding = {
+        "schema_version": 1, "research_id": rr.BREADTH_REVIEW_ENTITY_ID,
+        "registry_head_sha256": base["head_sha256"], "proposal_sha256": decision["proposal_sha256"],
+        "specification_fingerprint": candidate["specification_fingerprint"],
+        "mechanism_fingerprint": candidate["mechanism_fingerprint"],
+        "information_source_fingerprint": rr.R3_REVIEW_INFORMATION_SHA256,
+        "parent_entity_id": rr.R3_REVIEW_PARENT_ID,
+        "review_operations_subject_sha256": rr.sha256_value([operation]),
+        "constraints_sha256": rr.sha256_value(rr.BREADTH_REVIEW_SPECIFICATION),
+        "fit_authority": False, "formal_freeze_authority": False, "source_gate_required": True,
+        "mechanism_research_eligible": True, "strict_PIT_promotion_eligible": False,
+        "source_contract_mode": "FROZEN_HISTORY_MECHANISM_RESEARCH_ONLY",
+    }
+    human = {**binding, "kind": "HUMAN_AUTHORIZATION_RECORD", "human_user_authorized": True,
+             "authorization_source": "CURRENT_HUMAN_REQUEST", "recorded_by": "synthetic-author",
+             "human_request_sha256": rr.sha256_value({"synthetic_user_instruction": "R5 only"})}
+    human_path = tmp_path / "BREADTH_HUMAN_AUTHORIZATION.json"
+    human_path.write_bytes(rr.canonical_json(human))
+    human_sha = rr.sha256_file(human_path)
+    review = {**binding, "kind": "INDEPENDENT_BREADTH_REGISTRY_REVIEW", "status": "PASS",
+              "independent": True, "author": "synthetic-author", "reviewer": "synthetic-reviewer",
+              "scope": "OPEN_METADATA_ONLY", "human_authorization_sha256": human_sha,
+              "nonredundancy_basis": "PREREGISTERED_SELECTION_ALIGNED_OBJECTIVES",
+              "prior_artifact_reopened": False, "legacy_exposure_retained": True}
+    review_path = tmp_path / "BREADTH_INDEPENDENT_REGISTRY_REVIEW.json"
+    review_path.write_bytes(rr.canonical_json(review))
+    operation["review_resolution"] = {
+        "kind": "BREADTH_SAME_INFORMATION_LEARNER_OBJECTIVE", "automatic_decision": decision,
+        "human_authorization_ref": str(human_path), "human_authorization_sha256": human_sha,
+        "independent_review_ref": str(review_path), "independent_review_sha256": rr.sha256_file(review_path),
+    }
+    return root, reviewed_patch(base["head_sha256"], [operation])
+
+
+def test_breadth_review_accepts_only_open_metadata_and_preserves_closed_r4(tmp_path: Path) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    original = patch["operations"][0]["review_resolution"]["automatic_decision"]
+    prior = rr.query_registry(root, entity_id=rr.FH_REVIEW_ENTITY_ID)["entities"][0]
+    assert original["status"] == "REVIEW_REQUIRED"
+    assert original["decision"] == "REVIEW_REQUIRED_INSUFFICIENT_EVIDENCE"
+    rr.apply_patch(root, patch)
+    row = rr.query_registry(root, entity_id=rr.BREADTH_REVIEW_ENTITY_ID)["entities"][0]
+    assert row["status"] == "OPEN"
+    assert row["information_source_fingerprint"] == rr.R3_REVIEW_INFORMATION_SHA256
+    assert row["metadata"]["specification"]["feature_order_sha256"] == rr.sha256_value(rr.BREADTH_REVIEW_FEATURES)
+    assert row["metadata"]["automatic_preflight_decision"] == original
+    assert row["metadata"]["fit_authority"] is False
+    assert row["metadata"]["formal_freeze_authority"] is False
+    assert row["metadata"]["strict_PIT_promotion_eligible"] is False
+    assert rr.query_registry(root, entity_id=rr.FH_REVIEW_ENTITY_ID)["entities"][0] == prior
+    assert rr.validate_registry(root)["status"] == "PASS"
+
+
+def test_breadth_without_resolution_stays_automatic_review_required(tmp_path: Path) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    patch["operations"][0].pop("review_resolution")
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="PROPOSAL_NOT_APPLYABLE:REVIEW_REQUIRED"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("role_ids", ["BOUNDARY_LOGISTIC", "UNAUTHORIZED_ROLE"]),
+    ("target", "NEW_TARGET"), ("seeds", [7]), ("configs_per_role", 2),
+    ("retry_allowance", 1), ("backend_fit_calls", 109), ("model_fit_calls", 55),
+    ("scaler_fit_calls", 55), ("risk_state_fit_calls", 1), ("statistical_adapter_state_slots", 1),
+    ("base_reference_refits", 1), ("fitting_weights", "explicit equal-total-date weights"),
+    ("risk_representation", "ADD_R4_RISK_COLUMNS"), ("source_contract_mode", "STRICT_HISTORICAL_PIT"),
+    ("strict_PIT_promotion_eligible", True), ("feature_count", 33),
+    ("feature_order_sha256", "f" * 64), ("input_artifact_sha256", {"training": "f" * 64}),
+    ("raw_score_sha256", "f" * 64), ("training_years", [2022, 2023, 2024, 2025]),
+    ("evaluation_years", [2023, 2024, 2025, 2026]), ("test2026", "UNLOCKED"),
+    ("legacy_role_exposure_count", 0), ("failure_policy", "REFUND_FAILED_AND_RETRY"),
+    ("boundary_transform", "target greater than zero"), ("pair_transform", "target-selected partners"),
+    ("list_transform", "equal group weights"), ("base_reference_policy", "RESELECT_OLD_FINALISTS"),
+])
+def test_breadth_rejects_scope_budget_label_weight_and_source_drift(
+    tmp_path: Path, field: str, value: object,
+) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    row = patch["operations"][0]["entity"]
+    row["specification"][field] = value
+    row["specification_fingerprint"] = rr.sha256_value(row["specification"])
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_CONTRACT_MISMATCH:specification|PROPOSAL_NOT_APPLYABLE:BLOCKED"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("status,disposition,changed", [
+    ("OPEN", "R4_CLOSED_NO_MECHANISM_SUPPORT", False),
+    ("TOMBSTONED", "R4_CLOSED_NO_MECHANISM_SUPPORT", False),
+    ("CLOSED", "CLOSED_OTHER_REASON", False),
+    ("CLOSED", "R4_CLOSED_NO_MECHANISM_SUPPORT", True),
+])
+def test_breadth_requires_exact_closed_r4_history(
+    tmp_path: Path, status: str, disposition: str, changed: bool,
+) -> None:
+    root, patch = breadth_review_fixture(tmp_path, prior_status=status,
+        prior_disposition=disposition, changed_prior_contract=changed)
+    with pytest.raises(rr.RegistryError, match="BREADTH_REVIEW_PRIOR_R4_CLOSURE_REQUIRED"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("status", "ACTIVE", "PROPOSAL_NOT_APPLYABLE|R3_REVIEW_ENTITY_NOT_AUTHORIZED"),
+    ("entity_id", "UNAUTHORIZED_R5", "PROPOSAL_NOT_APPLYABLE|R3_REVIEW_ENTITY_NOT_AUTHORIZED"),
+    ("information_source_fingerprint", "f" * 64, "PROPOSAL_NOT_APPLYABLE|R3_REVIEW_UNSUPPORTED_AUTOMATIC_REASON"),
+])
+def test_breadth_rejects_active_promotion_rename_or_alleged_new_raw_source(
+    tmp_path: Path, field: str, value: str, error: str,
+) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    patch["operations"][0]["entity"][field] = value
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match=error):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value,error", [
+    ("fit_authority", True, "R3_REVIEW_OPEN_METADATA_ONLY_REQUIRED"),
+    ("formal_freeze_authority", True, "R3_REVIEW_OPEN_METADATA_ONLY_REQUIRED"),
+    ("strict_PIT_promotion_eligible", True, "BREADTH_REVIEW_MECHANISM_ONLY_REQUIRED"),
+    ("mechanism_research_eligible", False, "BREADTH_REVIEW_MECHANISM_ONLY_REQUIRED"),
+    ("source_gate", "SOURCE_QUALIFICATION_PASS", "R3_REVIEW_OPEN_METADATA_ONLY_REQUIRED"),
+    ("failed_trial_refund", True, "R3_REVIEW_UNSUPPORTED_METADATA"),
+])
+def test_breadth_metadata_cannot_confer_authority_or_refund_history(
+    tmp_path: Path, field: str, value: object, error: str,
+) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    patch["operations"][0]["entity"]["metadata"][field] = value
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match=error):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("record,field,value,error", [
+    ("human_authorization", "human_user_authorized", False, "R3_REVIEW_HUMAN_AUTHORIZATION_REQUIRED"),
+    ("human_authorization", "authorization_source", "PRIOR_TASK_ONLY", "R3_REVIEW_HUMAN_AUTHORIZATION_REQUIRED"),
+    ("human_authorization", "recorded_by", "wrong-author", "R3_REVIEW_HUMAN_AUTHORIZATION_REQUIRED"),
+    ("human_authorization", "strict_PIT_promotion_eligible", True, "BREADTH_REVIEW_AUTHORITY_PREMISE_REQUIRED"),
+    ("independent_review", "registry_head_sha256", "f" * 64, "R3_REVIEW_EVIDENCE_BINDING_MISMATCH"),
+    ("independent_review", "nonredundancy_basis", "RENAME_ONLY", "R3_REVIEW_INDEPENDENT_PATCH_REVIEW_REQUIRED"),
+    ("independent_review", "prior_artifact_reopened", True, "R3_REVIEW_INDEPENDENT_PATCH_REVIEW_REQUIRED"),
+    ("independent_review", "legacy_exposure_retained", False, "R3_REVIEW_INDEPENDENT_PATCH_REVIEW_REQUIRED"),
+    ("independent_review", "source_contract_mode", "STRICT_HISTORICAL_PIT", "BREADTH_REVIEW_AUTHORITY_PREMISE_REQUIRED"),
+])
+def test_breadth_review_keeps_human_independent_source_and_history_bindings(
+    tmp_path: Path, record: str, field: str, value: object, error: str,
+) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    proof = patch["operations"][0]["review_resolution"]
+    path = Path(proof[record + "_ref"])
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[field] = value
+    path.write_bytes(rr.canonical_json(payload))
+    proof[record + "_sha256"] = rr.sha256_file(path)
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match=error):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("evidence", ["human_authorization", "independent_review", "scope_metadata"])
+def test_breadth_rejects_actual_evidence_hash_mismatch(tmp_path: Path, evidence: str) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    row = patch["operations"][0]
+    proof = row["entity"]["metadata"] if evidence == "scope_metadata" else row["review_resolution"]
+    proof[evidence + "_sha256"] = "f" * 64
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_METADATA_SHA256_MISMATCH"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("change,error", [
+    ("body", "BREADTH_REVIEW_SCOPE_CONTRACT_MISMATCH"),
+    ("filename", "R3_REVIEW_METADATA_REFERENCE_INVALID"),
+    ("oversize", "R3_REVIEW_METADATA_REFERENCE_UNSAFE"),
+    ("firewall", "PERFORMANCE_METRIC_FIELDS_FORBIDDEN"),
+    ("missing", "R3_REVIEW_SCOPE_REFERENCE_REQUIRED"),
+])
+def test_breadth_scope_retains_exact_schema_path_size_and_firewall(
+    tmp_path: Path, change: str, error: str,
+) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    metadata = patch["operations"][0]["entity"]["metadata"]
+    path = Path(metadata["scope_metadata_ref"])
+    if change == "body":
+        scope = json.loads(path.read_text()); scope["fit_authority"] = True
+        path.write_bytes(rr.canonical_json(scope))
+    elif change == "filename":
+        metadata["scope_metadata_ref"] = str(path.with_name("OTHER_SCOPE.json"))
+    elif change == "oversize":
+        path.write_bytes(b" " * 65_537)
+    elif change == "firewall":
+        scope = json.loads(path.read_text()); scope["realized_holdout_sharpe"] = 1.0
+        path.write_bytes(rr.canonical_json(scope))
+    else:
+        metadata.pop("scope_metadata_ref")
+    if change not in {"filename", "missing"}:
+        metadata["scope_metadata_sha256"] = rr.sha256_file(path)
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match=error):
+        rr.apply_patch(root, patch)
+
+
+def test_breadth_cannot_bypass_blocked_parent_or_reopen_closed_identity(tmp_path: Path) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    closed = rr.apply_patch(root, reviewed_patch(rr.current_state(root)["head_sha256"],
+        [{"op": "close", "entity_id": rr.R3_REVIEW_PARENT_ID}]))
+    patch["expected_base_head_sha256"] = closed["head_sha256"]
+    with pytest.raises(rr.RegistryError, match="PROPOSAL_NOT_APPLYABLE:BLOCKED_CLOSED_BRANCH"):
+        rr.apply_patch(root, patch)
+    with pytest.raises(rr.RegistryError, match="TERMINAL_ENTITY_IMMUTABLE"):
+        rr.apply_patch(root, reviewed_patch(closed["head_sha256"],
+            [{"op": "update_entity", "entity": {"entity_id": rr.FH_REVIEW_ENTITY_ID, "status": "OPEN"}}]))
+
+
+@pytest.mark.parametrize("change", ["different_identity", "alias", "change_type", "claimed_rename"])
+def test_breadth_version_semantics_do_not_exempt_generic_repackaging(tmp_path: Path, change: str) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    op = patch["operations"][0]
+    if change == "different_identity":
+        op["entity"]["entity_id"] = op["entity"]["canonical_name"] = "V24_C_SELECTOR_ALGORITHM_BREADTH_R6"
+    elif change == "alias":
+        op["entity"]["aliases"] = ["UNREGISTERED_BREADTH_ALIAS"]
+    elif change == "change_type":
+        op["change_type"] = "MODEL_SWAP"
+    else:
+        # Claimed novelty is part of automatic proposal classification, while
+        # the apply path does not accept this unreviewed extra operation field.
+        decision = rr.preflight_proposal(root, {"candidate": op["entity"],
+            "parent_entity_id": rr.R3_REVIEW_PARENT_ID, "change_type": op["change_type"],
+            "claimed_novelty": "rename"})
+        assert decision["decision"] == "BLOCKED_CLOSED_BRANCH"
+        return
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="PROPOSAL_NOT_APPLYABLE:BLOCKED_CLOSED_BRANCH"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("gate", ["stem", "authority", "exact_spec", "same_mechanism", "lineage"])
+def test_breadth_new_objective_cannot_skip_earlier_terminal_or_duplicate_gates(
+    tmp_path: Path, gate: str,
+) -> None:
+    root, patch = breadth_review_fixture(tmp_path)
+    op = patch["operations"][0]
+    candidate = json.loads(json.dumps(op["entity"]))
+    head, _, entities, aliases = rr._load_live_snapshot(root)
+    if gate == "stem":
+        extra = entity("V24_C_SELECTOR_ALGORITHM_BREADTH_R2", status="CLOSED")
+    elif gate == "exact_spec":
+        extra = entity("CLOSED_EXACT_BREADTH_SPEC", status="CLOSED")
+        extra["specification_fingerprint"] = candidate["specification_fingerprint"]
+    elif gate == "same_mechanism":
+        extra = entity("CLOSED_SAME_OBJECTIVE_MECHANISM", status="CLOSED", layer="PURE_SELECTOR")
+        extra["mechanism_fingerprint"] = candidate["mechanism_fingerprint"]
+        extra["information_source_fingerprint"] = candidate["information_source_fingerprint"]
+    else:
+        extra = None
+        if gate == "authority":
+            prior = next(row for row in entities if row["entity_id"] == rr.FH_REVIEW_ENTITY_ID)
+            candidate["authoritative_artifact_refs"] = prior["metadata"]["authoritative_artifact_refs"]
+        else:
+            candidate["parent_entity_id"] = rr.FH_REVIEW_ENTITY_ID
+    if extra is not None:
+        entities.append(rr._normalize_entity(extra))
+    decision = rr.evaluate_proposal({"candidate": candidate, "change_type": op["change_type"],
+        "parent_entity_id": rr.R3_REVIEW_PARENT_ID}, entities, aliases, head_sha256=head)
+    assert decision["status"] == "BLOCKED"
+    assert decision["decision"] in {"BLOCKED_CLOSED_BRANCH", "BLOCKED_EXACT_DUPLICATE",
+                                   "BLOCKED_FUNCTIONAL_REDUNDANCY"}
+
+
+# Synthetic admission for A's frozen continuation-policy breadth design.
+def a_breadth_review_fixture(tmp_path: Path) -> tuple[Path, dict]:
+    root = tmp_path / "registry"
+    _, base = bootstrap(root)
+    candidate = entity(
+        rr.A_BREADTH_REVIEW_ENTITY_ID, status="OPEN",
+        entity_type="RESEARCH_BRANCH", layer="CONTINUATION_STATEFUL_ACCOUNT_POLICY",
+        failures=0,
+        information_family="frozen-r1-continuation-source32-and-current-account-state",
+        specification=json.loads(json.dumps(rr.A_BREADTH_REVIEW_SPECIFICATION)),
+        mechanism=json.loads(json.dumps(rr.A_BREADTH_REVIEW_MECHANISM)),
+        design_custody_ref="synthetic://frozen-a-breadth-design",
+        metadata={**rr.A_BREADTH_REVIEW_PERMISSIONS,
+                  "execution_source_pins": {"breadth_adapter": fp("synthetic-reviewed-adapter"),
+                                             **rr.A_BREADTH_REQUIRED_CONTROLLER_PINS}},
+    )
+    candidate.pop("authoritative_artifact_refs")
+    candidate.update(
+        specification=json.loads(json.dumps(rr.A_BREADTH_REVIEW_SPECIFICATION)),
+        mechanism=json.loads(json.dumps(rr.A_BREADTH_REVIEW_MECHANISM)),
+        specification_fingerprint=rr.sha256_value(rr.A_BREADTH_REVIEW_SPECIFICATION),
+        mechanism_fingerprint=rr.sha256_value(rr.A_BREADTH_REVIEW_MECHANISM),
+        information_source_fingerprint=rr.A_BREADTH_REVIEW_INFORMATION_SHA256,
+    )
+    operation = {
+        "op": "add_entity", "entity": candidate,
+        "change_type": "EXPLICIT_HUMAN_A_PREREGISTERED_EXACT_BANK_REUSE",
+    }
+    decision = rr.preflight_proposal(root, {
+        "candidate": candidate, "change_type": operation["change_type"]})
+    binding = {
+        "schema_version": 1, "research_id": rr.A_BREADTH_REVIEW_ENTITY_ID,
+        "registry_head_sha256": base["head_sha256"],
+        "proposal_sha256": decision["proposal_sha256"],
+        "specification_fingerprint": candidate["specification_fingerprint"],
+        "mechanism_fingerprint": candidate["mechanism_fingerprint"],
+        "information_source_fingerprint": rr.A_BREADTH_REVIEW_INFORMATION_SHA256,
+        "parent_entity_id": None,
+        "execution_source_pins": candidate["metadata"]["execution_source_pins"],
+        "review_operations_subject_sha256": rr.sha256_value([operation]),
+        "constraints_sha256": rr.sha256_value(rr.A_BREADTH_REVIEW_SPECIFICATION),
+        **rr.A_BREADTH_REVIEW_PERMISSIONS,
+    }
+    human = {
+        **binding, "kind": "HUMAN_AUTHORIZATION_RECORD", "human_user_authorized": True,
+        "authorization_source": "CURRENT_HUMAN_REQUEST", "recorded_by": "synthetic-author",
+        "human_request_sha256": fp("synthetic A metadata-only admission instruction"),
+    }
+    human_path = tmp_path / "A_BREADTH_REGISTRY_HUMAN_AUTHORIZATION.json"
+    human_path.write_bytes(rr.canonical_json(human))
+    review = {
+        **binding, "kind": "INDEPENDENT_A_BREADTH_REGISTRY_REVIEW",
+        "status": "PASS", "independent": True,
+        "author": "synthetic-author", "reviewer": "synthetic-reviewer",
+        "scope": "OPEN_METADATA_ONLY",
+        "nonredundancy_basis": "PREREGISTERED_CONTINUATION_POLICY_MAIN_EFFECTS_AND_INTERACTIONS",
+        "prior_artifact_reopened": False, "legacy_exposure_retained": True,
+        "source_fingerprint_is_bank_custody_only": True,
+        "accepted_registry_parent_claimed": False,
+        "human_authorization_sha256": rr.sha256_file(human_path),
+    }
+    review_path = tmp_path / "A_BREADTH_REGISTRY_INDEPENDENT_REVIEW.json"
+    review_path.write_bytes(rr.canonical_json(review))
+    operation["review_resolution"] = {
+        "kind": "A_BREADTH_EXACT_BANK_REUSE_OPEN_METADATA",
+        "automatic_decision": decision,
+        "human_authorization_ref": str(human_path),
+        "human_authorization_sha256": rr.sha256_file(human_path),
+        "independent_review_ref": str(review_path),
+        "independent_review_sha256": rr.sha256_file(review_path),
+    }
+    return root, reviewed_patch(base["head_sha256"], [operation])
+
+
+def test_a_breadth_review_admits_open_design_without_source_or_execution(tmp_path: Path) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    before = rr.query_registry(root, entity_id="RAW_A2")["entities"][0]
+    automatic = patch["operations"][0]["review_resolution"]["automatic_decision"]
+    assert automatic["decision"] == "REVIEW_REQUIRED_INSUFFICIENT_EVIDENCE"
+    assert automatic["reasons"] == ["authoritative distinct-source contract/reference is required"]
+    result = rr.apply_patch(root, patch)
+    assert result["status"] == "PASS"
+    row = rr.query_registry(root, entity_id=rr.A_BREADTH_REVIEW_ENTITY_ID)["entities"][0]
+    assert row["status"] == "OPEN" and row["parent_entity_id"] is None
+    assert row["metadata"]["automatic_preflight_decision"] == automatic
+    assert row["metadata"]["explicit_review_decision"] == "ACCEPT_OPEN_METADATA_ONLY"
+    for key, value in rr.A_BREADTH_REVIEW_PERMISSIONS.items():
+        assert row["metadata"][key] == value
+    assert rr.query_registry(root, entity_id="RAW_A2")["entities"][0] == before
+    assert rr.validate_registry(root)["status"] == "PASS"
+
+
+def test_a_breadth_missing_review_cannot_self_admit(tmp_path: Path) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    patch["operations"][0].pop("review_resolution")
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="PROPOSAL_NOT_APPLYABLE:REVIEW_REQUIRED"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("fit_authority", True), ("formal_freeze_authority", True),
+    ("real_account_authority", True), ("source_activation_authority", True),
+    ("branch_N_adopted", True), ("strict_PIT_promotion_eligible", True),
+    ("source_gate_required", False), ("source_gate", "PASS"),
+    ("fit_authority", None), ("real_account_authority", None),
+])
+def test_a_breadth_admission_cannot_grant_runtime_authority(
+    tmp_path: Path, field: str, value: object,
+) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    patch["operations"][0]["entity"]["metadata"][field] = value
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="A_BREADTH_REVIEW_AUTHORITY_FORBIDDEN"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("change", ["parent", "alias", "active", "source", "count", "extra"])
+def test_a_breadth_review_rejects_identity_or_frozen_contract_drift(
+    tmp_path: Path, change: str,
+) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    candidate = patch["operations"][0]["entity"]
+    if change == "parent":
+        candidate["parent_entity_id"] = "RAW_A2"
+    elif change == "alias":
+        candidate["aliases"] = ["UNDECLARED_A_ALIAS"]
+    elif change == "active":
+        candidate["status"] = "ACTIVE"
+    elif change == "source":
+        candidate["information_source_fingerprint"] = fp("new market authority")
+    elif change == "count":
+        candidate["specification"]["new_account_attempt_limit"] = 20
+    else:
+        candidate["metadata"]["source_qualified"] = True
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="A_BREADTH_REVIEW_(IDENTITY_NOT_AUTHORIZED|CONTRACT_MISMATCH|UNSUPPORTED_METADATA)"):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("field", [
+    "registry_head_sha256", "proposal_sha256", "review_operations_subject_sha256",
+    "information_source_fingerprint", "constraints_sha256",
+])
+def test_a_breadth_review_requires_independent_evidence_exact_binding(
+    tmp_path: Path, field: str,
+) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    proof = patch["operations"][0]["review_resolution"]
+    review_path = Path(proof["independent_review_ref"])
+    record = json.loads(review_path.read_text(encoding="utf-8"))
+    record[field] = fp("tampered binding")
+    review_path.write_bytes(rr.canonical_json(record))
+    proof["independent_review_sha256"] = rr.sha256_file(review_path)
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="A_BREADTH_REVIEW_EVIDENCE_BINDING_MISMATCH:" + field):
+        rr.apply_patch(root, patch)
+
+
+@pytest.mark.parametrize("change", ["duplicate", "terminal"])
+def test_a_breadth_review_cannot_override_blocked_history(tmp_path: Path, change: str) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    candidate = patch["operations"][0]["entity"]
+    old = entity("OLDER_A_BREADTH", status="CLOSED" if change == "terminal" else "ACTIVE",
+                 information_family="distinct-synthetic-history")
+    old["specification_fingerprint"] = candidate["specification_fingerprint"]
+    base = rr.apply_patch(root, reviewed_patch(
+        rr.current_state(root)["head_sha256"], [{"op": "add_entity", "entity": old}]))
+    patch["expected_base_head_sha256"] = base["head_sha256"]
+    with pytest.raises(rr.RegistryError, match="PROPOSAL_NOT_APPLYABLE:BLOCKED_EXACT_DUPLICATE"):
+        rr.apply_patch(root, patch)
+
+
+def test_a_breadth_admission_requires_one_isolated_operation(tmp_path: Path) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    patch["operations"].append({"op": "close", "entity_id": "RAW_A2"})
+    patch["operation_count"] = 2
+    r3_refresh_patch_integrity(patch)
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_SINGLE_NEW_ENTITY_OPERATION_REQUIRED"):
+        rr.apply_patch(root, patch)
+
+
+def test_a_breadth_runtime_guard_requires_canonical_admission_and_exact_source(tmp_path: Path) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    pins = patch["operations"][0]["entity"]["metadata"]["execution_source_pins"]
+    design = rr.A_BREADTH_REVIEW_SPECIFICATION["frozen_design_sha256"]
+    with pytest.raises(rr.RegistryError, match="A_BREADTH_CANONICAL_ADMISSION_MISSING"):
+        rr.verify_a_breadth_admission(root, design_sha256=design, execution_source_pins=pins)
+    rr.apply_patch(root, patch)
+    accepted = rr.verify_a_breadth_admission(root, design_sha256=design, execution_source_pins=pins)
+    assert accepted["admission"] == "OPEN_METADATA_ONLY"
+    bad = {**pins, "breadth_adapter": fp("unreviewed adapter change")}
+    with pytest.raises(rr.RegistryError, match="A_BREADTH_CANONICAL_ADMISSION_MISMATCH"):
+        rr.verify_a_breadth_admission(root, design_sha256=design, execution_source_pins=bad)
+    with pytest.raises(rr.RegistryError, match="A_BREADTH_R5_SOURCE_PINS_CHANGED"):
+        rr.verify_a_breadth_admission(root, design_sha256=design,
+                                     execution_source_pins={**pins, "stateful_execution": fp("changed R5")})
+    base = rr.apply_patch(root, reviewed_patch(accepted["registry_head_sha256"],
+        [{"op": "add_entity", "entity": entity("UNRELATED_METADATA", information_family="other-family")}]))
+    continued = rr.verify_a_breadth_admission(root, design_sha256=design, execution_source_pins=pins)
+    assert continued["registry_head_sha256"] == base["head_sha256"]
+    assert continued["admission_base_head_sha256"] == accepted["admission_base_head_sha256"]
+
+
+def test_a_breadth_runtime_guard_rejects_tampered_independent_review(tmp_path: Path) -> None:
+    root, patch = a_breadth_review_fixture(tmp_path)
+    pins = patch["operations"][0]["entity"]["metadata"]["execution_source_pins"]
+    rr.apply_patch(root, patch)
+    proof = patch["operations"][0]["review_resolution"]
+    review_path = Path(proof["independent_review_ref"])
+    review_path.write_bytes(review_path.read_bytes() + b" ")
+    with pytest.raises(rr.RegistryError, match="R3_REVIEW_METADATA_SHA256_MISMATCH"):
+        rr.verify_a_breadth_admission(
+            root, design_sha256=rr.A_BREADTH_REVIEW_SPECIFICATION["frozen_design_sha256"],
+            execution_source_pins=pins)
+
+
+@pytest.mark.parametrize("field,metadata_value", [
+    ("parent_entity_id", "DESCRIPTIVE_METADATA_PARENT"),
+    ("status", "DESCRIPTIVE_METADATA_STATUS"),
+    ("trial_ledger_failure_row_count", 123),
+])
+def test_parquet_reader_preserves_nested_metadata_namespace_and_row_hash(
+    field: str, metadata_value: object,
+) -> None:
+    raw = entity("NESTED_NAMESPACE", status="OPEN",
+                 metadata={field: metadata_value})
+    normalized = rr._normalize_entity(raw)
+    stored = rr._entity_to_storage(normalized)
+    restored = rr._entity_from_storage(stored)
+    assert restored == normalized
+    assert restored[field] == normalized[field]
+    assert restored["metadata"][field] == metadata_value
+    with pytest.raises(rr.RegistryError, match="ENTITY_ROW_HASH_MISMATCH"):
+        rr._entity_from_storage({**stored, "row_hash": fp("tampered physical row identity")})
+
+
+@pytest.mark.parametrize("scope_name", [
+    "_A_RESEARCH_ACCOUNT_REVIEW_SCOPE",
+    "_A_RESEARCH_QUOTE_DOMAIN_REVIEW_SCOPE",
+])
+def test_frozen_research_child_cannot_use_copied_or_external_scope(scope_name: str) -> None:
+    """Only the two owner-selected exact scope objects confer review routing."""
+    import copy
+    scope = copy.deepcopy(getattr(rr, scope_name))
+    with pytest.raises(rr.RegistryError, match="SCOPE_NOT_AUTHORIZED"):
+        rr._resolve_a_frozen_research_child_review(
+            {}, {}, {}, {}, {}, "0" * 64, scope=scope,
+        )
+
+
+@pytest.mark.parametrize("scope_name", [
+    "_A_RESEARCH_ACCOUNT_REVIEW_SCOPE",
+    "_A_RESEARCH_QUOTE_DOMAIN_REVIEW_SCOPE",
+])
+@pytest.mark.parametrize("automatic_decision", [
+    "PASS_DISTINCT_INFORMATION_SOURCE", "EXTEND_EXISTING",
+    "BLOCKED_CLOSED_BRANCH", "BLOCKED_EXACT_DUPLICATE",
+])
+def test_frozen_research_child_cannot_override_other_automatic_decisions(
+    scope_name: str, automatic_decision: str,
+) -> None:
+    scope = getattr(rr, scope_name)
+    with pytest.raises(rr.RegistryError, match="AUTOMATIC_DECISION_REQUIRED"):
+        rr._resolve_a_frozen_research_child_review(
+            {"entity": {"entity_id": scope["research_id"]}}, {}, {},
+            {"decision": automatic_decision,
+             "reasons": ["raw information_source or feature_input_family overlaps existing history"]},
+            {}, "0" * 64, scope=scope,
+        )

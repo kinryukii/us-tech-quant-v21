@@ -419,3 +419,554 @@ def test_raw_rule_target_missing_exact_signal_never_falls_back_to_previous_book(
     raw = workspace.load_applied_strategies('2026-09-22', package=_with_same_batch_raw(bound_package))['RAW_A2']
     assert raw['signal_target']['status'] == 'UNAVAILABLE'
     assert raw['signal_target']['signal_date'] is None and raw['signal_target']['rows'] == []
+
+
+
+def latest_execution_fixture():
+    """Synthetic Friday signal / verified Monday open; no real artifact reads."""
+    payload = synthetic_package()
+    dates = ("2026-10-01", "2026-10-02", "2026-10-05")
+    payload["performance_period"].update(start=dates[0], end=dates[-1])
+    for strategy in payload["strategies"].values():
+        for row, day in zip(strategy["daily"], dates):
+            row["date"] = day
+        for row, day in zip(strategy["targets"], ("2026-09-30", "2026-10-01", "2026-10-02")):
+            row["signal_date"] = day
+        strategy["application"]["signal_date"] = "2026-10-02"
+    payload = selected.validate_package(_with_same_batch_raw(payload))
+    payload.update(package_path="C:/synthetic/selected_hgb.json", package_sha256="ac" * 32)
+    model = DecisionOverview(decision_date="2026-10-02", source_id=workspace.LATEST,
+        available_dates=("2026-09-30", "2026-10-01", "2026-10-02"),
+        source_manifest_path="C:/synthetic/latest_manifest.json", source_manifest_sha256="de" * 32,
+        execution_status="EXECUTED", scheduled_execution_date="2026-10-05",
+        performance_cutoff_date="2026-10-05",
+        ranking=tuple(HoldingRow(i, f"SIG{i:02d}", score=.1-i/1000) for i in range(1, 21)),
+        holdings=(HoldingRow(None, "REAL_BOOK_A", weight=.4), HoldingRow(None, "REAL_BOOK_B", weight=.4)),
+        provenance=Provenance(decision_date="2026-10-02", information_as_of="2026-10-02",
+                              execution_date="2026-10-05"))
+    navs = (1.01, .98, 1.03)
+    points = tuple(replace(_point(day), nav=nav, net_return=nav/previous-1,
+        gross_return=nav/previous-1, cash=nav*.2, position_value=nav*.8, holding_count=2)
+        for day, nav, previous in zip(dates, navs, (1., *navs[:-1])))
+    history = PerformanceHistory(points=points, available_dates=dates, archive_start=dates[0],
+        archive_end=dates[-1], baseline_date="2026-09-30")
+
+    def overview(day=None, **kwargs):
+        if day is None or day == model.decision_date:
+            return model
+        execution = "2026-10-02" if day == "2026-10-01" else "2026-10-01"
+        return replace(model, decision_date=day, scheduled_execution_date=execution,
+            performance_cutoff_date=execution, provenance=Provenance(decision_date=day,
+                information_as_of=day, execution_date=execution))
+
+    def performance(current):
+        return replace(history, points=tuple(point for point in points
+            if point.execution_date <= current.performance_cutoff_date))
+
+    def book(current):
+        execution = current.performance_cutoff_date
+        signal = {"2026-10-05": "2026-10-02", "2026-10-02": "2026-10-01",
+                  "2026-10-01": "2026-09-30"}[execution]
+        return replace(model, decision_date=signal, scheduled_execution_date=execution,
+            performance_cutoff_date=execution, provenance=Provenance(decision_date=signal,
+                information_as_of=signal, execution_date=execution))
+
+    return {"package": payload, "model": model, "overview": overview,
+            "performance": performance, "book": book, "binding": workspace.source_reference(model)}
+
+
+@pytest.fixture
+def latest_execution(monkeypatch):
+    proof = latest_execution_fixture()
+    for name in ("overview", "performance", "book"):
+        function = {"overview": "load_overview", "performance": "read_performance",
+                    "book": "latest_executed_overview"}[name]
+        monkeypatch.setattr(workspace, function, Mock(side_effect=proof[name]))
+    monkeypatch.setattr(workspace.updated, "binding", Mock(return_value=proof["binding"]))
+    return proof
+
+
+def test_latest_verified_execution_expands_only_history_and_preserves_signal_targets(latest_execution):
+    proof = latest_execution
+    original = deepcopy(proof["package"])
+    assert workspace.applied_history_cutoff("2026-10-02", raw_model=proof["model"]) == "2026-10-05"
+    strict = workspace.load_applied_strategies("2026-10-02", package=proof["package"], raw_model=proof["model"])
+    expanded = workspace.load_applied_strategies("2026-10-02", package=proof["package"],
+        raw_model=proof["model"], history_cutoff="2026-10-05")
+    for sid, view in expanded.items():
+        assert view["requested_cutoff"] == "2026-10-02"
+        assert strict[sid]["history"]["end"] == "2026-10-02"
+        assert view["history"]["end"] == "2026-10-05"
+        assert [row["date"] for row in view["history"]["daily"]] == ["2026-10-01", "2026-10-02", "2026-10-05"]
+        if sid != "RAW_A2":
+            assert view["target"] == strict[sid]["target"]
+            assert view["target"]["signal_date"] == "2026-10-02"
+            assert view["target"]["execution_status"] == "TARGET_ONLY"
+    raw = expanded["RAW_A2"]
+    assert raw["latest_book"]["history"]["end"] == raw["target"]["execution_date"] == "2026-10-05"
+    assert raw["signal_target"] == strict["RAW_A2"]["signal_target"]
+    assert raw["signal_target"]["signal_date"] == raw["research_target"]["signal_date"] == "2026-10-02"
+    assert len(raw["signal_target"]["rows"]) == 20
+    assert all(row["target_weight"] == .05 for row in raw["signal_target"]["rows"])
+    assert proof["package"] == original and proof["model"].provenance.information_as_of == "2026-10-02"
+
+
+@pytest.mark.parametrize("failure", ["earlier_selection", "historical_sample", "pending", "wrong_source",
+    "wrong_information_date", "not_latest_signal", "execution_not_scheduled", "performance_not_execution",
+    "changed_manifest", "changed_hash", "missing_reference"])
+def test_history_expansion_requires_current_verified_identity_and_owner_clock(latest_execution, failure):
+    model, day, sample = latest_execution["model"], "2026-10-02", "test_2026"
+    if failure == "earlier_selection": day = "2026-10-01"
+    elif failure == "historical_sample": sample = "historical"
+    elif failure == "pending": model = replace(model, execution_status="PENDING_NEXT_OPEN")
+    elif failure == "wrong_source": model = replace(model, source_id=workspace.SELECTED_HGB)
+    elif failure == "wrong_information_date": model = replace(model, provenance=replace(model.provenance, information_as_of="2026-10-01"))
+    elif failure == "not_latest_signal": model = replace(model, available_dates=(*model.available_dates, "2026-10-05"))
+    elif failure == "execution_not_scheduled": model = replace(model, scheduled_execution_date="2026-10-06")
+    elif failure == "performance_not_execution": model = replace(model, performance_cutoff_date="2026-10-02")
+    elif failure == "changed_manifest": workspace.updated.binding.return_value = {**latest_execution["binding"], "path":"C:/synthetic/archived.json"}
+    elif failure == "changed_hash": workspace.updated.binding.return_value = {**latest_execution["binding"], "sha256":"ff"*32}
+    else: model = replace(model, source_manifest_sha256=None)
+    assert workspace.applied_history_cutoff(day, raw_model=model, sample=sample) == day
+    if failure in {"earlier_selection", "historical_sample", "pending", "wrong_source"}:
+        workspace.updated.binding.assert_not_called()
+
+
+@pytest.mark.parametrize("day,execution", [("2026-10-01", "2026-10-05"), ("2026-10-02", "2026-10-06")])
+def test_explicit_unverified_history_end_is_rejected(latest_execution, day, execution):
+    with pytest.raises(ValueError, match="APPLIED_HISTORY_CUTOFF_NOT_VERIFIED"):
+        workspace.load_applied_strategies(day, package=latest_execution["package"],
+            raw_model=latest_execution["model"], history_cutoff=execution)
+
+
+def test_historical_selection_retains_strict_performance_boundary(latest_execution):
+    views = workspace.load_applied_strategies("2026-10-01", package=latest_execution["package"],
+        raw_model=latest_execution["model"])
+    assert all(view["history"]["end"] == "2026-10-01" for view in views.values())
+    assert all(row["date"] <= "2026-10-01" for view in views.values() for row in view["history"]["daily"])
+    assert views["RAW_A2"]["target"]["execution_date"] == "2026-10-01"
+    workspace.updated.binding.assert_not_called()
+
+
+def test_default_hgb_observation_uses_current_signal_instead_of_later_nav(latest_execution):
+    package = latest_execution["package"]
+    for sid in selected.STRATEGY_IDS:
+        model = workspace.load_selected_overview(sid, package=package)
+        assert model.decision_date == model.provenance.information_as_of == "2026-10-02"
+        assert model.performance_cutoff_date == "2026-10-02"
+        assert model.available_dates[-1] == "2026-10-05"
+        explicit = workspace.load_selected_overview(sid, "2026-10-05", package=package)
+        assert explicit.decision_date == explicit.performance_cutoff_date == "2026-10-05"
+
+
+
+def _ml_capture(sid, *, day="2026-09-24", source="recorded", kind="CURRENT_ACCOUNT_TARGET"):
+    leaf = {"status": "AVAILABLE", "actual_signal_date": day, "weight_date": day,
+        "scope": "RECORDED_FROZEN_MODEL_INPUTS", "source_kind": source, "target_kind": kind,
+        "rows": [{"ticker": "SYNTH", "security_id": "SYNTHETIC_ID", "model_rank": 2,
+            "score": .123, "raw_rank": 7, "raw_score": .3, "source_score": -.025,
+            "action": "HOLD", "target_weight": .12, "weight_before": .1,
+            "exact_hold_units": 4., "hold_units": 4., "explicit_target": False}],
+        "source_refs": {"record": {"path": "C:/synthetic/record.json", "sha256": "ad" * 32}}}
+    context = {"strategy_id": sid, "model_identity": {"candidate_id": sid},
+        "provenance": {"window_id": "MAIN"},
+        "target": {"kind": kind, "status": "READY", "signal_date": day,
+            "rows": [{"ticker": "SYNTH", "target_weight": .12}], "target_cash_weight": .88}}
+    return {"strategies": {sid: leaf}}, context
+
+
+@pytest.mark.parametrize("sid,kind", [
+    ("RAW_A2", "RANK_SCORE"), ("HGB_DIAG_5", "RANK_SCORE"),
+    ("R10_DIRECT_MEAN4_ELASTICNET_MID", "ACTION_VALUE"),
+    ("R10_DIRECT_H5_RIDGE_MID", "ACTION_VALUE"), ("R7_GROSS_LINEAR", "GROSS_EXPOSURE")])
+def test_ml_workspace_projects_all_five_without_any_reader_calls(monkeypatch, sid, kind):
+    snapshot, context = _ml_capture(sid)
+    original = deepcopy((snapshot, context))
+    def forbidden(*args, **kwargs):
+        raise AssertionError("A pure ML projection performed an artifact read")
+    for name in ("load_overview", "load_active_strategies", "load_active_rankings", "load_history", "read_performance"):
+        monkeypatch.setattr(workspace, name, forbidden)
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert result["strategy_id"] == sid and result["output_kind"] == kind
+    assert result["status"] == "AVAILABLE" and result["error"] is None
+    assert result["source"] == "recorded" and result["record_basis"] == "CURRENT_PAPER_ACCOUNT"
+    assert result["score_date"] == result["target_date"] == "2026-09-24"
+    row = result["rows"][0]
+    assert row["ticker"] == "SYNTH" and row["action"] == "HOLD"
+    assert row["target_weight"] == .12 and row["weight_before"] == .1 and row["exact_hold_units"] == 4.
+    assert row["rank"] == (2 if kind == "RANK_SCORE" else None)
+    assert row["score"] == (.123 if kind == "RANK_SCORE" else None)
+    assert row["native_action_score"] == (-.025 if kind == "ACTION_VALUE" else None)
+    assert row["raw_rank"] == 7 and row["raw_score"] == .3
+    assert (snapshot, context) == original
+    result["target"]["rows"][0]["target_weight"] = .9
+    result["provenance"]["source_refs"]["record"]["sha256"] = "bb" * 32
+    assert (snapshot, context) == original
+
+
+def test_ml_workspace_raw_keeps_only_its_exact_date_learning_profile():
+    from apps.demo_console.models import LearningProfile
+    sid = "RAW_A2"
+    snapshot, context = _ml_capture(sid)
+    raw = DecisionOverview(decision_date="2026-09-24", learning=LearningProfile(
+        feature_columns=("raw_feature",), target="raw objective"),
+        provenance=Provenance(config_identity="raw-frozen-id"))
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context, raw_model=raw)
+    assert result["learning"] is raw.learning
+    assert result["provenance"]["config_identity"] == "raw-frozen-id"
+    wrong_day = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context,
+        raw_model=replace(raw, decision_date="2026-09-23"))
+    assert not wrong_day["learning"].feature_columns
+
+
+@pytest.mark.parametrize("sid", ("HGB_DIAG_5", "R10_DIRECT_H5_RIDGE_MID"))
+def test_ml_workspace_never_borrows_raw_features_vintages_or_objective(sid):
+    from apps.demo_console.models import LearningProfile
+    snapshot, context = _ml_capture(sid)
+    context["model_identity"].update(feature_count=21, fit_cutoff_exclusive="2025-01-01", target="native objective")
+    raw = DecisionOverview(decision_date="2026-09-24", learning=LearningProfile(
+        feature_columns=("unrelated_raw_feature",), parameters=(("max_iter", "42"),), target="unrelated objective"))
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context, raw_model=raw,
+        package={"feature_columns": ["unverified schema"]})
+    assert result["learning"].target == "native objective"
+    assert not result["learning"].feature_columns and not result["learning"].vintages and not result["learning"].parameters
+    assert result["model_identity"]["fit_cutoff_exclusive"] == "2025-01-01"
+
+
+def test_ml_workspace_native_main_records_keep_ticker_only_actions_without_fake_scores():
+    sid = "R10_DIRECT_H5_RIDGE_MID"
+    snapshot, context = _ml_capture(sid, source="research", kind="RECORDED_RESEARCH_SIGNAL_PLAN")
+    row = snapshot["strategies"][sid]["rows"][0]
+    for field in ("model_rank", "score", "raw_rank", "raw_score", "source_score", "security_id"):
+        row[field] = None
+    row.update(original_policy_weight=.1, research_weight_before=.11, decision_semantic="EXACT_HOLD")
+    context["target"].update(kind="UNAVAILABLE", signal_date=None, rows=[], target_cash_weight=None)
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert result["record_basis"] == "RECORDED_MAIN_RESEARCH" and result["source"] == "research"
+    assert result["rows"][0]["rank"] is result["rows"][0]["score"] is result["rows"][0]["native_action_score"] is None
+    assert result["rows"][0]["original_policy_weight"] == .1
+    assert result["target"]["signal_date"] == "2026-09-24"
+    assert result["target"]["kind"] == "RECORDED_RESEARCH_SIGNAL_PLAN"
+    assert result["target"]["target_cash_weight"] is None
+
+
+def test_ml_workspace_r7_keeps_recorded_zero_exposure_without_converting_rows_to_scores():
+    sid = "R7_GROSS_LINEAR"
+    snapshot, context = _ml_capture(sid)
+    context["target"].update(requested_gross=0., previous_requested_gross=.5)
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert result["model_identity"]["requested_gross"] == 0.
+    assert result["model_identity"]["previous_requested_gross"] == .5
+    assert result["rows"][0]["native_action_score"] is None
+
+
+@pytest.mark.parametrize("status,observed", (("BLOCKED", "2026-09-24"), ("AVAILABLE", "2026-09-23"),
+                                            ("AVAILABLE", "2026-09-25"), ("UNAVAILABLE", None)))
+def test_ml_workspace_rejects_wrong_date_or_unqualified_output(status, observed):
+    sid = "R10_DIRECT_H5_RIDGE_MID"
+    snapshot, context = _ml_capture(sid)
+    snapshot["strategies"][sid].update(status=status, actual_signal_date=observed)
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert result["rows"] == [] and result["error"]
+    assert result["target"]["kind"] == "UNAVAILABLE"
+
+
+def test_ml_workspace_does_not_attach_old_target_weight_to_current_score():
+    sid = "HGB_DIAG_5"
+    snapshot, context = _ml_capture(sid)
+    snapshot["strategies"][sid]["weight_date"] = "2026-09-23"
+    context["target"]["signal_date"] = "2026-09-23"
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert result["score_date"] == "2026-09-24" and result["target_date"] == "2026-09-23"
+    assert result["rows"][0]["score"] == .123 and result["rows"][0]["target_weight"] is None
+    assert result["target"]["kind"] == "UNAVAILABLE"
+
+
+def test_ml_workspace_context_identity_and_duplicate_ticker_fail_closed():
+    sid = "HGB_DIAG_5"
+    snapshot, context = _ml_capture(sid)
+    context["strategy_id"] = "RAW_A2"
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert result["error"] == "ML_WORKSPACE_CONTEXT_IDENTITY_MISMATCH" and not result["rows"]
+    context["strategy_id"] = sid
+    snapshot["strategies"][sid]["rows"] *= 2
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert result["error"] == "ML_WORKSPACE_INVALID_OUTPUT_ROWS" and not result["rows"]
+    with pytest.raises(ValueError, match="UNKNOWN_ML_WORKSPACE_STRATEGY"):
+        workspace.ml_workspace("HGB_FACTOR_5", "2026-09-24", snapshot=snapshot, context=context)
+
+
+
+def test_ml_workspace_hgb_aliases_and_same_day_target_metadata_are_read_only_projections():
+    sid = "HGB_DIAG_5"
+    snapshot, context = _ml_capture(sid)
+    leaf = snapshot["strategies"][sid]
+    snapshot["source_refs"] = leaf.pop("source_refs")
+    row = leaf["rows"][0]
+    row["raw_input_score"] = row.pop("raw_score")
+    for field in ("action", "weight_before", "explicit_target", "exact_hold_units"):
+        row.pop(field)
+    context["target"]["rows"][0].update(action="BUY", weight_before=.08,
+        explicit_target=True, exact_hold_units=2., security_id=row["security_id"])
+    original = deepcopy((snapshot, context))
+    result = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert result["rows"][0]["raw_score"] == .3
+    assert result["rows"][0]["action"] == "BUY" and result["rows"][0]["weight_before"] == .08
+    assert result["provenance"]["source_refs"] == snapshot["source_refs"]
+    assert (snapshot, context) == original
+    context["target"]["rows"][0]["security_id"] = "DIFFERENT_SYNTHETIC_ID"
+    mismatched = workspace.ml_workspace(sid, "2026-09-24", snapshot=snapshot, context=context)
+    assert mismatched["rows"][0].get("action") is None and mismatched["rows"][0]["weight_before"] is None
+
+
+
+def test_ml_workspace_r7_real_owner_projection_keeps_exact_day_gross_with_replay_identity(monkeypatch):
+    pytest.importorskip("streamlit")
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    sid, day = "R7_GROSS_LINEAR", "2026-09-24"
+    payload = {"books": {sid: {"strategy_id": sid, "plan": {
+        "strategy_id": sid, "status": "READY", "signal_date": day, "execution_date": "2026-09-25",
+        "model_fit_calls": 0, "broker_action_allowed": False,
+        "requested_gross": .5, "previous_requested_gross": .75,
+        "target_cash_weight": .5, "rows": [{"ticker": "SYNTH", "target_weight": .5}],
+        "model_identity": {"requested_gross": .5, "signal_date": day}}}}}
+    before = deepcopy(payload)
+    def original(cutoff, **kwargs):
+        return {name: {"strategy_id": name, "requested_cutoff": cutoff,
+            "target": {"kind": "UNAVAILABLE", "rows": []}} for name in ("RAW_A2", "HGB_DIAG_5")}
+    monkeypatch.setattr(workspace, "load_applied_strategies", original)
+    replay = {sid: {"model_identity": {"candidate_id": sid,
+        "signal_cutoff_exclusive": "2024-10-07", "frozen_state_identity_ref": {
+            "path": "C:/synthetic/closure.json", "sha256": "ab" * 32}},
+        "history": {"daily": []}, "provenance": {"scope": "FIXED_ACCEPTED_DESCRIPTIVE_REPLAY"}}}
+    current = workspace.load_active_strategies(day, package={}, account_state=payload, research_views=replay)[sid]
+    assert current["model_identity"] == replay[sid]["model_identity"]
+    assert current["target"]["requested_gross"] == .5 and current["target"]["previous_requested_gross"] == .75
+    projected = workspace.ml_workspace(sid, day, snapshot={"strategies": accounts.rankings(payload, day)}, context=current)
+    assert projected["model_identity"] == {**replay[sid]["model_identity"],
+        "requested_gross": .5, "previous_requested_gross": .75}
+    next_day = "2026-09-25"
+    stale = workspace.load_active_strategies(next_day, package={}, account_state=payload, research_views=replay)[sid]
+    old = workspace.ml_workspace(sid, next_day, snapshot={"strategies": accounts.rankings(payload, next_day)}, context=stale)
+    assert "requested_gross" not in old["model_identity"] and "previous_requested_gross" not in old["model_identity"]
+    assert not old["rows"] and old["target"]["kind"] == "UNAVAILABLE"
+    assert payload == before
+
+def _forbid_ml_background_reads(monkeypatch):
+    from apps.demo_console.adapters import new_strategy_replay_reader as replay
+    def forbidden(*args, **kwargs):
+        raise AssertionError("ML must not read Raw overview or performance histories")
+    for name in ("load_overview","load_applied_strategies","load_active_strategies","read_performance","load_history"):
+        monkeypatch.setattr(workspace,name,forbidden)
+    monkeypatch.setattr(replay,"load_views",forbidden)
+    return forbidden
+
+
+def _ml_account_payload(sid, day="2026-09-24"):
+    return {"books": {sid: {"strategy_id":sid,"plan":{
+        "strategy_id":sid,"status":"READY","signal_date":day,"execution_date":"2026-09-25",
+        "model_fit_calls":0,"broker_action_allowed":False,"target_cash_weight":.8,
+        "rows":[{"ticker":"SYNTH","target_weight":.2,"weight_before":.1,
+                 "action":"HOLD","source_score":0.,"raw_rank":7,"raw_score":.3,"exact_hold_units":0.}],
+        "model_identity":{"recorded_current":True},"requested_gross":.2,"previous_requested_gross":.5}}}}
+
+
+@pytest.mark.parametrize("sid", ("R10_DIRECT_MEAN4_ELASTICNET_MID","R10_DIRECT_H5_RIDGE_MID","R7_GROSS_LINEAR"))
+def test_light_ml_native_reads_only_selected_current_output_and_never_raw_or_history(monkeypatch,sid):
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    from apps.demo_console.adapters import new_strategy_stock_history_reader as native
+    forbidden = _forbid_ml_background_reads(monkeypatch)
+    monkeypatch.setattr(workspace,"load_applied_rankings",forbidden)
+    monkeypatch.setattr(native,"rankings",forbidden)
+    payload = _ml_account_payload(sid)
+    before = deepcopy(payload)
+    calls = []
+    monkeypatch.setattr(accounts,"load_state",lambda: calls.append(True) or payload)
+    result = workspace.load_ml_workspace(sid,"2026-09-24")
+    assert calls == [True] and result["strategy_id"] == sid
+    assert result["rows"][0]["ticker"] == "SYNTH"
+    assert result["rows"][0]["target_weight"] == .2
+    assert result["rows"][0]["native_action_score"] == (None if sid=="R7_GROSS_LINEAR" else 0.)
+    assert result["rows"][0]["rank"] is result["rows"][0]["score"] is None
+    assert result["model_identity"]["recorded_current"] is True
+    assert result["target"]["kind"] == "CURRENT_ACCOUNT_TARGET"
+    assert payload == before
+
+
+def test_light_ml_missing_native_target_queries_only_selected_research_records(monkeypatch):
+    from apps.demo_console.adapters import new_strategy_stock_history_reader as native
+    sid="R10_DIRECT_H5_RIDGE_MID"
+    forbidden = _forbid_ml_background_reads(monkeypatch)
+    monkeypatch.setattr(workspace,"load_applied_rankings",forbidden)
+    snapshot,_ = _ml_capture(sid,source="research",kind="RECORDED_RESEARCH_SIGNAL_PLAN")
+    calls=[]
+    def rankings(day,**kwargs):
+        calls.append((day,kwargs))
+        return snapshot
+    monkeypatch.setattr(native,"rankings",rankings)
+    result=workspace.load_ml_workspace(sid,"2026-09-24",package={},account_state={"books":{}})
+    assert calls == [("2026-09-24",{"cutoff":"2026-09-24","strategy_ids":(sid,)})]
+    assert result["record_basis"]=="RECORDED_MAIN_RESEARCH" and result["rows"]
+    assert result["target"]["kind"]=="RECORDED_RESEARCH_SIGNAL_PLAN"
+
+
+def test_light_ml_hgb_reuses_qualified_ranking_owner_without_performance(monkeypatch):
+    sid="HGB_DIAG_5"
+    _forbid_ml_background_reads(monkeypatch)
+    snapshot,_=_ml_capture(sid)
+    calls=[]
+    monkeypatch.setattr(workspace,"load_applied_rankings",
+        lambda day,**kwargs: calls.append((day,kwargs)) or snapshot)
+    payload=_ml_account_payload(sid)
+    result=workspace.load_ml_workspace(sid,"2026-09-24",package={"synthetic":True},account_state=payload)
+    assert len(calls)==1 and calls[0][0]=="2026-09-24"
+    assert result["model_identity"]["feature_count"]==21
+    assert result["model_identity"]["prediction_scores_available"] is True
+    assert result["rows"][0]["rank"]==2 and result["rows"][0]["score"]==.123
+    assert result["target"]["kind"]=="CURRENT_ACCOUNT_TARGET"
+
+
+@pytest.mark.parametrize("sid", ("HGB_DIAG_5","R10_DIRECT_MEAN4_ELASTICNET_MID",
+                                  "R10_DIRECT_H5_RIDGE_MID","R7_GROSS_LINEAR"))
+def test_historical_ml_keeps_own_mechanism_without_any_account_or_2026_reader(monkeypatch,sid):
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    forbidden=_forbid_ml_background_reads(monkeypatch)
+    for owner,name in ((accounts,"load_state"),(selected,"load_package"),(selected,"workspace_dates"),
+                       (workspace,"load_active_rankings"),(workspace,"load_applied_rankings")):
+        monkeypatch.setattr(owner,name,forbidden)
+    assert workspace.ml_observation_dates({}, "historical")==()
+    shell=workspace.load_ml_overview(sid,"2025-12-02",sample="historical",
+        observation_dates=("2026-01-02",))
+    assert shell.available_dates==() and shell.decision_date=="2025-12-02"
+    assert shell.provenance.information_as_of is None
+    result=workspace.load_ml_workspace(sid,"2025-12-02",sample="historical",package={})
+    assert result["strategy_id"]==sid and result["mechanism_only"] is True
+    assert result["rows"]==[] and result["error"]
+    assert result["learning"].feature_columns==() and result["learning"].vintages==()
+    assert result["target"]["kind"]=="UNAVAILABLE"
+
+
+def test_ml_calendar_and_shell_use_given_dates_without_raw_or_future_fallback(monkeypatch):
+    _forbid_ml_background_reads(monkeypatch)
+    monkeypatch.setattr(selected,"workspace_dates",lambda package:("2025-12-31","2026-01-02","2026-01-05"))
+    assert workspace.ml_observation_dates({},account_state={"books":{}})==("2026-01-02","2026-01-05")
+    sid="R10_DIRECT_H5_RIDGE_MID"
+    dates=("2026-01-02","2026-01-05")
+    model=workspace.load_ml_overview(sid,"2026-01-04",observation_dates=dates)
+    assert model.decision_date=="2026-01-04" and model.available_dates==dates
+    assert model.provenance.information_as_of is None
+    assert model.provenance.strategy_identity==sid
+    assert model.ranking==model.holdings==() and model.performance_cutoff_date is None
+    assert workspace.load_ml_overview(sid,"2025-12-31",observation_dates=dates).decision_date is None
+    assert workspace.load_ml_overview(sid,"2026-01-04",observation_dates=()).decision_date=="2026-01-04"
+
+def test_light_ml_query_ahead_of_package_calendar_stays_exact_and_does_not_borrow_old_output(monkeypatch):
+    from apps.demo_console.adapters import new_strategy_stock_history_reader as native
+    sid="R10_DIRECT_H5_RIDGE_MID"
+    forbidden=_forbid_ml_background_reads(monkeypatch)
+    monkeypatch.setattr(workspace,"load_applied_rankings",forbidden)
+    monkeypatch.setattr(selected,"workspace_dates",lambda package:("2026-09-24",))
+    dates=workspace.ml_observation_dates({},account_state={"books":{}})
+    shell=workspace.load_ml_overview(sid,"2026-09-25",observation_dates=dates)
+    assert shell.decision_date=="2026-09-25" and shell.available_dates==("2026-09-24",)
+    assert shell.provenance.information_as_of is None
+    old,_=_ml_capture(sid,source="research",kind="RECORDED_RESEARCH_SIGNAL_PLAN")
+    monkeypatch.setattr(native,"rankings",lambda *args,**kwargs:old)
+    result=workspace.load_ml_workspace(sid,shell.decision_date,package={},
+        account_state=_ml_account_payload(sid))
+    assert not result["rows"] and result["error"]
+    assert result["target"]["kind"]=="UNAVAILABLE"
+
+def test_ml_latest_uses_verified_account_signal_dates_without_future_execution_or_mark_dates(monkeypatch):
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    forbidden=_forbid_ml_background_reads(monkeypatch)
+    monkeypatch.setattr(selected,"workspace_dates",lambda package:("2026-09-24",))
+    sid="R10_DIRECT_H5_RIDGE_MID"
+    state=_ml_account_payload(sid,day="2026-09-25")
+    state["books"][sid]["plan"]["execution_date"]="2026-09-28"
+    state["books"][sid]["valuation"]={"observed_at_utc":"2026-09-29T16:00:00+00:00"}
+    calls=[]
+    monkeypatch.setattr(accounts,"load_state",lambda:calls.append(True) or state)
+    dates=workspace.ml_observation_dates({})
+    assert dates==("2026-09-24","2026-09-25") and calls==[True]
+    model=workspace.load_ml_overview(sid,observation_dates=dates)
+    assert model.decision_date=="2026-09-25"
+    assert model.provenance.information_as_of=="2026-09-25"
+    broken=deepcopy(state)
+    broken["books"][sid]["plan"]["model_fit_calls"]=1
+    assert workspace.ml_observation_dates({},account_state=broken)==("2026-09-24",)
+    monkeypatch.setattr(accounts,"load_state",forbidden)
+    assert workspace.ml_observation_dates({},sample="historical")==()
+
+
+def test_light_ml_hgb_default_package_uses_base_reader_without_overlay(monkeypatch):
+    _forbid_ml_background_reads(monkeypatch)
+    sid="HGB_DIAG_5"
+    calls=[]
+    monkeypatch.setattr(selected,"load_package",lambda **kwargs:calls.append(kwargs) or {})
+    snapshot,_=_ml_capture(sid)
+    monkeypatch.setattr(workspace,"load_applied_rankings",lambda *args,**kwargs:snapshot)
+    result=workspace.load_ml_workspace(sid,"2026-09-24",account_state=_ml_account_payload(sid))
+    assert calls==[{"include_performance":False}]
+    assert result["rows"] and result["error"] is None
+
+
+def test_ml_calendar_projection_and_workspace_share_one_account_capture(monkeypatch, bound_package):
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    from apps.demo_console.adapters import new_strategy_stock_history_reader as native
+    sid = "R10_DIRECT_H5_RIDGE_MID"
+    forbidden = _forbid_ml_background_reads(monkeypatch)
+    monkeypatch.setattr(workspace, "load_applied_rankings", forbidden)
+    monkeypatch.setattr(native, "rankings", forbidden)
+    package_dates = selected.workspace_dates(bound_package)
+    payload = _ml_account_payload(sid)
+    before = deepcopy(payload)
+    calls = []
+    monkeypatch.setattr(accounts, "load_state", lambda: calls.append(True) or payload)
+    state = accounts.load_state()
+    expected_dates = workspace.ml_observation_dates(bound_package, account_state=state)
+    monkeypatch.setattr(accounts, "load_state", forbidden)
+    monkeypatch.setattr(selected, "workspace_dates", forbidden)
+    dates = workspace.ml_observation_dates(sample="test_2026", package_dates=package_dates, account_state=state)
+    result = workspace.load_ml_workspace(sid, "2026-09-24", package={}, account_state=state)
+    assert dates == expected_dates and "2026-09-25" not in dates
+    assert calls == [True] and payload == before
+    assert result["rows"][0]["ticker"] == "SYNTH"
+    assert result["target"]["signal_date"] == "2026-09-24"
+
+
+def test_ml_calendar_projection_historical_never_reads_source_or_account(monkeypatch):
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    forbidden = _forbid_ml_background_reads(monkeypatch)
+    for owner, name in ((accounts, "load_state"), (selected, "load_package"),
+                        (selected, "load_workspace_calendar"), (selected, "workspace_dates")):
+        monkeypatch.setattr(owner, name, forbidden)
+    assert workspace.ml_observation_dates(sample="historical", package_dates=()) == ()
+    result = workspace.load_ml_workspace("R10_DIRECT_H5_RIDGE_MID", "2025-12-02", sample="historical")
+    assert result["mechanism_only"] is True and result["rows"] == []
+
+
+def test_ml_renderer_forwards_ephemeral_account_capture(monkeypatch):
+    from types import SimpleNamespace
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    from apps.demo_console.pages import selected_strategies as page, machine_learning
+    state = _ml_account_payload("R10_DIRECT_H5_RIDGE_MID")
+    before = deepcopy(state)
+    session = {"workspace_strategy": "R10_DIRECT_H5_RIDGE_MID", "decision_date": "2026-09-24",
+               "workspace_sample": "test_2026"}
+    monkeypatch.setattr(page, "st", SimpleNamespace(session_state=session, html=lambda *_: None))
+    monkeypatch.setattr(page, "apply_style", lambda **_: None)
+    monkeypatch.setattr(page, "tr", lambda value: value)
+    monkeypatch.setattr(accounts, "load_state", lambda: pytest.fail("Renderer recaptured account state"))
+    calls = []
+    def project(sid, day, **kwargs):
+        assert kwargs["account_state"] is state and kwargs["package"] == {}
+        calls.append((sid, day))
+        return {"synthetic": True}
+    monkeypatch.setattr(workspace, "load_ml_workspace", project)
+    monkeypatch.setattr(machine_learning, "render_machine_learning", lambda *_, **kwargs:
+        calls.append(kwargs["workspace"]))
+    page.render_workspace(DecisionOverview(decision_date="2026-09-24"), {},
+        view="Machine learning", account_state=state)
+    assert calls == [("R10_DIRECT_H5_RIDGE_MID", "2026-09-24"), {"synthetic": True}]
+    assert state == before and set(session) == {"workspace_strategy", "decision_date", "workspace_sample"}

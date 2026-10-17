@@ -17,7 +17,7 @@ import time as clock
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .brokers import BrokerError, MoomooBroker, _code, _false, _name, _number, _quantity
+from .brokers import BrokerError, MoomooBroker, _code, _false, _name, _number, _quantity, _configure_context_connect_wait
 
 
 _US_MARKET_STATES = frozenset({
@@ -84,10 +84,11 @@ class MoomooQuoteFeed:
         if self._quote is None:
             firm = self._enum("SecurityFirm", self.security_firm)
             try:
-                self._quote = self._load().OpenQuoteContext(
+                context = self._load().OpenQuoteContext(
                     host=self.host, port=self.port, security_firm=firm)
             except Exception:
                 raise BrokerError("无法连接本机 OpenD 行情接口，请检查端口、登录和 SDK 版本") from None
+            self._quote = _configure_context_connect_wait(context)
         return self._quote
 
     def _call(self, method, **kwargs):

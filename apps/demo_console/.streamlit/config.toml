@@ -1,4 +1,4 @@
-# Native theme paired with the observatory's paper-and-ink visual system.
+# Native widgets match apps/shared_ui/theme.css; validated together.
 [browser]
 gatherUsageStats = false
 
@@ -8,22 +8,22 @@ showErrorDetails = false
 
 [theme]
 base = "light"
-primaryColor = "#255bde"
-backgroundColor = "#f4f2eb"
-secondaryBackgroundColor = "#eeede5"
-textColor = "#141a22"
+primaryColor = "#315efb"
+backgroundColor = "#f8faff"
+secondaryBackgroundColor = "#f0f4fb"
+textColor = "#11243a"
 font = "Segoe UI, Microsoft YaHei UI, Yu Gothic UI, sans-serif"
-borderColor = "#d6d8d2"
-baseRadius = "3px"
-buttonRadius = "3px"
-headingFontWeights = [450, 500, 500, 500, 500, 500]
+borderColor = "#dce5f0"
+baseRadius = "12px"
+buttonRadius = "12px"
+headingFontWeights = [600, 600, 550, 550, 550, 550]
 baseFontSize = 16
-dataframeHeaderBackgroundColor = "#eeede5"
-dataframeBorderColor = "#d6d8d2"
+dataframeHeaderBackgroundColor = "#f0f4fb"
+dataframeBorderColor = "#dce5f0"
 chartCategoricalColors = ["#2357d9", "#d97706", "#087f71", "#884ac7"]
 
 [theme.sidebar]
-backgroundColor = "#141a22"
+backgroundColor = "#131b2a"
 secondaryBackgroundColor = "#202936"
 textColor = "#e9edf2"
 primaryColor = "#9ab8ff"

@@ -2,6 +2,7 @@
 import json
 import shutil
 import sqlite3
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -171,3 +172,215 @@ def test_rebuild_refuses_earlier_cutoff_and_changed_current_without_demoting(tmp
         materialize(source, destination)
     with sqlite3.connect(store.catalog_path) as connection:
         assert connection.execute("SELECT path FROM data_files WHERE is_current=1").fetchone()[0] == selected["path"]
+
+
+def incremental_fixture(tmp_path):
+    source, destination = roots(tmp_path, 'incremental_source'), roots(tmp_path, 'incremental_target')
+    first = write_prices(source.data_root / 'stocks/ABC/daily_qfq.parquet', ['2026-01-02', '2026-01-05'])
+    keep = source.data_root / 'stocks/KEEP/daily_qfq.parquet'
+    keep.parent.mkdir(parents=True)
+    frame = pd.read_parquet(first)
+    frame['ticker'], frame['provider_code'] = 'KEEP', 'US.KEEP'
+    frame.to_parquet(keep, index=False)
+    store, _ = materialize(source, destination)
+    return destination, store
+
+
+def incoming_interval(root, name, ticker='ABC', dates=None, declared_ticker=None):
+    path = write_prices(root / (name + '.csv'), dates or ['2026-01-05', '2026-01-06'])
+    frame = pd.read_csv(path)
+    frame['ticker'], frame['provider_code'] = ticker, 'US.' + ticker
+    frame.to_csv(path, index=False)
+    manifest = root / 'intervals' / (name + '.json')
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({'item': {'ticker': declared_ticker or ticker, 'adjustment': 'qfq'},
+                                    'path': str(path), 'sha256': sha256(path)}), encoding='utf-8')
+    return path
+
+
+def selected_price_rows(conn):
+    return {(row[1], row[2]): row for row in conn.execute(
+        "SELECT * FROM data_files WHERE dataset='prices_daily' AND is_current=1")}
+
+
+def guard_price_reads(monkeypatch, forbidden):
+    from scripts.storage import build_data_catalog as api
+    original, reads, scans = api.pq.ParquetFile, [], []
+    forbidden = {str(Path(path).resolve()) for path in forbidden}
+
+    class GuardedParquet:
+        def __init__(self, path, *args, **kwargs):
+            self.path = str(Path(path).resolve())
+            self.inner = original(path, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+        def read(self, *args, **kwargs):
+            reads.append((self.path, kwargs.get('columns')))
+            assert self.path not in forbidden, 'untouched full Parquet loader called'
+            return self.inner.read(*args, **kwargs)
+
+        def iter_batches(self, *args, **kwargs):
+            scans.append((self.path, kwargs.get('columns')))
+            assert kwargs.get('columns') == ['date'], 'untouched scan decoded price columns'
+            return self.inner.iter_batches(*args, **kwargs)
+
+    monkeypatch.setattr(api.pq, 'ParquetFile', GuardedParquet)
+    return reads, scans
+
+
+def test_incremental_noop_retains_exact_catalog_rows_without_price_decoding(tmp_path, monkeypatch):
+    destination, store = incremental_fixture(tmp_path)
+    with sqlite3.connect(store.catalog_path) as conn:
+        before = selected_price_rows(conn)
+        reads, scans = guard_price_reads(monkeypatch, [row[3] for row in before.values()])
+        report = materialize_market(destination, conn, '2026-01-09', updates_only=True)
+        assert selected_price_rows(conn) == before
+    assert not reads and not scans
+    assert report['materialized_price_files'] == 0 and report['retained_price_files'] == 2
+    assert len(report['price_files']) == 2
+
+
+def test_incremental_only_materializes_touched_old_and_new_keys(tmp_path, monkeypatch):
+    destination, store = incremental_fixture(tmp_path)
+    extra = destination.cache_root / 'incoming'
+    incoming_interval(extra, 'tail')
+    incoming_interval(extra, 'new', ticker='NEW')
+    old = store.metadata('prices_daily', 'ABC', 'qfq')
+    keep = store.metadata('prices_daily', 'KEEP', 'qfq')
+    reads, scans = guard_price_reads(monkeypatch, [keep['path']])
+    writes, original_write = [], pd.DataFrame.to_parquet
+
+    def counted_write(frame, *args, **kwargs):
+        writes.extend(frame.ticker.unique().tolist())
+        assert not frame.ticker.eq('KEEP').any(), 'untouched frame was reserialized'
+        return original_write(frame, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, 'to_parquet', counted_write)
+    with sqlite3.connect(store.catalog_path) as conn:
+        before = selected_price_rows(conn)
+        report = materialize_market(destination, conn, '2026-01-09', extra_root=extra, updates_only=True)
+        after = selected_price_rows(conn)
+    assert after[('KEEP', 'qfq')] == before[('KEEP', 'qfq')]
+    assert sha256(keep['path']) == keep['source_sha256']
+    assert sha256(old['path']) == old['source_sha256']
+    assert [path for path, _ in reads] == [str(Path(old['path']).resolve())]
+    assert not scans and sorted(writes) == ['ABC', 'NEW']
+    assert store.daily('ABC', 'qfq').date.tolist() == ['2026-01-02', '2026-01-05', '2026-01-06']
+    assert store.daily('NEW', 'qfq').date.tolist() == ['2026-01-05', '2026-01-06']
+    assert report['materialized_price_files'] == 2 and report['retained_price_files'] == 1
+    assert len(report['price_files']) == 3 and report['rejected_sources'] == []
+
+
+def test_incremental_rejects_declared_identity_mismatch_without_touching_current(tmp_path, monkeypatch):
+    destination, store = incremental_fixture(tmp_path)
+    extra = destination.cache_root / 'incoming'
+    incoming_interval(extra, 'wrong', declared_ticker='KEEP')
+    with sqlite3.connect(store.catalog_path) as conn:
+        before = selected_price_rows(conn)
+        reads, scans = guard_price_reads(monkeypatch, [row[3] for row in before.values()])
+        report = materialize_market(destination, conn, '2026-01-09', extra_root=extra, updates_only=True)
+        assert selected_price_rows(conn) == before
+    assert not reads and not scans and report['materialized_price_files'] == 0
+    assert len(report['rejected_sources']) == 1
+    assert 'declared identity' in report['rejected_sources'][0]['reason']
+
+
+@pytest.mark.parametrize('damage', ['missing', 'changed'])
+def test_incremental_still_verifies_untouched_file_hashes(tmp_path, monkeypatch, damage):
+    destination, store = incremental_fixture(tmp_path)
+    keep = Path(store.metadata('prices_daily', 'KEEP', 'qfq')['path'])
+    if damage == 'missing':
+        keep.unlink()
+    else:
+        with keep.open('ab') as stream:
+            stream.write(b'synthetic-corruption')
+    with sqlite3.connect(store.catalog_path) as conn:
+        before = selected_price_rows(conn)
+        guard_price_reads(monkeypatch, [row[3] for row in before.values()])
+        with pytest.raises(ValueError, match='missing or changed'):
+            materialize_market(destination, conn, '2026-01-09', updates_only=True)
+        assert selected_price_rows(conn) == before
+
+
+def test_incremental_checks_actual_footer_dates_not_stale_catalog_bounds(tmp_path, monkeypatch):
+    destination, store = incremental_fixture(tmp_path)
+    with sqlite3.connect(store.catalog_path) as conn:
+        conn.execute("UPDATE data_files SET max_date='2026-01-03' WHERE dataset='prices_daily'")
+        before = selected_price_rows(conn)
+        reads, scans = guard_price_reads(monkeypatch, [row[3] for row in before.values()])
+        with pytest.raises(ValueError, match='truncate'):
+            materialize_market(destination, conn, '2026-01-03', updates_only=True)
+        assert selected_price_rows(conn) == before
+    assert not reads and not scans
+
+
+def test_incremental_statistics_missing_falls_back_to_bounded_date_only_scan(tmp_path, monkeypatch):
+    import pyarrow.parquet as pq
+    destination, store = incremental_fixture(tmp_path)
+    keep = Path(store.metadata('prices_daily', 'KEEP', 'qfq')['path'])
+    table = pq.read_table(keep)
+    pq.write_table(table, keep, write_statistics=False)
+    with sqlite3.connect(store.catalog_path) as conn:
+        conn.execute('UPDATE data_files SET source_sha256=? WHERE path=?', (sha256(keep), str(keep)))
+        before = selected_price_rows(conn)
+        reads, scans = guard_price_reads(monkeypatch, [row[3] for row in before.values()])
+        report = materialize_market(destination, conn, '2026-01-09', updates_only=True)
+        assert selected_price_rows(conn) == before
+        with pytest.raises(ValueError, match='truncate'):
+            materialize_market(destination, conn, '2026-01-03', updates_only=True)
+    assert not reads
+    assert (str(keep.resolve()), ['date']) in scans
+    assert all(columns == ['date'] for _, columns in scans)
+    assert report['materialized_price_files'] == 0
+
+
+def test_incremental_same_hash_receipt_cannot_claim_a_different_identity(tmp_path):
+    destination, store = incremental_fixture(tmp_path)
+    extra = destination.cache_root / 'incoming'
+    first = incoming_interval(extra, 'first')
+    second = extra / 'second.csv'
+    second.write_bytes(first.read_bytes())
+    (extra / 'intervals/second.json').write_text(json.dumps({
+        'item': {'ticker': 'KEEP', 'adjustment': 'qfq'}, 'path': str(second), 'sha256': sha256(second)}), encoding='utf-8')
+    with sqlite3.connect(store.catalog_path) as conn:
+        before = selected_price_rows(conn)
+        report = materialize_market(destination, conn, '2026-01-09', extra_root=extra, updates_only=True)
+        assert selected_price_rows(conn)[('KEEP', 'qfq')] == before[('KEEP', 'qfq')]
+    assert report['materialized_price_files'] == 1 and len(report['rejected_sources']) == 1
+    assert 'declared identity' in report['rejected_sources'][0]['reason']
+
+
+def test_incremental_conflicting_qfq_keeps_old_dates_and_future_rows_excluded(tmp_path):
+    destination, store = incremental_fixture(tmp_path)
+    extra = destination.cache_root / 'incoming'
+    receipt = incoming_interval(extra, 'conflict', dates=['2026-01-05', '2026-01-06', '2026-01-12'])
+    frame = pd.read_csv(receipt)
+    frame[['open', 'high', 'low', 'close']] = [20., 21., 19., 20.]
+    frame.to_csv(receipt, index=False)
+    manifest = extra / 'intervals/conflict.json'
+    record = json.loads(manifest.read_text(encoding='utf-8'))
+    record['sha256'] = sha256(receipt)
+    manifest.write_text(json.dumps(record), encoding='utf-8')
+    with sqlite3.connect(store.catalog_path) as conn:
+        report = materialize_market(destination, conn, '2026-01-09', extra_root=extra, updates_only=True)
+    assert store.daily('ABC', 'qfq').date.tolist() == ['2026-01-02', '2026-01-05']
+    assert any(item['reason'] == 'PRICE_VINTAGE_CONFLICT' for item in store.metadata('prices_daily', 'ABC', 'qfq')['lineage']['issues'])
+    assert report['materialized_price_files'] == 1 and report['retained_price_files'] == 1
+
+
+def test_incremental_bad_first_identity_does_not_poison_later_valid_same_hash(tmp_path):
+    destination, store = incremental_fixture(tmp_path)
+    extra = destination.cache_root / 'incoming'
+    bad = incoming_interval(extra, 'first_bad', declared_ticker='KEEP')
+    good = incoming_interval(extra, 'second_good')
+    assert sha256(bad) == sha256(good)
+    with sqlite3.connect(store.catalog_path) as conn:
+        before = selected_price_rows(conn)
+        report = materialize_market(destination, conn, '2026-01-09', extra_root=extra, updates_only=True)
+        assert selected_price_rows(conn)[('KEEP', 'qfq')] == before[('KEEP', 'qfq')]
+        statuses = dict(conn.execute('SELECT path,status FROM source_files WHERE path IN (?,?)', (str(bad), str(good))))
+    assert statuses == {str(bad): 'REJECTED', str(good): 'READ_VALIDATED'}
+    assert report['materialized_price_files'] == 1 and len(report['rejected_sources']) == 1
+    assert store.daily('ABC', 'qfq').date.tolist() == ['2026-01-02', '2026-01-05', '2026-01-06']

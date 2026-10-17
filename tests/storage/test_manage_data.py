@@ -129,3 +129,34 @@ def test_cli_prices_stdout_limit_and_plan_output(store, monkeypatch, capsys):
     assert json.loads(capsys.readouterr().out)["download_started"] is False
     assert cli.main(["prices", "--ticker", "ABC", "--start", "2026-08-01", "--end", "2026-09-01", "--limit", "0"]) == 2
     assert "limit" in capsys.readouterr().err
+
+
+def test_planning_snapshot_reuses_metadata_and_preserves_default_freshness(store, monkeypatch):
+    price_file(store)
+    cli.register_subscription(store, provider_code='US.NEW', ticker='NEW', start='2020-01-01',
+                              target='2026-09-11', identity_source='unknown')
+    with sqlite3.connect(store.catalog_path) as connection:
+        connection.execute("""INSERT INTO data_files
+            (dataset,ticker,adjustment,path,is_current) VALUES (?,?,?,?,1)""",
+            ('prices_daily_yahoo', 'ONLYY', 'split_adjusted', str(store.paths.data_root / 'onlyy.parquet')))
+    expected_status, expected_tickers = cli.status(store), cli.acquisition_tickers(store)
+    before = store.catalog_path.read_bytes()
+    original = cli.read_catalog
+    calls = []
+    def capture(actual):
+        calls.append(actual)
+        return original(actual)
+    monkeypatch.setattr(cli, 'read_catalog', capture)
+    snapshot = cli.read_catalog(store)
+    assert cli.status(store, snapshot) == expected_status
+    assert cli.acquisition_tickers(store, snapshot) == expected_tickers == ['ABC', 'NEW', 'ONLYY']
+    assert calls == [store]
+    assert store.catalog_path.read_bytes() == before
+    # A snapshot belongs to this planning stage; the default API remains fresh.
+    cli.register_subscription(store, provider_code='US.LATER', ticker='LATER', start='2020-01-01',
+                              target='2026-09-11', identity_source='unknown')
+    calls.clear()
+    assert cli.acquisition_tickers(store, snapshot) == expected_tickers
+    assert calls == []
+    assert cli.acquisition_tickers(store) == ['ABC', 'LATER', 'NEW', 'ONLYY']
+    assert calls == [store]

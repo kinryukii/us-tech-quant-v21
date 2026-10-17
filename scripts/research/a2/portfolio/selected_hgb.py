@@ -20,10 +20,13 @@ import re
 import sys
 import tempfile
 import threading
+import types
 from typing import Any, Mapping
 
 
 STRATEGY_IDS = ("HGB_DIAG_5", "HGB_FACTOR_5")
+LEGACY_POLICY = "RAW_TOP20_FROZEN_LEGACY"
+DIRECT_POLICY = "HGB_TOP20_RISK_R1"
 LABELS = {"HGB_DIAG_5": "HGB＋对角风险", "HGB_FACTOR_5": "HGB＋因子／收缩风险"}
 SELECTION_BASIS = "USER_SELECTED_AFTER_EXPOSURE"
 DEFAULT_SOURCE_ROOT = Path(r"D:\us-tech-quant-backtests\a2_research\a2_top20_all_methods_20260925")
@@ -80,6 +83,30 @@ class SelectedStrategyError(ValueError):
 
 def _get(paths, key, default=None):
     return paths.get(key, default) if isinstance(paths, Mapping) else getattr(paths, key, default)
+
+
+def active_policy(paths=None):
+    """Resolve the active policy and its separate daily package without models."""
+    from scripts.common.storage_paths import assert_safe_output_path, resolve
+    repo = Path(_get(paths, "repo_root") or Path(__file__).resolve().parents[4])
+    overrides = {key: _get(paths, key) for key in ("data_root", "cache_root", "daily_root", "backtest_root", "results_root", "envs_root") if _get(paths, key) is not None}
+    resolved = resolve(repo, **overrides)
+    defaults = {LEGACY_POLICY: "A2_selected_hgb/latest.json",
+                DIRECT_POLICY: "A2_selected_hgb/direct_hgb_r1/latest.json"}
+    config = resolved.repo_root / "config/research_governance/selected_hgb_policy.json"
+    if config.exists():
+        setting = _json(config)
+        policy = setting.get("policy_id")
+        relative = setting.get("package_relative_path")
+        if (type(setting.get("schema_version")) is not int
+                or setting["schema_version"] != 1 or policy not in defaults
+                or not isinstance(relative, str) or relative != defaults[policy]):
+            raise SelectedStrategyError("ACTIVE_HGB_POLICY_CONFIG_INVALID")
+    else:
+        policy, relative = LEGACY_POLICY, defaults[LEGACY_POLICY]
+    output = (resolved.daily_root / relative).resolve()
+    assert_safe_output_path(output, kind="daily", paths=resolved)
+    return policy, output
 
 
 def _source_root(paths=None, source_root=None):
@@ -178,6 +205,18 @@ def _runtime(root):
         _RUNTIME[key] = {"np": np, "pd": pd, "model": model, "q10": q10,
                          "risk": risk, "optimizer": optimizer}
     return _RUNTIME[key]
+
+
+
+def release_runtime(*, source_root=None):
+    """Drop this owner's cached models after a serial, isolated worker stage."""
+    key = str(_source_root(source_root=source_root)) if source_root is not None else None
+    with _RUNTIME_LOCK:
+        keys = tuple(_RUNTIME) if key is None else (key,)
+        released = sum(item in _RUNTIME for item in keys)
+        for item in keys:
+            _RUNTIME.pop(item, None)
+    return released
 
 
 def _date(value):
@@ -289,14 +328,77 @@ def _action(target, old):
     return "BUY" if delta > 1e-10 else "SELL" if delta < -1e-10 else "HOLD"
 
 
-def infer_targets(day, state=None, *, source_root=None):
+def solve_targets(day, shares, pre_values, nav, bundle, spec, signal, *,
+                  optimizer, policy=LEGACY_POLICY):
+    """Reuse the frozen objective with explicit alpha eligibility and bounds.
+
+    The direct policy changes only new-position eligibility to shared HGB Top20
+    and forbids increasing existing positions outside that set. The source
+    function, covariance, risk penalty, costs and solver settings are reused.
+    Its globals are copied per call, so the frozen module is never patched.
+    """
+    if policy == LEGACY_POLICY:
+        return optimizer.solve(day, shares, pre_values, nav, bundle, spec, signal)
+    if policy != DIRECT_POLICY:
+        raise SelectedStrategyError("UNKNOWN_HGB_POLICY:" + str(policy))
+    import numpy as np
+    if (not {"ticker", "raw_rank", "pred_hgb"}.issubset(day)
+            or len(day) != 40 or day.ticker.nunique() != 40
+            or set(day.raw_rank) != set(range(1, 41))):
+        raise SelectedStrategyError("DIRECT_HGB_REQUIRES_COMPLETE_RAW_TOP40")
+    try:
+        scores = day.pred_hgb.to_numpy(dtype=float)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SelectedStrategyError("DIRECT_HGB_REQUIRES_FINITE_SCORES") from exc
+    if not np.isfinite(scores).all():
+        raise SelectedStrategyError("DIRECT_HGB_REQUIRES_FINITE_SCORES")
+    for ticker in day.ticker:
+        _ticker(ticker)
+    ordered = day.copy(deep=True)
+    ordered["pred_hgb"] = scores
+    ordered = ordered.sort_values(["pred_hgb", "ticker"], ascending=[False, True],
+                                  kind="mergesort")
+    ordered["raw_rank"] = range(1, 41)  # Solver-only rank; model features stay Raw.
+    eligible = ordered.iloc[:20].ticker.astype(str).tolist()
+    eligible_set = set(eligible)
+    # This order is the hash-pinned solve() seam: eligible then sorted old names.
+    names = eligible + sorted(set(shares) - eligible_set)
+    old_nav = _number(nav, "signal_close_nav", minimum=0)
+    if old_nav <= 0:
+        raise SelectedStrategyError("INVALID_SIGNAL_CLOSE_NAV")
+    maximum = _number(optimizer.MAX_WEIGHT, "frozen_max_weight", minimum=0)
+    upper = [maximum if ticker in eligible_set else min(maximum,
+        _number(pre_values.get(ticker, 0.0), "signal_close_value", minimum=0) / old_nav)
+        for ticker in names]
+    original = optimizer.solve
+    if not isinstance(original, types.FunctionType) or "minimize" not in original.__globals__:
+        raise SelectedStrategyError("DIRECT_HGB_SOLVER_SEAM_CHANGED")
+    original_minimize = original.__globals__["minimize"]
+
+    def bounded_minimize(*args, **kwargs):
+        bounds = kwargs.get("bounds")
+        if (bounds is None or len(bounds) != len(names)
+                or any(tuple(bound) != (0.0, maximum) for bound in bounds)):
+            raise SelectedStrategyError("DIRECT_HGB_SOLVER_SEAM_CHANGED")
+        kwargs = dict(kwargs, bounds=[(float(bound[0]), min(float(bound[1]), cap))
+                                     for bound, cap in zip(bounds, upper)])
+        return original_minimize(*args, **kwargs)
+
+    globals_copy = dict(original.__globals__, minimize=bounded_minimize)
+    adapted = types.FunctionType(original.__code__, globals_copy, original.__name__,
+                                 original.__defaults__, original.__closure__)
+    adapted.__kwdefaults__ = original.__kwdefaults__
+    return adapted(ordered, shares, pre_values, nav, bundle, spec, signal)
+
+
+def infer_targets(day, state=None, *, source_root=None, policy=LEGACY_POLICY):
     """Infer both frozen strategies from complete Raw Top40 + signal-close state.
 
     ``state=None`` means 100% cash. For a real account supply ``signal_date``,
     ``valuation_basis='SIGNAL_CLOSE'``, ``weights`` and ``cash_weight``. The solver
     needs actual old weights, not quantities or a following opening price.
     """
-    applications, _ = _infer_with_scores(day, state, source_root=source_root)
+    applications, _ = _infer_with_scores(day, state, source_root=source_root, policy=policy)
     return applications
 
 
@@ -321,8 +423,8 @@ def _score_rows(frame, *, signal_date=None):
     return rows
 
 
-def _infer_with_scores(day, state=None, *, source_root=None):
-    """Capture the same 40 predictions used by the unchanged two solves."""
+def _infer_with_scores(day, state=None, *, source_root=None, policy=LEGACY_POLICY):
+    """Capture shared predictions and apply the explicitly selected policy."""
     root = _source_root(source_root=source_root)
     runtime = _runtime(root)
     frame, signal = _normalise_day(day, runtime)
@@ -336,9 +438,10 @@ def _infer_with_scores(day, state=None, *, source_root=None):
         # In the original solve(), quantities only identify positive holdings;
         # pre_values/nav supply the real signal-close weights. Unit NAV is exact
         # for an input already expressed as normalized account weights.
-        target, diagnostic = optimizer.solve(
+        target, diagnostic = solve_targets(
             frame, {ticker: 1.0 for ticker in weights}, weights, 1.0,
             runtime["risk"], optimizer.SPECS[strategy_id], runtime["pd"].Timestamp(signal),
+            optimizer=optimizer, policy=policy,
         )
         if diagnostic["solver_failed"]:
             raise SelectedStrategyError("SOLVER_FAILED_RETAIN_ACCOUNT:" + strategy_id)
@@ -355,7 +458,9 @@ def _infer_with_scores(day, state=None, *, source_root=None):
             "target_cash_weight": max(0.0, 1.0 - sum(target.values())),
             "cash_weight_before": cash, "solver_failed": False,
             "decision_clock": "SIGNAL_CLOSE_NEXT_SESSION_OPEN", "broker_action_allowed": False,
-            "reason": "", "model_fit_calls": 0,
+            "reason": "", "model_fit_calls": 0, "policy_id": policy,
+            "eligibility_basis": ("RAW_TOP20" if policy == LEGACY_POLICY else
+                                  "HGB_TOP20_PRED_HGB_DESC_TICKER_ASC"),
         }
     return applications, score_snapshot
 
@@ -584,9 +689,15 @@ def _snapshot_hash(snapshot):
 
 def _validate_snapshot(snapshot):
     """Validate a captured cash-start decision without inference or execution."""
-    if (set(snapshot) != {"schema_version", "selection_basis", "signal_date", "generated_at", "origin_package_sha256",
-                         "shared_scores", "applications", "source_refs", "source_hashes",
-                         "observation_only_source_refs", "report_binding", "snapshot_sha256"}
+    policy = snapshot.get("policy_id", LEGACY_POLICY)
+    if policy not in {LEGACY_POLICY, DIRECT_POLICY}:
+        raise SelectedStrategyError("HISTORY_POLICY_IDENTITY_INVALID")
+    fields = {"schema_version", "selection_basis", "signal_date", "generated_at", "origin_package_sha256",
+              "shared_scores", "applications", "source_refs", "source_hashes",
+              "observation_only_source_refs", "report_binding", "snapshot_sha256"}
+    if "policy_id" in snapshot:
+        fields.add("policy_id")
+    if (set(snapshot) != fields
             or snapshot.get("schema_version") != 1 or snapshot.get("selection_basis") != SELECTION_BASIS
             or snapshot.get("snapshot_sha256") != _snapshot_hash(snapshot)):
         raise SelectedStrategyError("HISTORY_SNAPSHOT_HASH_OR_IDENTITY_INVALID")
@@ -642,8 +753,12 @@ def _validate_snapshot(snapshot):
         raise SelectedStrategyError("HISTORY_REPORT_SCORE_BINDING_MISMATCH")
     if set(snapshot.get("applications", {})) != set(STRATEGY_IDS):
         raise SelectedStrategyError("HISTORY_STRATEGY_IDENTITY_INVALID")
-    eligible = {row["ticker"] for row in rows if row["raw_rank"] <= 20}
+    rank_field = "hgb_rank" if policy == DIRECT_POLICY else "raw_rank"
+    eligible = {row["ticker"] for row in rows if row[rank_field] <= 20}
     for app in snapshot["applications"].values():
+        if ((policy == DIRECT_POLICY and app.get("policy_id") != DIRECT_POLICY)
+                or ("policy_id" in app and app["policy_id"] != policy)):
+            raise SelectedStrategyError("HISTORY_POLICY_IDENTITY_INVALID")
         if (app.get("status") != "READY" or app.get("signal_date") != signal
                 or app.get("requested_signal_date") != signal or app.get("account_basis") != "CASH_START"
                 or app.get("execution_status") != "TARGET_ONLY" or app.get("kind") != "ARCHIVED_CASH_START_TARGET"
@@ -668,6 +783,9 @@ def _validate_snapshot(snapshot):
 
 
 def _capture_snapshot(package, origin_sha, report_binding=None):
+    policy = package.get("policy_id", LEGACY_POLICY)
+    if policy not in {LEGACY_POLICY, DIRECT_POLICY}:
+        raise SelectedStrategyError("HISTORY_POLICY_IDENTITY_INVALID")
     scores = package.get("shared_scores", {})
     current = scores.get("current", {})
     signal = _date(current.get("signal_date"))
@@ -704,6 +822,8 @@ def _capture_snapshot(package, origin_sha, report_binding=None):
             "cash_weight_before", "decision_clock", "broker_action_allowed", "model_fit_calls")}
         applications[sid].update(execution_status="TARGET_ONLY", kind="ARCHIVED_CASH_START_TARGET",
             reason="", account_label="空仓账户目标方案")
+        if policy == DIRECT_POLICY:
+            applications[sid]["policy_id"] = original.get("policy_id")
     snapshot = {"schema_version": 1, "selection_basis": SELECTION_BASIS, "signal_date": signal,
         "generated_at": package.get("generated_at"), "origin_package_sha256": origin_sha,
         "shared_scores": {**{key: scores.get(key) for key in ("model_id", "model_sha256", "scoring_scope", "ranking_basis")},
@@ -713,6 +833,8 @@ def _capture_snapshot(package, origin_sha, report_binding=None):
         "observation_only_source_refs": [key for key, ref in refs.items()
             if key in ("current/report.json", "current/original_report.json") and Path(ref["path"]).name.lower() == "latest.json"],
         "report_binding": report_binding}
+    if policy == DIRECT_POLICY:
+        snapshot["policy_id"] = policy
     snapshot["snapshot_sha256"] = _snapshot_hash(snapshot)
     return _validate_snapshot(snapshot)
 
@@ -729,16 +851,20 @@ def _ref_identity(ref):
     return Path(ref["path"]).resolve(), ref["sha256"]
 
 
-def _validate_input_repair(snapshot, previous, repair_ref):
+def _validate_input_repair(snapshot, previous, repair_ref, *, report_metadata_loader=None):
     if (not isinstance(repair_ref, Mapping) or set(repair_ref) != {"path", "sha256"}
             or not re.fullmatch(r"[0-9a-f]{64}", str(repair_ref.get("sha256", "")))):
         raise SelectedStrategyError("HISTORY_INPUT_REPAIR_REFERENCE_REQUIRED")
     audit = _json(_verify(repair_ref["path"], repair_ref["sha256"]))
     new_ref = snapshot["source_refs"]["current/report.json"]
     old_ref = previous["source_refs"]["current/report.json"]
-    report = _json(_verify(new_ref["path"], new_ref["sha256"]))
+    report_path = _verify(new_ref["path"], new_ref["sha256"])
+    report = (_json(report_path) if report_metadata_loader is None
+              else report_metadata_loader(report_path, new_ref["sha256"]))
     bound = report.get("repair_lineage") or {}
     if (set(bound) != {"path", "sha256"} or _ref_identity(bound) != _ref_identity(repair_ref)
+            or audit.get("schema") != "A2_OFFLINE_INPUT_REPAIR_V1"
+            or audit.get("network_requests_this_run") != 0
             or audit.get("status") != "INPUTS_VERIFIED"
             or audit.get("target_date") != snapshot["signal_date"]
             or audit.get("run_id") != report.get("run_id") or not audit.get("run_id")
@@ -755,7 +881,14 @@ def _validate_input_repair(snapshot, previous, repair_ref):
     return audit
 
 
-def _revision_selection(owner, folder, day):
+def _legal_history_path(path, folder, day):
+    base = (folder / (day + ".json")).resolve()
+    versions = (folder / "revisions" / day).resolve()
+    return path == base or (versions.is_relative_to(folder) and path.parent == versions
+                            and re.fullmatch(r"[0-9a-f]{64}\.json", path.name) is not None)
+
+
+def _revision_selection(owner, folder, day, *, report_metadata_loader=None):
     refs, hashes = owner.get("source_refs", {}), owner.get("source_hashes", {})
     key = _history_key(day)
     if key not in refs:
@@ -764,10 +897,15 @@ def _revision_selection(owner, folder, day):
     ref = refs[key]
     if ref.get("sha256") != hashes.get(key):
         raise SelectedStrategyError("HISTORY_SOURCE_BINDING_MISMATCH")
-    path = _verify(ref["path"], ref["sha256"]).resolve()
+    path = Path(ref["path"]).resolve()
     base = (folder / (day + ".json")).resolve()
+    if not _legal_history_path(path, folder, day):
+        raise SelectedStrategyError("HISTORY_REVISION_SELECTION_PATH_INVALID")
     if path == base:
+        _validate_snapshot(_json(path))  # retain legacy semantic-error precedence
+        _verify(path, ref["sha256"])
         return path, ref["sha256"], None
+    _verify(path, ref["sha256"])
     snapshot = _validate_snapshot(_json(path))
     expected = (folder / "revisions" / day / (snapshot["snapshot_sha256"] + ".json")).resolve()
     receipt_key = _repair_key(day)
@@ -775,21 +913,24 @@ def _revision_selection(owner, folder, day):
     if (path != expected or snapshot["signal_date"] != day
             or receipt_ref.get("sha256") != hashes.get(receipt_key)):
         raise SelectedStrategyError("HISTORY_REVISION_SELECTION_INVALID")
-    receipt_path = _verify(receipt_ref["path"], receipt_ref["sha256"]).resolve()
+    receipt_path = Path(receipt_ref["path"]).resolve()
     if receipt_path != expected.with_suffix(".receipt.json"):
         raise SelectedStrategyError("HISTORY_REVISION_RECEIPT_PATH_INVALID")
+    _verify(receipt_path, receipt_ref["sha256"])
     receipt = _json(receipt_path)
     if (set(receipt) != {"schema_version", "kind", "signal_date", "supersedes", "replacement", "repair_lineage"}
             or receipt["schema_version"] != 1 or receipt["kind"] != "INPUT_REPAIR"
             or receipt["signal_date"] != day or _ref_identity(receipt["replacement"]) != _ref_identity(ref)):
         raise SelectedStrategyError("HISTORY_REVISION_RECEIPT_INVALID")
-    old_path = _verify(receipt["supersedes"]["path"], receipt["supersedes"]["sha256"]).resolve()
-    if old_path != base and not old_path.is_relative_to((folder / "revisions" / day).resolve()):
+    old_path = Path(receipt["supersedes"]["path"]).resolve()
+    if not _legal_history_path(old_path, folder, day):
         raise SelectedStrategyError("HISTORY_REVISION_PARENT_PATH_INVALID")
+    _verify(old_path, receipt["supersedes"]["sha256"])
     old = _validate_snapshot(_json(old_path))
-    if old["signal_date"] != day:
+    if old["signal_date"] != day or (old_path != base and old_path.stem != old["snapshot_sha256"]):
         raise SelectedStrategyError("HISTORY_REVISION_PARENT_DATE_INVALID")
-    _validate_input_repair(snapshot, old, receipt["repair_lineage"])
+    _validate_input_repair(snapshot, old, receipt["repair_lineage"],
+        report_metadata_loader=report_metadata_loader)
     return path, ref["sha256"], receipt_ref
 
 
@@ -816,6 +957,30 @@ def _write_immutable_json(value, path):
             os.unlink(temporary)
 
 
+def _same_snapshot_decision(snapshot, previous):
+    """Permit a new run observation only when its complete frozen decision is identical."""
+    if snapshot.get("policy_id", LEGACY_POLICY) != previous.get("policy_id", LEGACY_POLICY):
+        return False
+    def decision(value):
+        result = {key: item for key, item in value.items()
+                  if key not in ("snapshot_sha256", "origin_package_sha256", "generated_at")}
+        # Both snapshots have already passed all source-byte and report/score checks.
+        # Only the report's observation ref and the location of identical feature bytes vary.
+        refs = {key: dict(ref) for key, ref in value["source_refs"].items()}
+        refs["current/report.json"] = {**refs["current/report.json"], "path": None, "sha256": None}
+        feature = "current/selected_hgb_features.parquet"
+        refs[feature] = {**refs[feature], "path": None}
+        result["source_refs"] = refs
+        result["source_hashes"] = {**value["source_hashes"], "current/report.json": None}
+        result["observation_only_source_refs"] = [key for key in value["observation_only_source_refs"]
+                                                  if key != "current/report.json"]
+        binding = value["report_binding"]
+        result["report_binding"] = {**binding, "selected_hgb_features": {
+            **binding["selected_hgb_features"], "path": None}}
+        return result
+    return _snapshot_hash(decision(snapshot)) == _snapshot_hash(decision(previous))
+
+
 def archive_current_snapshot(package_or_path, history_root, expected_sha256=None, *, snapshot_repair=None):
     """Archive a date immutably; explicit hash-bound input repairs create versions."""
     if isinstance(package_or_path, Mapping):
@@ -830,8 +995,23 @@ def archive_current_snapshot(package_or_path, history_root, expected_sha256=None
     signal = _date(package.get("shared_scores", {}).get("current", {}).get("signal_date"))
     path, expected, receipt_ref = _revision_selection(package, folder, signal)
     previous = _validate_snapshot(_json(_verify(path, expected))) if path.exists() else None
+    if snapshot_repair is not None and previous is None:
+        raise SelectedStrategyError("HISTORY_INPUT_REPAIR_PARENT_REQUIRED")
+    reobserved = (previous is not None and snapshot_repair is None and any(
+        package.get("source_refs", {}).get(name) != previous["source_refs"].get(name)
+        for name in ("current/report.json", "current/selected_hgb_features.parquet")))
     snapshot = _capture_snapshot(package, origin,
-        previous["report_binding"] if previous and snapshot_repair is None else None)
+        previous["report_binding"] if previous and snapshot_repair is None and not reobserved else None)
+    if reobserved and _same_snapshot_decision(snapshot, previous):
+        snapshot = previous  # Retain the first immutable bytes/ref and any accepted repair receipt.
+    if snapshot_repair is not None and previous["snapshot_sha256"] == snapshot["snapshot_sha256"]:
+        if receipt_ref is None:
+            _validate_input_repair(snapshot, previous, snapshot_repair)
+        else:
+            accepted = _json(_verify(receipt_ref["path"], receipt_ref["sha256"]))["repair_lineage"]
+            if (not isinstance(snapshot_repair, Mapping) or set(snapshot_repair) != {"path", "sha256"}
+                    or _ref_identity(snapshot_repair) != _ref_identity(accepted)):
+                raise SelectedStrategyError("HISTORY_INPUT_REPAIR_REFERENCE_REQUIRED")
     if previous and previous["snapshot_sha256"] != snapshot["snapshot_sha256"]:
         if snapshot_repair is None:
             raise SelectedStrategyError("HISTORY_SAME_DATE_CONFLICT:" + signal)
@@ -893,7 +1073,6 @@ def _merge_archived_snapshots(package, history_root, previous=None):
     for row in scores["historical"]:
         grouped.setdefault(row["signal_date"], []).append(row)
     refs, hashes = package["source_refs"], package["source_hashes"]
-    old_hashes = (previous or {}).get("source_hashes", {})
     applications = {sid: {} for sid in STRATEGY_IDS}
     for path in sorted(Path(history_root).glob("????-??-??.json")):
         day = _date(path.stem)
@@ -909,7 +1088,15 @@ def _merge_archived_snapshots(package, history_root, previous=None):
             raise SelectedStrategyError("HISTORY_FILENAME_DATE_MISMATCH")
         archived = [{**row, "signal_date": day} for row in snapshot["shared_scores"]["rows"]]
         if day in grouped and sorted(grouped[day], key=lambda r: r["ticker"]) != sorted(archived, key=lambda r: r["ticker"]):
-            raise SelectedStrategyError("HISTORY_SHARED_SCORE_DATE_CONFLICT:" + day)
+            if package.get("policy_id") != DIRECT_POLICY:
+                raise SelectedStrategyError("HISTORY_SHARED_SCORE_DATE_CONFLICT:" + day)
+            # UI cash-start history follows its accepted revision. Executed
+            # research retains its own immutable manifest and input vintage.
+            from scripts.research.a2.evaluation.selected_performance_update import _direct_archive_projection
+            try:
+                archived = _direct_archive_projection(package, day, grouped[day], archived, receipt_ref)
+            except ValueError as exc:
+                raise SelectedStrategyError("HISTORY_SHARED_SCORE_DATE_CONFLICT:" + day + ":" + str(exc)) from exc
         grouped[day] = archived
         _register(refs, key, path, expected)
         hashes[key] = refs[key]["sha256"]
@@ -924,7 +1111,7 @@ def _merge_archived_snapshots(package, history_root, previous=None):
     return package
 
 
-def build_package(paths, current_report_path=None, output_path=None, progress=None):
+def build_package(paths, current_report_path=None, output_path=None, progress=None, *, policy=LEGACY_POLICY, replay_manifest=None):
     """Project repaired ledgers and actually infer today's cash-start targets.
 
     No backtest is rerun. Missing/unverified current features produce an explicit
@@ -937,18 +1124,31 @@ def build_package(paths, current_report_path=None, output_path=None, progress=No
         _register(refs, "frozen/" + relative, root / relative, expected)
     if progress:
         progress("读取已修复时钟的三策略同批次历史账本与共享评分")
-    strategies, raw_reference, period, historical_scores = _projection(root, refs)
+    if policy == DIRECT_POLICY:
+        if replay_manifest is None:
+            raise SelectedStrategyError("DIRECT_POLICY_REQUIRES_QUALIFIED_REPLAY")
+        manifest = _json(replay_manifest)
+        if manifest.get("policy_id") != DIRECT_POLICY:
+            raise SelectedStrategyError("DIRECT_REPLAY_POLICY_MISMATCH")
+        strategies = {sid: {key: manifest["strategies"][sid][key] for key in ("label", "daily", "targets", "summary")} for sid in STRATEGY_IDS}
+        period = manifest["performance_period"]
+        raw_reference = {**{key: manifest["strategies"]["RAW_A2"][key] for key in ("label", "daily", "targets", "summary")}, "strategy_id": "RAW_A2", "performance_period": period}
+        historical_scores = manifest["shared_scores_historical"]
+    elif policy == LEGACY_POLICY:
+        strategies, raw_reference, period, historical_scores = _projection(root, refs)
+    else:
+        raise SelectedStrategyError("UNSUPPORTED_HGB_POLICY")
     requested, applications, note = None, None, ""
     current_scores = None
     try:
         day, requested, note = _current_day(paths, current_report_path, refs)
         if day is not None:
-            applications, current_scores = _infer_with_scores(day, source_root=root)
+            applications, current_scores = _infer_with_scores(day, source_root=root, policy=policy)
             if any(item["signal_date"] != requested for item in applications.values()):
                 raise SelectedStrategyError("CURRENT_APPLICATION_SIGNAL_DATE_MISMATCH")
         else:
             day = _historical_day(paths, root, refs)
-            applications, current_scores = _infer_with_scores(day, source_root=root)
+            applications, current_scores = _infer_with_scores(day, source_root=root, policy=policy)
             for application in applications.values():
                 application["status"] = "LATEST_AVAILABLE_SIGNAL"
                 application["reason"] = note + ";LATEST_COMPLETE_VERIFIED_HISTORICAL_FEATURES"
@@ -976,7 +1176,7 @@ def build_package(paths, current_report_path=None, output_path=None, progress=No
         strategies[strategy_id]["application"] = applications[strategy_id]
     package = {
         "schema_version": 1, "generated_at": datetime.now(timezone.utc).isoformat(),
-        "selection_basis": SELECTION_BASIS, "performance_period": period,
+        "selection_basis": SELECTION_BASIS, "performance_period": period, "policy_id": policy,
         "strategies": strategies, "source_hashes": {key: value["sha256"] for key, value in refs.items()},
         "raw_reference": raw_reference,
         "shared_scores": {"model_id": "HGB_2026092501",
@@ -989,10 +1189,16 @@ def build_package(paths, current_report_path=None, output_path=None, progress=No
     if progress:
         states = ", ".join(f"{key}: {value['status']} {value['signal_date'] or ''}" for key, value in applications.items())
         progress("冻结推理完成：" + states)
+    if policy == DIRECT_POLICY:
+        from scripts.research.a2.evaluation.selected_performance_update import merge_extension
+        history = Path(_get(paths, "daily_root", r"D:\us-tech-quant-daily")) / "A2_selected_hgb/direct_hgb_r1/history"
+        package = merge_extension(package, manifest, replay_manifest, history_root=history)
+        package["limitations"].extend(["HGB_TOP20_RISK_R1: frozen HGB Top20 eligibility, original risk objective, outside-candidate holdings cannot increase.", "User-specified mechanism change; exposed 2026 descriptive evaluation, no independent holdout or promotion claim."])
     if output_path is not None:
         publish(package, output_path)
     else:
-        _merge_archived_snapshots(package, Path(_get(paths, "daily_root", r"D:\us-tech-quant-daily")) / "A2_selected_hgb/history")
+        relative = "A2_selected_hgb/direct_hgb_r1/history" if policy == DIRECT_POLICY else "A2_selected_hgb/history"
+        _merge_archived_snapshots(package, Path(_get(paths, "daily_root", r"D:\us-tech-quant-daily")) / relative)
     return package
 
 
@@ -1035,7 +1241,16 @@ def publish(package, output_path, *, snapshot_repair=None):
 
 
 def refresh_selected_strategies(paths, current_report_path=None, output_path=None, progress=None):
-    output = output_path or os.environ.get("USTQ_SELECTED_HGB_PACKAGE") or Path(_get(paths, "daily_root", r"D:\us-tech-quant-daily")) / "A2_selected_hgb/latest.json"
+    policy, active_output = active_policy(paths)
+    output = output_path or os.environ.get("USTQ_SELECTED_HGB_PACKAGE") or active_output
+    if policy == DIRECT_POLICY:
+        from scripts.research.a2.evaluation.hgb_policy_alignment import refresh_direct
+        if current_report_path is None:
+            latest = _json(Path(_get(paths, "daily_root")) / "A2_today_recommendation/latest.json")
+            current_report_path = latest.get("report_path")
+        if not current_report_path:
+            raise SelectedStrategyError("DIRECT_POLICY_CURRENT_REPORT_REQUIRED")
+        return refresh_direct(paths, current_report_path, output, progress)
     return build_package(paths, current_report_path, output, progress)
 
 

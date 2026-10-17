@@ -1,192 +1,148 @@
 # US Tech Quant v21
 
-**A quantitative research and simulated execution project for U.S. equities.**
-It organizes data, forecasts, portfolios, and demos around information availability, retaining source references, time boundaries, and decision records.
+**Point-in-time quantitative research, frozen model inference, and simulated execution for U.S. equities.**
 
 [English](README.md) · [中文](docs/README.zh.md) · [日本語](docs/README.ja.md)
 
-[Overview](#overview) · [Architecture](#architecture) · [Engineering](#engineering) · [Research](#research) · [Run the demos](#quickstart) · [Verification](#verification) · [Source guide](#navigation)
+[Overview](#overview) · [Architecture](#architecture) · [Engineering](#engineering) · [Research](#research) · [Quickstart](#quickstart) · [Verification](#verification) · [Source guide](#navigation)
 
-> **Current verification:** On 2026-10-01, the default synthetic regression suite reported **203 passed**. This result covers the specified engineering test suite; it does not establish strategy effectiveness or live trading readiness. Full datasets, model artifacts, and research ledgers are stored outside the repository. The public source includes a simulation workbench that runs on synthetic data.
+Development snapshot: **2026-10-18**. The current product brings technical explanations, method comparisons, research records, data charts, and daily simulation into one trilingual workbench. Source, tests, and small configuration files are published here; datasets, frozen models, account state, and research ledgers remain in their configured external roots.
 
 <a id="overview"></a>
-## Overview
+## What is implemented
 
-The challenge in a quantitative project extends beyond the model to the information and execution chain around it: when a filing became public, whether historical security identities are correct, what a prediction actually represents, whether existing holdings can be traded, and whether a failed experiment can be reconstructed.
-
-PIT (point-in-time) means reconstructing inputs from information available at the decision time. OOF (out-of-fold) refers to chronological fold-external predictions: the predicting model's fitting and selection do not use that row's label or future information. HGB stands for histogram gradient boosting.
-
-This project implements three groups of capabilities around those questions:
-
-| Capability | Implementation | Inspectable output |
+| Area | Current capability | What the status means |
 | --- | --- | --- |
-| **Data and PIT** | Parquet / SQLite catalog, source and price conventions, 13F disclosure timing and security identity | Data identity, availability timestamps, lineage, and rejection reasons |
-| **Research and portfolios** | Native model forecasts, bridges fitted on label-matured OOF records, risk matrices, holding-aware portfolios, and shared account replay | Frozen parameters, target weights, costs, and account constraints |
-| **Presentation and simulation** | A trilingual Streamlit research UI, a standard-library simulation workbench, order reconciliation, and audit records | Decision chains, position differences, order status, and run records |
+| Data and information availability | Parquet / SQLite DataStore, source lineage, historical security identity, 13F disclosure and amendment timing | Inputs must satisfy the decision's information cutoff; missing identity or source evidence remains explicit |
+| Models and portfolios | Native forecasts, chronological out-of-fold bridges, risk estimation, holding-aware portfolio targets, shared account replay | Research implementations and frozen presentation policies retain separate identities and acceptance states |
+| Unified workbench | Chinese / Japanese / English; technical gallery, method cases, machine-learning inspection, data charts, and daily simulation | Sections and history load on demand; opening a page does not launch acquisition, fitting, replay, or orders |
+| Method presentation | Eight-method query catalog and a revisable five-method showcase | Showcase membership, paper-book membership, and broker strategy binding are distinct; current owner records control them |
+| Simulation and reconciliation | Local paper books, optional Moomoo SIMULATE connection, target/holding differences, order lifecycle, and audit trails | Research targets, account targets, simulated fills, and broker-confirmed fills stay separately identified; REAL execution is unavailable |
+| Research and storage control | Content-bound identities, failed-trial records, frozen references, external storage routing, and repository size checks | Engineering checks establish the covered behavior; strategy effectiveness needs its own authorized evidence |
 
-The public project name retains **v21**. In the source, `V22`, `A2`, and `FAST3` identify internal pipelines and research series. Research implementations, current presentation policies, and simulation components have distinct statuses; a filename alone does not establish that a model has been adopted.
+The public name retains **v21**. `V22`, `A2`, `FAST3`, and `FAST6` in source paths name internal pipelines or research series. A filename or method's presence in the interface does not establish adoption.
 
 <a id="architecture"></a>
 ## Architecture
 
 ```mermaid
 flowchart TB
-    Sources[Market data and public disclosures] --> PIT["PIT timing / security identity<br/>source checks"]
-    PIT --> Store[Parquet + SQLite DataStore]
-    Store --> HGB[Frozen HGB policy artifacts]
-    HGB --> Demo[Trilingual Streamlit research UI]
-    Store --> Forecast[Native research model forecasts]
-    Forecast --> Bridge["Fit only on earlier OOF<br/>with matured labels"]
-    Bridge --> Policy[Holding-aware portfolio targets]
-    Risk[Risk estimation interfaces] --> Policy
-    Policy --> Replay["Shared account replay<br/>at next-session open"]
-    Registry["Research identity<br/>trial records / content checks"] -.-> HGB
-    Registry -.-> Forecast
-    Registry -.-> Replay
-    JSON[Synthetic target JSON] --> Paper["Simulation workbench<br/>order reconciliation / audit"]
+    Sources["Market data / public disclosures"] --> PIT["Availability / security identity / source checks"]
+    PIT --> Store["Parquet + SQLite DataStore"]
+    Store --> Frozen["Frozen model inference"]
+    Store --> Research["Native forecasts / chronological OOF"]
+    Research --> Bridge["Bridge fitted on earlier matured labels"]
+    Bridge --> Portfolio["Risk / holding-aware portfolio targets"]
+    Portfolio --> Replay["Shared research account replay"]
+    Frozen --> Published["Published packages / verified readers"]
+    Replay --> Published
+    Published --> UI["Trilingual workbench :8506"]
+    Published --> Targets["Qualified account targets"]
+    Targets --> Sim["Paper / optional broker SIMULATE :8766"]
+    Sim --> Reconcile["Orders / holdings / reconciliation / audit"]
+    Synthetic["Synthetic demo targets"] --> Sim
+    Registry["Identity / freeze / trial records"] -.-> Frozen
+    Registry -.-> Research
+    Registry -.-> Published
 ```
 
-The diagram shows module responsibilities. **The frozen HGB presentation chain and the JOINT research chain are maintained separately.** Shared account replay uses research price-index units; the simulation workbench has its own state and order lifecycle.
+This diagram describes module responsibilities. Research replay, published historical curves, paper accounts, and broker simulation have their own clocks and execution semantics. A displayed research curve is not an account fill record.
 
-| Layer | Technology | Design focus |
-| --- | --- | --- |
-| Data | Python, Pandas, NumPy, PyArrow, Parquet, SQLite | Keep source, price adjustment, vintage, and lineage distinct |
-| Models | scikit-learn; optional boosting and PyTorch research implementations | Preserve the native meaning of returns, probabilities, ranks, and quantiles |
-| Research control | JSON, SHA-256, immutable snapshots, and event hash chains | Duplicate detection, freeze checks, failed trials, and acceptance status |
-| Presentation | Streamlit, Altair, Chinese / Japanese / English | Read published artifacts and show dates, gaps, and decision chains |
-| Simulation and services | Python standard library, HTML / CSS / JavaScript, SQLite WAL, PowerShell | File locks, persistent state, order reconciliation, and process ownership |
-
-Source, tests, and small configuration files live in the repository. Data, environments, caches, experiments, reports, and daily state are routed to distinct, non-nested external roots through the [shared path configuration](config/storage_paths.json) and [common resolver](scripts/common/storage_paths.py). See the [storage guide](docs/STORAGE_LAYOUT.md).
+Python, Pandas, NumPy, PyArrow, SQLite, and scikit-learn form the main data and modeling stack. Streamlit and Altair power the workbench; the standalone simulation server uses the Python standard library. Optional boosting, neural-model, and broker dependencies belong to their individual components.
 
 <a id="engineering"></a>
-## Three engineering designs worth exploring
+## Engineering details
 
-### 1. Reconstruct 13F information by availability, not by reporting quarter
+**Reconstruct information as it became available.** The [13F PIT module](scripts/v22/pit_13f_reconstruction_r1.py) uses acceptance timestamps, New York decision cutoffs, amendment semantics, and historical security identity. A filing published after a decision cutoff cannot inform that decision. Quarter-effective manager rosters come from the [shared refresh owner](scripts/storage/refresh_13f_quarter.py).
 
-The [13F PIT reconstruction module](scripts/v22/pit_13f_reconstruction_r1.py) selects usable filings from SEC acceptance timestamps, New York decision cutoffs, amendment semantics, and historical security identity. `security_id` / CUSIP and ticker serve different purposes; a ticker alone cannot establish consistent historical identity. Manager rosters are resolved from quarter-effective intervals in the [13F refresh module](scripts/storage/refresh_13f_quarter.py).
+**Keep model outputs meaningful.** Probabilities, ranks, returns, and quantiles carry different meanings. The [native forecast bridge](scripts/research/a2/ensemble/joint_oof_bridge.py) preserves those coordinates and fits scaling and a Ridge bridge only on earlier out-of-fold records with matured labels. Each date receives equal total weight. Its [tests](tests/research/a2/ensemble/test_joint_oof_bridge.py) define maturity and future-record invariance checks.
 
-The following is a **synthetic illustration**, not a research observation:
+**Keep non-tradable holdings in portfolio constraints.** The [portfolio policy](scripts/research/a2/inference/joint_portfolio_policy.py) reserves capital and position slots for locked holdings and preserves actual units when targets cannot be qualified. Its position-count solver is deterministic and approximate, without a guarantee of global optimality. [Tests](tests/research/a2/inference/test_joint_portfolio_policy.py) cover reserved holdings, infeasible targets, and caps.
 
-| Scenario | Usable for a decision? | Reason |
-| --- | --- | --- |
-| Public at 10:20 on 2025-11-12; the decision cutoff is 09:45 that day (both New York time) | No | Disclosure occurred after the decision |
-| The same filing is considered for a 09:45 decision on the next trading day | Eligible for further checks | Availability meets the cutoff; identity, amendments, and eligibility must still be valid |
-| Only a ticker is available, without reliable historical identity | Block the dependent calculation | A security mapping cannot be fabricated |
-
-**Tradeoff:** Report missing evidence explicitly rather than reconstructing the past from today's mappings or later disclosures.
-
-### 2. Preserve semantics between model predictions and portfolio targets
-
-Probabilities, cross-sectional ranks, return forecasts, and quantiles cannot be treated as interchangeable weights. The [native forecast bridge](scripts/research/a2/ensemble/joint_oof_bridge.py) preserves each prediction's coordinate system, then fits scaling and a Ridge bridge on **OOF records whose labels had matured before the decision**. Each date receives equal total weight so that dates with more candidates do not dominate the fit.
-
-Frozen inference applies existing parameters only. The corresponding [test definitions](tests/research/a2/ensemble/test_joint_oof_bridge.py) cover label-maturity cutoffs, preservation of native coordinates, and checks that appending future records does not alter an earlier fit.
-
-**Tradeoff:** Models can be extended while the same interface continues to constrain time boundaries and prediction meaning. The statistical algorithms come from established libraries; the project work focuses on information boundaries and interface integration.
-
-### 3. Include non-tradable holdings in portfolio constraints
-
-The [portfolio policy](scripts/research/a2/inference/joint_portfolio_policy.py) reserves capital and position slots for locked holdings. When predictions are missing, risk inputs are insufficient, or targets are infeasible, it preserves actual units rather than creating cash or liquidating positions implicitly in the replay.
-
-Its [test definitions](tests/research/a2/inference/test_joint_portfolio_policy.py) cover reserved holdings, infeasible portfolios, and weight caps. The position-count constraint uses a deterministic approximate solver, with **no guarantee of global optimality**.
-
-**Tradeoff:** A higher-scoring candidate cannot automatically erase a holding that the account is currently unable to trade.
+**Load only the requested presentation.** The [workbench](apps/demo_console/README.md) reuses published readers and shared account components. Method explanations do not load models or generate results. Missing records, qualification failures, and different source dates remain visible; changing language or presentation mode does not change the underlying research or account authority.
 
 <a id="research"></a>
-## Research framework and current status
+## Research boundaries
 
-The research interfaces separate Alpha, Risk, Portfolio, and account replay. The number of model names is not the number of effective strategies. Current presentation policies, exploratory research, and real-data confirmation must be described separately.
+Training and development validation, including preprocessing fits, feature selection, calibration, early stopping, and model selection, must use content strictly before **2026-01-01**. Test observations and targets are limited to **2026-01-01 ≤ time < 2027-01-01**, subject to earlier component cutoffs, actual availability, and label maturity.
 
-| Component | Capabilities supported by the implementation | Limitations to retain |
-| --- | --- | --- |
-| **HGB presentation policies** | A frozen scorer and publication adapters for `HGB_DIAG_5` / `HGB_FACTOR_5`; content identity is checked before loading | Both policies were selected by the user after evidence exposure, not automatically selected as optimal by an independent test |
-| **JOINT research interfaces** | Native forecasts → bridge fitted on label-matured OOF → risk and portfolio → account replay at the next session's open | Implemented interfaces and replay do not establish model adoption or profitability |
-| **Model exploration** | Linear models, HGB, RF / ExtraTrees; XGBoost / LightGBM / CatBoost, MLP, and selected sequence networks | Extension dependencies are installed for the relevant task; each model's acceptance status is assessed separately |
-| **Risk estimation** | DIAG, sample covariance, Ledoit–Wolf / OAS, factor models, and other research estimation interfaces | Horizons, units, and sources must match; the nonlinear shrinkage dependency is currently marked blocked |
-| **FAST3** | Existing research architecture, contracts, and synthetic validation | Currently synthetic-only; frozen Confirmation data is outside ordinary development reads |
-| **Simulated execution** | Paper / broker simulation modes, order reconciliation, and persistent audit records | Live-account interfaces are read-only; passing engineering checks does not certify live trading or returns |
+A2's 2026 window has already been exposed and cannot be described as a pristine independent holdout. Frozen inference applies existing transformations and models without updating their fitted state. Historical failures and frozen identities remain part of the evidence. FAST3 development remains synthetic-only under its existing contract; protected confirmation content is not an ordinary development input.
 
-Research identity is managed by the [existing registry](scripts/maintenance/research_registry.py). The [lifecycle module](scripts/maintenance/prospective_research_lifecycle.py) retains trials, stop reasons, and reopening conditions. Lookup also uses existing source and the [retired-source index](docs/research/retired_sources.json), preventing renamed work from duplicating prior research.
-
-**Information boundaries:**
-
-- Training and development validation must be strictly before **2026-01-01**. Preprocessing, feature selection, tuning, calibration, and rule selection are also part of the selection process and must respect any earlier fold and label-maturity boundaries.
-- 2026 test observations and targets are limited to **[2026-01-01, 2027-01-01)**. Frozen state may be applied only under the applicable authorization, without updating fitted state. Evaluation includes only observations that have occurred and labels that have matured as of the evaluation time.
-- A2's 2026 evidence has already been exposed and cannot be relabeled as an unseen independent holdout. Observations from 2027 onward require a separately scoped prospective evaluation.
-- This README presents engineering and research design. It does not claim returns, Sharpe ratios, outperformance, or complete PIT certification of all inputs. Applicable contracts and acceptance records determine the actual status.
+The interface explains native methods and their decision chains. It does not turn an exploratory implementation into an accepted strategy or rank methods as universally optimal. The [project map](docs/PROJECT_MAP.md) locates owners and contracts; the accepted registries and manifests establish identity and status.
 
 <a id="quickstart"></a>
-## Run the demos
+## Run the project
 
-### A. Public source: simulation workbench with synthetic data
+### Public source: offline simulation
 
-**Requirements:** Windows, PowerShell, and Python 3.12 available as `python` on PATH. This manual simulation entrypoint uses the standard library and requires no Streamlit, Moomoo SDK, OpenD, or external research data.
+Requires Windows, PowerShell, and Python 3.12 on PATH. This manual demonstration uses synthetic targets and prices and needs no Streamlit, Moomoo SDK, OpenD, or research dataset.
 
-Run these commands in a separate PowerShell window and close it when finished. Use the existing project environment for demo B so it does not inherit this section's `USTQ_DAILY_ROOT` override.
+Run in a separate PowerShell window, using a new external state directory:
 
 ```powershell
 git clone https://github.com/kinryukii/us-tech-quant-v21.git
 Set-Location us-tech-quant-v21
-
-# Create a separate state directory outside the repository for each run.
 $env:USTQ_DAILY_ROOT = Join-Path $env:LOCALAPPDATA 'US Tech Quant\demo-daily'
 $demoState = Join-Path $env:USTQ_DAILY_ROOT ('paper-' + [guid]::NewGuid().ToString('N'))
 python -B -m apps.moomoo_trading_component.moomoo_component `
   --repo-root $PWD.Path --data-dir $demoState --port 8766
 ```
 
-The workbench currently uses Chinese button labels. Open <http://127.0.0.1:8766/> and follow this sequence: **载入离线演示 (Load offline demo) → 预览订单与风控 (Preview orders and risk checks) → inspect funds, quotes, and order differences → 执行一轮 (Run once) → review holdings and audit records**. The example uses synthetic targets and prices. Keep the demo in manual paper mode without switching to a broker connection. Press `Ctrl+C` in the terminal to stop it.
+Open [the simulation workbench](http://127.0.0.1:8766/). Follow **载入离线演示 (Load offline demo) → 预览订单与风控 (Preview orders and risk checks) → 执行一轮 (Run once)**, then inspect holdings and audit records. Keep the demonstration in manual paper mode. Press `Ctrl+C` to stop it.
 
-This entrypoint shows how targets become inspectable simulated orders. It and the research replay use execution semantics tailored to different purposes. An existing local installation can also use `apps/moomoo_trading_component/start.ps1 -Offline`, but that script defaults to reusing `daily_root/moomoo_trading_component/manual`; first check whether it contains state that needs to be preserved.
+### Configured local installation: unified workbench
 
-### B. Fully configured local installation: trilingual research UI
+The full workbench requires the external `demo-console` environment and qualified published artifacts. Run its existing product launcher:
 
 ```powershell
-# Run from the existing authoritative repository.
-# Requires the external demo-console environment and published research files.
 Set-Location D:\us-tech-quant
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File .\apps\demo_console\start.ps1 -Port 8504
+.\打开DEMO.ps1
 ```
 
-Open <http://127.0.0.1:8504/> and present the project through **system overview → models and policies → decisions and portfolios → performance and risk → research evidence**. The UI supports three languages and historical queries for individual stocks. Access to actual research content remains subject to the applicable authorization.
+Open [the unified workbench](http://127.0.0.1:8506/). The account component is embedded from port **8766**. Opening the workbench does not itself activate strategy scheduling. Actual research records require their applicable access scope; cloning source does not provide external datasets or frozen models.
 
-`requirements.lock.txt` is a base-environment snapshot, not a one-command dependency list for the entire project. [Research UI dependencies](apps/demo_console/requirements.txt) and [optional broker dependencies](apps/moomoo_trading_component/requirements-moomoo.txt) are maintained separately; model exploration has additional dependencies. Full research datasets, frozen models, and ledgers are not distributed with this repository.
+For an explicitly intended daily update in the configured installation:
+
+```powershell
+.\更新今日推荐.ps1
+```
+
+The update resumes accepted stages and preserves source checks, locks, resource gates, and the last verified cutoff. Use `-RefreshData` only when intentionally requesting same-day reacquisition. Reload the published cache in the workbench after completion. See the [daily-update guide](docs/daily_recommendation.md) for prerequisites and recovery.
+
+`requirements.lock.txt` is the base-environment snapshot. [Workbench dependencies](apps/demo_console/requirements.txt) and [optional broker dependencies](apps/moomoo_trading_component/requirements-moomoo.txt) are maintained separately.
 
 <a id="verification"></a>
-## Verification and reproduction
+## Verification
 
-**Recorded engineering baseline: 203 passed on 2026-10-01.** To reproduce the default suite in the configured local checkout:
+On **2026-10-18**, the configured default synthetic suite completed with **743 passed, 1 skipped**. The skipped Windows PowerShell check was blocked by the local execution policy; that policy was preserved. This result covers the selected engineering tests.
+
+The default acceptance suite is explicitly scoped by [pytest.ini](pytest.ini) to reviewed synthetic storage, maintenance, daily-coordinator, and service-lifecycle tests. Run from the configured repository root without adding a broad test directory:
 
 ```powershell
 Set-Location D:\us-tech-quant
 $projectPython = 'D:\us-tech-quant-envs\us-tech-quant-main\Scripts\python.exe'
 $cacheRoot = (& $projectPython -B -c "from scripts.common.storage_paths import resolve; print(resolve().cache_root)").Trim()
 $verificationRoot = Join-Path $cacheRoot ('_maintenance\readme-verification-' + [guid]::NewGuid().ToString('N'))
-$pytestTemp = Join-Path $verificationRoot 'tmp'
-$pytestCache = Join-Path $verificationRoot 'pytest-cache'
-& $projectPython -B -m pytest -q --basetemp $pytestTemp -o "cache_dir=$pytestCache"
+& $projectPython -B -m pytest -q `
+  --basetemp (Join-Path $verificationRoot 'tmp') `
+  -o "cache_dir=$(Join-Path $verificationRoot 'pytest-cache')"
 ```
 
-[pytest.ini](pytest.ini) lists the exact default test files, covering synthetic scenarios for storage, catalog and source checks, maintenance, and service lifecycle. The commands above explicitly place temporary data and the pytest cache in a separate run directory under the resolved external `cache_root`.
-
-| Verification layer | Evidence covered by this README |
-| --- | --- |
-| Default engineering regression | Executed on 2026-10-01, with 203 tests passing; this is not whole-repository test coverage |
-| Offline simulation flow | Checked with Python 3.12.10 in a new `daily_root` subdirectory: health, homepage, and state endpoints each returned HTTP 200; synthetic demo loading, order and risk preview, and one execution cycle passed in paper mode. No actual research results were read, no broker was connected, and broker calls were zero |
-| Focused research design | Source and test-definition links are provided; historical research and additional real-data tests are not automatically run |
-| Strategy effectiveness and generalization | Require applicable data, frozen contracts, failed-trial records, and authorized evaluation; engineering tests cannot establish these properties |
-| Broker end-to-end behavior and live trading | Not verified in this update; paper state and simulated fills cannot substitute for real execution evidence |
+Additional component and research tests require a review of their imports, inputs, subprocesses, and output scope. The default suite is not whole-repository coverage. This synchronization does not acquire provider history, run real-data research, start existing accounts, or validate live trading.
 
 <a id="navigation"></a>
 ## Source guide
 
-| Topic | Start here |
+| Purpose | Entry point |
 | --- | --- |
-| Project entrypoints and status rules | [Project map](docs/PROJECT_MAP.md), [documentation index](docs/README.md) |
-| Data and storage | [DataStore](scripts/storage/storage_r2a.py), [data-layer guide](docs/DATA_LAYER.md) |
-| Point-in-time 13F logic | [PIT reconstruction](scripts/v22/pit_13f_reconstruction_r1.py) |
-| Current frozen HGB publication chain | [selected_hgb.py](scripts/research/a2/portfolio/selected_hgb.py) |
-| Native forecasts, risk, and portfolios | [OOF bridge](scripts/research/a2/ensemble/joint_oof_bridge.py), [risk estimation](scripts/research/a2/risk/joint_risk_estimators.py), [portfolio policy](scripts/research/a2/inference/joint_portfolio_policy.py) |
-| Research identity and failed-trial records | [Registry](scripts/maintenance/research_registry.py), [lifecycle](scripts/maintenance/prospective_research_lifecycle.py) |
-| Presentation and simulated orders | [Research UI](apps/demo_console/), [simulation workbench](apps/moomoo_trading_component/) |
-| Development conventions and retention rules | [AGENTS.md](AGENTS.md), [repository layout](docs/governance/REPOSITORY_LAYOUT.md), [Anti-Bloat policy](docs/governance/ANTI_BLOAT_POLICY.md) |
+| Unified workbench and presentation behavior | [Workbench README](apps/demo_console/README.md) |
+| Simulation, account bindings, and order lifecycle | [Simulation component README](apps/moomoo_trading_component/README.md) |
+| Daily publication and recovery | [Daily-update guide](docs/daily_recommendation.md) |
+| Project navigation and evidence rules | [Project map](docs/PROJECT_MAP.md), [documentation index](docs/README.md) |
+| Data catalog and PIT inputs | [Data-layer guide](docs/DATA_LAYER.md), [DataStore](scripts/storage/storage_r2a.py) |
+| Native forecasts and portfolio research | [OOF bridge](scripts/research/a2/ensemble/joint_oof_bridge.py), [risk estimation](scripts/research/a2/risk/joint_risk_estimators.py), [portfolio policy](scripts/research/a2/inference/joint_portfolio_policy.py) |
+| Research identity and failed trials | [Registry](scripts/maintenance/research_registry.py), [lifecycle](scripts/maintenance/prospective_research_lifecycle.py) |
+| Repository layout and retired-source recovery | [Layout](docs/governance/REPOSITORY_LAYOUT.md), [research navigation](docs/research/README.md) |
+| Storage and size policy | [Storage guide](docs/STORAGE_LAYOUT.md), [Anti-Bloat policy](docs/governance/ANTI_BLOAT_POLICY.md) |
+
+The [shared configuration](config/storage_paths.json) and [resolver](scripts/common/storage_paths.py) route data, environments, caches, experiments, reports, and daily state to distinct external roots. These runtime assets are preserved separately from the GitHub source snapshot.

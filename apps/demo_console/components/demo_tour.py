@@ -1,4 +1,4 @@
-"""Six optional tour stops across five grouped research workspaces.
+"""One optional tour lifecycle for historical cases and the technical showcase.
 
 Tour callbacks configure display controls before their widgets are created.
 They never choose a decision date, read artifacts, or start automatic replay.
@@ -6,7 +6,6 @@ They never choose a decision date, read artifacts, or start automatic replay.
 import streamlit as st
 
 from apps.demo_console.components.replay import pause_replay
-from apps.demo_console.components.decision_trace import carry_case, resolve_case_ticker
 from apps.demo_console.i18n import tr
 from apps.demo_console.models import DecisionOverview
 from apps.demo_console.components.visuals import text
@@ -32,6 +31,86 @@ _STOPS = (
 _VIEWS = tuple(stop[0] for stop in _STOPS)
 
 
+
+# Historical helpers stay with their original owner and load only for case tours.
+# Importing the technical showcase must not import research readers or charts.
+def carry_case(ticker):
+    from apps.demo_console.components.decision_trace import carry_case as original
+    return original(ticker)
+
+
+def resolve_case_ticker(model):
+    from apps.demo_console.components.decision_trace import resolve_case_ticker as original
+    return original(model)
+
+
+_PROFILE = "_demo_tour_profile"
+_ARCHITECTURE_STAGE = "_demo_tour_architecture_stage"
+_GALLERY = "_localized_tabs:technical_gallery"
+_SHOWCASE_STOPS = (
+    ("Technical showcase", "pit", "How do we keep later information out of an earlier decision?",
+     "Availability times and dated identities separate what was knowable from what arrived later.",
+     "Select Data & point-in-time. The vertical boundary separates available inputs from later records."),
+    ("Technical showcase", "inference", "Can we trace a decision back to the method that produced it?",
+     "Registered model and transform identities keep frozen inference tied to its original version.",
+     "Select Frozen inference. In application cases, inspect the preserved model principle and input contract."),
+    ("Technical showcase", "risk", "How do model outputs become constrained holdings?",
+     "Each method retains its original risk, turnover, cash and HOLD rules when forming targets.",
+     "Select Portfolio & risk. Compare native outputs with portfolio handling in the application cases."),
+    ("Technical showcase", "lineage", "How can a result stay reviewable without rerunning everything?",
+     "Version bindings preserve the evidence chain; published caches separate browsing from acquisition and computation.",
+     "Explore both horizontal tracks: versioned identity, then published caches and bounded resources."),
+    ("Strategy applications", None, "Can one system support methods that make different decisions?",
+     "Scores, weights, action proposals and exposure levels retain their distinct meanings within the existing workflow.",
+     "Choose any of the five strategies in the ML workbench. Compare its model engine, native output and recorded evidence."),
+    ("Data & charts", None, "What evidence makes a technical claim checkable?",
+     "Recorded dates, costs, drawdowns and source identities make observations inspectable; replay is not fresh validation.",
+     "Inspect performance and risk, model records and data sources. Keep the selected date and each verification limit in view."),
+    ("Daily simulation", None, "How do we distinguish an intention from a confirmed outcome?",
+     "Targets, orders and fills are separate records. Reconciliation checks execution without equating a plan with a fill.",
+     "Inspect plan progress, open orders and confirmed fills. The original execution controls and permissions still apply."),
+)
+
+
+def showcase_tour_active():
+    return bool(st.session_state.get(_ACTIVE) and st.session_state.get(_PROFILE) == "showcase")
+
+
+def showcase_architecture_stage():
+    return st.session_state.get(_ARCHITECTURE_STAGE) if showcase_tour_active() else None
+
+
+def start_showcase_tour():
+    """Select display-only stops; never read records, choose dates or submit orders."""
+    st.session_state[_ACTIVE] = True
+    st.session_state[_PROFILE] = "showcase"
+    _visit_step(0, None)
+
+
+def _sync_showcase_step():
+    if not showcase_tour_active():
+        return None
+    index = st.session_state.get(_STEP, 0)
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(_SHOWCASE_STOPS):
+        _stop_tour()
+        return None
+    section = st.session_state.get(_GALLERY, _SHOWCASE_STOPS[index][0])
+    if section != _SHOWCASE_STOPS[index][0]:
+        matches = [i for i, stop in enumerate(_SHOWCASE_STOPS) if stop[0] == section]
+        if not matches:
+            _stop_tour()
+            return None
+        index = matches[0]
+        pause_replay()
+        st.session_state[_STEP] = index
+        stage = _SHOWCASE_STOPS[index][1]
+        if stage:
+            st.session_state[_ARCHITECTURE_STAGE] = stage
+        else:
+            st.session_state.pop(_ARCHITECTURE_STAGE, None)
+    return index
+
+
 def workspace_options(current, portfolio_view="Portfolio"):
     """Expose five sidebar positions while preserving both legacy group routes.
 
@@ -53,6 +132,8 @@ def start_guided_tour(ticker: str | None = None) -> None:
     """Start the reusable system-to-evidence route without changing the selected date."""
     pause_replay()
     carry_case(ticker)
+    st.session_state[_PROFILE] = "historical"
+    st.session_state.pop(_ARCHITECTURE_STAGE, None)
     st.session_state[_ACTIVE] = True
     st.session_state[_STEP] = 0
     st.session_state[_FOCUS] = "copy"
@@ -67,10 +148,27 @@ def _stop_tour() -> None:
     pause_replay()
     st.session_state[_ACTIVE] = False
     st.session_state.pop(_STEP, None)
+    st.session_state.pop(_PROFILE, None)
+    st.session_state.pop(_ARCHITECTURE_STAGE, None)
     st.session_state[_FOCUS] = "launcher"
 
 
 def _visit_step(index: int, history_focus: str | None) -> None:
+    if showcase_tour_active():
+        section, stage, *_ = _SHOWCASE_STOPS[index]
+        pause_replay()
+        st.session_state[_STEP] = index
+        st.session_state[_GALLERY] = section
+        if section == "Strategy applications":
+            st.session_state["_localized_tabs:strategy_application_tools"] = "Machine learning"
+        elif section == "Data & charts":
+            st.session_state["_localized_tabs:workbench_evidence_tools"] = "Performance & risk"
+        st.session_state[_FOCUS] = "copy"
+        if stage:
+            st.session_state[_ARCHITECTURE_STAGE] = stage
+        else:
+            st.session_state.pop(_ARCHITECTURE_STAGE, None)
+        return
     view = _VIEWS[index]
     # A fresh History stop must not retain an old replay's locked sub-window.
     pause_replay(reset=view == "History")
@@ -99,6 +197,17 @@ def _visit_step(index: int, history_focus: str | None) -> None:
 def _move_tour(direction: int, history_focus: str | None) -> None:
     if not st.session_state.get(_ACTIVE) or direction not in (-1, 1):
         return
+    if showcase_tour_active():
+        current = st.session_state.get(_STEP)
+        if isinstance(current, bool) or not isinstance(current, int) or not 0 <= current < len(_SHOWCASE_STOPS):
+            _stop_tour()
+            return
+        index = current + direction
+        if index == len(_SHOWCASE_STOPS):
+            _stop_tour()
+        elif index >= 0:
+            _visit_step(index, None)
+        return
     view = st.session_state.get("workspace")
     if view not in _VIEWS:
         return
@@ -111,7 +220,7 @@ def _move_tour(direction: int, history_focus: str | None) -> None:
 
 def _sync_step(view: str) -> int | None:
     """Manual navigation changes the explanation, never forces navigation back."""
-    if not st.session_state.get(_ACTIVE) or view not in _VIEWS:
+    if showcase_tour_active() or not st.session_state.get(_ACTIVE) or view not in _VIEWS:
         return None
     index = _VIEWS.index(view)
     if st.session_state.get(_STEP) != index:
@@ -149,7 +258,8 @@ const visible = node => {
 const sidebar = document.querySelector('[data-testid="stSidebar"]');
 const launcher = document.querySelector(".st-key-demo_tour_start button");
 const overviewLauncher = document.querySelector(".st-key-system_start_tour button");
-const destination = visible(overviewLauncher) ? overviewLauncher
+const showcaseLauncher = document.querySelector(".st-key-showcase_tour_start button");
+const destination = visible(showcaseLauncher) ? showcaseLauncher : visible(overviewLauncher) ? overviewLauncher
   : sidebar?.getAttribute("aria-expanded") === "true" && visible(launcher)
     ? launcher : document.querySelector('[data-testid="stExpandSidebarButton"]');
 if (visible(destination)) destination.focus({preventScroll: true});
@@ -192,13 +302,39 @@ def render_demo_tour(model: DecisionOverview, view: str) -> None:
                     + text(tr("Guided tour · {step} / {total}", step=index + 1, total=len(_STOPS)))
                     + f'</span><strong>{text(tr(title))}</strong></div>')
         with controls, st.container(horizontal=True, gap="small", key="uq_tour_controls"):
-            st.button(tr("Back"), key="demo_tour_previous", disabled=index == 0,
-                      on_click=_move_tour, args=(-1, focus), width="stretch")
-            st.button(tr("Finish" if index == len(_STOPS) - 1 else "Next"),
-                      key="demo_tour_next", on_click=_move_tour, args=(1, focus),
-                      type="primary", width="stretch")
-            st.button(tr("Exit"), key="demo_tour_exit", on_click=_stop_tour,
-                      width="stretch")
+            _render_tour_controls(index, len(_STOPS), focus)
             with st.popover(tr("Notes"), width="stretch", help=tr("Walkthrough notes")):
                 st.caption(tr(explanation))
+    _render_focus_request("copy")
+
+
+def _render_tour_controls(index, total, history_focus=None):
+    st.button(tr("Back"), key="demo_tour_previous", disabled=index == 0,
+              on_click=_move_tour, args=(-1, history_focus), width="stretch")
+    st.button(tr("Finish" if index == total - 1 else "Next"),
+              key="demo_tour_next", on_click=_move_tour, args=(1, history_focus),
+              type="primary", width="stretch")
+    st.button(tr("Exit"), key="demo_tour_exit", on_click=_stop_tour, width="stretch")
+
+
+def render_showcase_tour():
+    """Render before gallery tabs so callbacks can select a section safely."""
+    index = _sync_showcase_step()
+    if index is None:
+        if not st.session_state.get(_ACTIVE):
+            _render_focus_request("launcher")
+        return
+    _, _, question, benefit, verification = _SHOWCASE_STOPS[index]
+    with st.container(border=False, key="uq_demo_tour"):
+        st.progress((index + 1) / len(_SHOWCASE_STOPS),
+                    text=tr("System walkthrough · {step} / {total}", step=index + 1, total=len(_SHOWCASE_STOPS)))
+        copy, controls = st.columns([3.4, 2.7], gap="medium", vertical_alignment="center")
+        with copy:
+            st.html('<div class="uq-tour-copy uq-showcase-tour" id="uq-demo-tour-copy" tabindex="-1" '
+                    'role="status" aria-live="polite" aria-atomic="true"><strong>'
+                    + text(tr(question)) + '</strong><p><b>' + text(tr("Engineering benefit"))
+                    + '</b> · ' + text(tr(benefit)) + '</p><p><b>' + text(tr("Verification path"))
+                    + '</b> · ' + text(tr(verification)) + '</p></div>')
+        with controls, st.container(horizontal=True, gap="small", key="uq_tour_controls"):
+            _render_tour_controls(index, len(_SHOWCASE_STOPS))
     _render_focus_request("copy")

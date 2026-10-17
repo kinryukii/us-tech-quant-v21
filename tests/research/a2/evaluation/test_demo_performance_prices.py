@@ -468,3 +468,270 @@ def test_execution_internal_gap_replays_exact_recorded_missing_dates(tmp_path,mo
     proof['gap_fill']['added_dates']=[]
     with pytest.raises(ValueError,match='QUALIFICATION_CHANGED'):
         module._replay_alternate(entry,raw,fixtures.prices.verify,kwargs['store'],{})
+
+
+def test_existing_holding_supplement_uses_shared_validation_and_grants_no_features(case, tmp_path):
+    _, historical, _, _ = case
+    path = tmp_path / "execution_supplement.json"
+    document = {"schema": "A2_EXECUTION_PRICE_SUPPLEMENT_V1", "gate": module.EXECUTION_GATE,
+        "historical_manifest_sha256": fixtures.prices.digest(historical),
+        "model_feature_eligibility_granted": False,
+        "lineage": [{"ticker": ticker} for ticker in ("FICO", "SOFI", "P")]}
+    path.write_text(json.dumps(document))
+    assert module.read_execution_supplement(path, fixtures.prices.digest(historical),
+                                           fixtures.prices.verify) == document["lineage"]
+    with pytest.raises(ValueError, match="SOURCE_HASH"): 
+        module.read_execution_supplement(path, fixtures.prices.digest(historical),
+                                        fixtures.prices.verify, expected_sha="0" * 64)
+    document["model_feature_eligibility_granted"] = True
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="SUPPLEMENT_CONTRACT_MISMATCH"):
+        module.read_execution_supplement(path, fixtures.prices.digest(historical), fixtures.prices.verify)
+    document["model_feature_eligibility_granted"] = False
+    document["lineage"].append({"ticker": "ARBITRARY_NEW_MEMBER"})
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="SUPPLEMENT_TICKER_NOT_AUTHORIZED"):
+        module.read_execution_supplement(path, fixtures.prices.digest(historical), fixtures.prices.verify)
+
+
+def open_case(case, tmp_path):
+    paths, historical, _, kwargs = case
+    report_path = current(case, tmp_path)
+    signal = kwargs["target"]
+    execution = (pd.Timestamp(signal) + pd.offsets.BDay()).date().isoformat()
+    as_of = execution + "T17:00:00+00:00"
+    members = tmp_path / "members.parquet"
+    pd.DataFrame([{"ticker": "AAPL", "moomoo_symbol": "US.AAPL",
+                   "security_id": "037833100"}]).to_parquet(members, index=False)
+    report = json.loads(report_path.read_text())
+    report["universe"] = {"universe_members_sha256": fixtures.prices.digest(members)}
+    report_path.write_text(json.dumps(report))
+    sdk = tmp_path / "sdk.parquet"
+    # Poisoned intraday close and a future row cannot enter any terminal value.
+    pd.DataFrame([{"code": "US.AAPL", "time_key": execution + " 00:00:00",
+                   "open": 102., "close": 999999., "high": 999999., "low": -1., "volume": -1.},
+                  {"code": "US.AAPL", "time_key": "2027-01-04 00:00:00",
+                   "open": 777777., "close": 777777., "high": 777777., "low": -1., "volume": -1.}]).to_parquet(sdk, index=False)
+    acquired = dict(kwargs["acquisitions"]["moomoo"]["results"][0])
+    acquired["item"] = {"ticker": "AAPL", "moomoo_symbol": "US.AAPL", "security_id": "037833100",
+        "adjustment": "raw", "session": "RTH", "planned_start_date": signal[:4] + "-01-02",
+        "planned_end_date": signal}
+    acquired["current_kline_provenance"] = {"api": "get_cur_kline", "retcode": 0, "code": "US.AAPL",
+        "num": 130, "ktype": "K_DAY", "autype": "NONE", "session": "RTH", "owned_subscription": True,
+        "observed_at_utc": execution + "T15:00:00+00:00",
+        "sdk_response_semantics": "RETURNED_DATAFRAME_PARQUET_NOT_WIRE_RESPONSE",
+        "availability": "CURRENT_RETRIEVAL_NOT_HISTORICAL_PIT",
+        "sdk_response": {"path": str(sdk), "sha256": fixtures.prices.digest(sdk)}}
+    acquisition = tmp_path / "acquired.json"
+    acquisition.write_text(json.dumps({"acquisition_mode": "current-kline", "source_policy": "MOOMOO_ONLY",
+        "trade_context_opened": False, "results": [acquired]}))
+    receipt = json.loads(json.dumps(kwargs["rehab_receipt"]))
+    receipt["target_date"] = execution
+    receipt["results"][0]["fetched_at"] = execution + "T15:30:00+00:00"
+    rehab = tmp_path / "fresh_rehab.json"; rehab.write_text(json.dumps(receipt))
+    manifest = {"schema": "A2_EXECUTION_OPEN_INPUTS_V1", "signal_end_date": signal,
+        "execution_end_date": execution, "as_of_utc": as_of,
+        "current_report": {"path": str(report_path), "sha256": fixtures.prices.digest(report_path)},
+        "identity_binding": {"path": str(members), "sha256": fixtures.prices.digest(members)},
+        "acquisition_manifest": {"path": str(acquisition), "sha256": fixtures.prices.digest(acquisition)},
+        "rehab_receipt": {"path": str(rehab), "sha256": fixtures.prices.digest(rehab)},
+        "records": [{"ticker": "AAPL", "code": "US.AAPL", "security_id": "037833100"}]}
+    path = tmp_path / "open_inputs.json"; path.write_text(json.dumps(manifest))
+    return report_path, path, manifest, list(pd.bdate_range("2026-01-02", execution).strftime("%Y-%m-%d"))
+
+
+def test_open_phase_preserves_affine_prefix_and_never_reads_partial_or_future_close(case, tmp_path):
+    paths, historical, _, _ = case
+    report, inputs, manifest, sessions = open_case(case, tmp_path)
+    previous = module.load_execution_prices(paths, historical, current_report_path=report)
+    result = module.load_execution_prices(paths, historical, current_report_path=report,
+        execution_open_manifest=inputs, execution_end=manifest["execution_end_date"], execution_sessions=sessions)
+    terminal = result["prices"].loc[result["prices"].trade_date.eq(pd.Timestamp(sessions[-1]))]
+    assert len(terminal) == 1 and terminal.iloc[0].open == 103.  # Original historical +1 affine coordinate.
+    assert terminal[["close", "high", "low", "volume"]].isna().all().all()
+    pd.testing.assert_frame_equal(result["prices"].loc[result["prices"].trade_date.le(pd.Timestamp(manifest["signal_end_date"]))].reset_index(drop=True),
+                                  previous["prices"])
+    assert result["execution_open"]["qualified_tickers"] == ["AAPL"]
+    assert result["execution_open"]["model_feature_eligibility_granted"] is False
+    assert not result["gaps"]
+
+
+@pytest.mark.parametrize("fault,reason", [("identity", "SECURITY_IDENTITY"), ("stale_rehab", "FRESH_REHAB"),
+    ("before_open", "NOT_YET_AVAILABLE"), ("skip_session", "CLOCK_INVALID")])
+def test_open_phase_identity_freshness_and_official_session_gate(case, tmp_path, fault, reason):
+    paths, historical, _, _ = case
+    report, inputs, manifest, sessions = open_case(case, tmp_path)
+    if fault == "identity": manifest["records"][0]["security_id"] = "WRONG"
+    if fault == "before_open": manifest["as_of_utc"] = sessions[-1] + "T12:00:00+00:00"
+    if fault == "skip_session":
+        sessions.append((pd.Timestamp(sessions[-1]) + pd.offsets.BDay()).date().isoformat())
+        manifest["execution_end_date"] = sessions[-1]
+    if fault == "stale_rehab":
+        receipt_path = Path(manifest["rehab_receipt"]["path"])
+        receipt = json.loads(receipt_path.read_text())
+        receipt["results"][0]["fetched_at"] = manifest["signal_end_date"] + "T22:00:00+00:00"
+        receipt_path.write_text(json.dumps(receipt))
+        manifest["rehab_receipt"]["sha256"] = fixtures.prices.digest(receipt_path)
+    inputs.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match=reason):
+        module.load_execution_prices(paths, historical, current_report_path=report,
+            execution_open_manifest=inputs, execution_end=manifest["execution_end_date"], execution_sessions=sessions)
+
+
+@pytest.mark.parametrize("fault,reason", [("large_open", "LARGE_RAW_MOVE"), ("new_event", "NEW_CORPORATE_ACTION"),
+                                        ("revised_history", "HISTORY_PREFIX_CHANGED"), ("bad_open", "MARK_MISSING")])
+def test_open_phase_unreviewed_events_revisions_and_missing_marks_remain_gaps(case, tmp_path, fault, reason):
+    paths, historical, _, kwargs = case
+    report, inputs, manifest, sessions = open_case(case, tmp_path)
+    acquisition_path = Path(manifest["acquisition_manifest"]["path"])
+    acquisition = json.loads(acquisition_path.read_text())
+    if fault in {"large_open", "bad_open"}:
+        ref = acquisition["results"][0]["current_kline_provenance"]["sdk_response"]
+        sdk = pd.read_parquet(ref["path"])
+        sdk.loc[0, "open"] = 181. if fault == "large_open" else float("nan")
+        sdk.to_parquet(ref["path"], index=False)
+        ref["sha256"] = fixtures.prices.digest(ref["path"])
+        acquisition_path.write_text(json.dumps(acquisition))
+        manifest["acquisition_manifest"]["sha256"] = fixtures.prices.digest(acquisition_path)
+    else:
+        receipt_path = Path(manifest["rehab_receipt"]["path"])
+        receipt = json.loads(receipt_path.read_text())
+        old_factor = receipt["results"][0]
+        factor_path = tmp_path / "changed_factor.parquet"
+        factors = pd.read_parquet(old_factor["path"])
+        if fault == "new_event":
+            factors = pd.concat([factors, pd.DataFrame([{"code": "US.AAPL", "ex_div_date": pd.Timestamp(sessions[-1]),
+                                    "forward_adj_factorA": 1., "forward_adj_factorB": -2.}])], ignore_index=True)
+        else:
+            factors.loc[0, "forward_adj_factorB"] = -3.
+        factors.to_parquet(factor_path, index=False)
+        old_factor.update(path=str(factor_path), sha256=fixtures.prices.digest(factor_path), row_count=len(factors))
+        receipt_path.write_text(json.dumps(receipt))
+        manifest["rehab_receipt"]["sha256"] = fixtures.prices.digest(receipt_path)
+    inputs.write_text(json.dumps(manifest))
+    result = module.load_execution_prices(paths, historical, current_report_path=report,
+        execution_open_manifest=inputs, execution_end=manifest["execution_end_date"], execution_sessions=sessions)
+    assert result["prices"].trade_date.max() == pd.Timestamp(manifest["signal_end_date"])
+    assert result["execution_open"]["qualified_tickers"] == []
+    assert any(row.get("source_role") == "EXECUTION_OPEN_ONLY" and reason in row["reason"] for row in result["gaps"])
+
+
+def test_hash_qualified_frozen_adapter_keeps_default_terminal_validation(case):
+    adapter = fixtures.prices._adapter("2026-10-05")
+    raw = pd.DataFrame({"trade_date": pd.to_datetime(["2026-10-02", "2026-10-05"]),
+                        "open": [100., 120.], "close": [100., float("nan")],
+                        "high": [100., float("nan")], "low": [100., float("nan")], "volume": [100., float("nan")]})
+    empty = pd.DataFrame(columns=["code"])
+    wolf = {"event_date": "2025-09-29", "quantity_multiplier": .008352}
+    with pytest.raises(Exception, match="INVALID_ADJUSTED_PRICE"):
+        adapter.adjusted_price_frame("US.AAPL", "AAPL", raw, empty, wolf)
+    adjusted, events = module._execution_open_adapter(adapter)("US.AAPL", "AAPL", raw, empty, wolf)
+    assert adjusted.iloc[-1].open == 120. and pd.isna(adjusted.iloc[-1].close) and not events
+
+
+@pytest.mark.parametrize("field", ["volume", "earlier_close"])
+def test_open_only_preserves_unconsumed_vendor_revisions_without_changing_features(case, tmp_path, field):
+    paths, historical, _, _ = case
+    report, inputs, manifest, sessions = open_case(case, tmp_path)
+    prior = module.load_execution_prices(paths, historical, current_report_path=report)["prices"]
+    acquisition_path = Path(manifest["acquisition_manifest"]["path"])
+    receipt = json.loads(acquisition_path.read_text())
+    row = receipt["results"][0]
+    fresh = pd.read_csv(row["path"])
+    fresh.loc[0, "volume" if field == "volume" else "close"] += .01
+    fresh.to_csv(row["path"], index=False)
+    row["sha256"] = fixtures.prices.digest(row["path"])
+    # The current accepted anchor also references that file: freeze its old bytes
+    # to a separate real prior-vintage leaf before publishing the fresh response.
+    old_ref = json.loads((report.parent / "input_lineage.json").read_text())[0]
+    old_native = tmp_path / "old_accepted.csv"
+    original_native = fresh.copy()
+    original_native.loc[0, "volume" if field == "volume" else "close"] -= .01
+    original_native.to_csv(old_native, index=False)
+    old_ref["raw_sources"][-1].update(path=str(old_native), sha256=fixtures.prices.digest(old_native))
+    (report.parent / "input_lineage.json").write_text(json.dumps([old_ref]))
+    report_value = json.loads(report.read_text())
+    report_value["input_manifest_sha256"] = hashlib.sha256(json.dumps([old_ref], sort_keys=True).encode()).hexdigest()
+    report.write_text(json.dumps(report_value))
+    manifest["current_report"]["sha256"] = fixtures.prices.digest(report)
+    acquisition_path.write_text(json.dumps(receipt))
+    manifest["acquisition_manifest"]["sha256"] = fixtures.prices.digest(acquisition_path)
+    inputs.write_text(json.dumps(manifest))
+    result = module.load_execution_prices(paths, historical, current_report_path=report,
+        execution_open_manifest=inputs, execution_end=manifest["execution_end_date"], execution_sessions=sessions)
+    assert result["execution_open"]["qualified_tickers"] == ["AAPL"], result["gaps"]
+    prefix = result["prices"].loc[result["prices"].trade_date.le(pd.Timestamp(manifest["signal_end_date"]))]
+    pd.testing.assert_frame_equal(prior, prefix.reset_index(drop=True))
+    qualification = result["execution_open"]["qualifications"][0]
+    assert qualification["unconsumed_overlap_differences"]["volume" if field == "volume" else "close"] == 1
+    assert qualification["model_feature_eligibility_granted"] is False
+
+
+
+def short_open_anchor_case(case, tmp_path, *, large_completed_move=False):
+    paths, historical, entry, _ = case
+    report, inputs, manifest, sessions = open_case(case, tmp_path)
+    anchor_end = sessions[-10]  # Eight genuine completed sessions before execution.
+    recorded = json.loads(historical.read_text())
+    price_path = Path(recorded["price_manifest"]["path"])
+    entry = {**entry, "raw_end": anchor_end}
+    price_path.write_text(json.dumps({"lineage": [entry], "gaps": []}))
+    recorded["price_manifest"]["sha256"] = fixtures.prices.digest(price_path)
+    historical.write_text(json.dumps(recorded))
+    # A held security has no current model input entry: only its accepted anchor.
+    lineage = report.parent / "input_lineage.json"
+    lineage.write_text(json.dumps({"historical_manifest": {
+        "path": str(historical), "sha256": fixtures.prices.digest(historical)}}))
+    report_value = json.loads(report.read_text())
+    report_value["input_manifest_sha256"] = fixtures.prices.digest(lineage)
+    report.write_text(json.dumps(report_value))
+    manifest["current_report"]["sha256"] = fixtures.prices.digest(report)
+    acquisition_path = Path(manifest["acquisition_manifest"]["path"])
+    acquisition = json.loads(acquisition_path.read_text())
+    native_ref = acquisition["results"][0]["current_kline_provenance"]["sdk_response"]
+    opening = pd.read_parquet(native_ref["path"])
+    completed = pd.read_parquet(entry["raw_sources"][0]["path"])
+    signal = completed.iloc[[-1]].copy()
+    signal["time_key"] = manifest["signal_end_date"]
+    completed = pd.concat([completed, signal], ignore_index=True)
+    if large_completed_move:
+        completed.loc[completed.time_key.eq(sessions[-9]), ["high", "close"]] = 181.
+    pd.concat([completed, opening], ignore_index=True).to_parquet(native_ref["path"], index=False)
+    native_ref["sha256"] = fixtures.prices.digest(native_ref["path"])
+    acquisition_path.write_text(json.dumps(acquisition))
+    manifest["acquisition_manifest"]["sha256"] = fixtures.prices.digest(acquisition_path)
+    inputs.write_text(json.dumps(manifest))
+    return report, inputs, manifest, sessions, anchor_end
+
+
+def test_open_phase_short_held_anchor_retains_all_completed_tail_and_exact_prefix(case, tmp_path):
+    paths, historical, _, _ = case
+    report, inputs, manifest, sessions, anchor_end = short_open_anchor_case(case, tmp_path)
+    prior = module.load_execution_prices(paths, historical, current_report_path=report)
+    result = module.load_execution_prices(paths, historical, current_report_path=report,
+        execution_open_manifest=inputs, execution_end=manifest["execution_end_date"], execution_sessions=sessions)
+    assert not result["gaps"]
+    pd.testing.assert_frame_equal(prior["prices"], result["prices"].loc[
+        result["prices"].trade_date.le(pd.Timestamp(anchor_end))].reset_index(drop=True))
+    completed = result["prices"].loc[result["prices"].trade_date.gt(pd.Timestamp(anchor_end))
+        & result["prices"].trade_date.le(pd.Timestamp(manifest["signal_end_date"]))]
+    assert completed.trade_date.dt.strftime("%Y-%m-%d").tolist() == sessions[-9:-1]
+    assert len(completed) == 8 and completed[fixtures.prices.PRICE_FIELDS].notna().all().all()
+    assert completed.open.eq(101.).all()
+    terminal = result["prices"].loc[result["prices"].trade_date.eq(pd.Timestamp(sessions[-1]))]
+    assert len(terminal) == 1 and terminal.iloc[0].open == 103.
+    assert terminal[["high", "low", "close", "volume"]].isna().all().all()
+    proof = result["execution_open"]["qualifications"][0]
+    assert proof["completed_native_tail_days"] == 8
+    assert proof["model_feature_eligibility_granted"] is False
+
+
+def test_open_phase_short_held_anchor_retains_completed_tail_event_gate(case, tmp_path):
+    paths, historical, _, _ = case
+    report, inputs, manifest, sessions, _ = short_open_anchor_case(case, tmp_path, large_completed_move=True)
+    result = module.load_execution_prices(paths, historical, current_report_path=report,
+        execution_open_manifest=inputs, execution_end=manifest["execution_end_date"], execution_sessions=sessions)
+    assert not result["gaps"]
+    assert result["events"].loc[result["events"].audit_kind.eq(
+        "LARGE_RAW_MOVE_NO_VENDOR_EVENT"), "event_date"].tolist() == [pd.Timestamp(sessions[-9])]
+    assert result["event_review"] is None

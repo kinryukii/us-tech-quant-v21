@@ -167,3 +167,95 @@ def test_publication_receipt_binds_prediction_fit_producer_hashes(tmp_path,monke
     output.write_bytes(b'corrupted synthetic bytes')
     with pytest.raises(RuntimeError,match='PUBLICATION_CHANGED'):
         f.publish_prediction(fitted,reader)
+
+
+# The new named candidate changes only certified exact-zero semantics.
+def test_nnls_zero_abstain_name_preserves_m035_mapping_and_strict_default():
+    assert f.method_name('M035')=='nnls' and f.METHODS[35]=='nnls'
+    assert f.NNLS_ZERO_ABSTAIN not in f.METHODS.values()
+    assert f.method_name(f.NNLS_ZERO_ABSTAIN)==f.NNLS_ZERO_ABSTAIN
+    x=np.ones((4,5));y=-np.ones(4)
+    with pytest.raises(ValueError,match='NNLS_ZERO_OR_INVALID_SUM_NO_SUBSTITUTE'):
+        f._fit_arrays('M035',x,y,None,None,lambda _:None,packet_width=5)
+
+
+def test_nnls_zero_abstain_certified_zero_predicts_exact_zero_and_pickles():
+    x=np.arange(1.,21.).reshape(4,5);y=-np.ones(4);starts=[]
+    model=f._fit_arrays(f.NNLS_ZERO_ABSTAIN,x,y,None,None,starts.append,packet_width=5)
+    assert starts==['FUSION_NNLS'] and model.packet_width==5
+    assert np.array_equal(model.weights,np.zeros(5))
+    certificate=model.zero_abstention_certificate
+    assert certificate['unique_zero_optimum'] is True and certificate['zero_coefficients_exact'] is True
+    assert np.all(np.array(certificate['xty']) < -np.array(certificate['xty_error_bound']))
+    assert certificate['input_role']=='PAST_TRAINING_OOF_ONLY'
+    restored=pickle.loads(pickle.dumps(model))
+    assert restored.zero_abstention_certificate==certificate
+    assert np.array_equal(restored.predict(x*-20.,None),np.zeros(4))
+
+
+@pytest.mark.parametrize('width',[3,5,29,38])
+def test_nnls_zero_abstain_positive_branch_exactly_matches_original(width):
+    x=np.vstack([np.eye(width),np.ones(width)]);coef=np.arange(1.,width+1)/width
+    y=x@coef;old_calls=[];new_calls=[]
+    old=f._fit_arrays('nnls',x,y,None,None,old_calls.append,packet_width=width)
+    new=f._fit_arrays(f.NNLS_ZERO_ABSTAIN,x,y,None,None,new_calls.append,packet_width=width)
+    assert old_calls==new_calls==['FUSION_NNLS']
+    assert old.packet_width==new.packet_width==width
+    assert np.array_equal(old.weights,new.weights)
+    assert np.array_equal(old.predict(x,None),new.predict(x,None))
+    assert new.zero_abstention_certificate is None and np.isclose(new.weights.sum(),1.)
+
+
+@pytest.mark.parametrize('y',[np.ones(4),np.array([1.,-1.,1.,-1.]),np.zeros(4)])
+def test_nnls_zero_abstain_uncertified_fake_zero_is_rejected(monkeypatch,y):
+    monkeypatch.setattr(f,'nnls',lambda x,y:(np.zeros(x.shape[1]),0.))
+    calls=[]
+    with pytest.raises(ValueError,match='NNLS_ZERO_KKT_NOT_CERTIFIED'):
+        f._fit_arrays(f.NNLS_ZERO_ABSTAIN,np.ones((4,5)),y,None,None,calls.append,packet_width=5)
+    assert calls==['FUSION_NNLS']
+
+
+@pytest.mark.parametrize('coef',[
+    [np.nan,0.,0.,0.,0.],[np.inf,0.,0.,0.,0.],[-1.,2.,0.,0.,0.],
+    [1e308]*5,[0.]*4])
+def test_nnls_zero_abstain_invalid_solver_coefficients_are_rejected(monkeypatch,coef):
+    monkeypatch.setattr(f,'nnls',lambda x,y:(np.array(coef),0.))
+    with pytest.raises(ValueError,match='NNLS_ZERO_OR_INVALID_SUM_NO_SUBSTITUTE'):
+        f._fit_arrays(f.NNLS_ZERO_ABSTAIN,np.ones((4,5)),-np.ones(4),None,None,lambda _:None,packet_width=5)
+
+
+def test_nnls_zero_abstain_nonfinite_packet_does_not_start_fit():
+    x=np.ones((4,5));x[0,0]=np.nan;calls=[]
+    with pytest.raises(ValueError,match='INVALID_PAST_OOF_TRAINING_PACKET'):
+        f._fit_arrays(f.NNLS_ZERO_ABSTAIN,x,-np.ones(4),None,None,calls.append,packet_width=5)
+    assert calls==[]
+
+
+def test_nnls_zero_abstain_underflow_or_overflow_cannot_fake_certificate(monkeypatch):
+    monkeypatch.setattr(f,'nnls',lambda x,y:(np.zeros(x.shape[1]),0.))
+    for x,y in [(np.full((4,5),1e-300),np.full(4,-1e-300)),
+                (np.full((4,5),1e308),np.full(4,-1e308))]:
+        with pytest.raises(ValueError,match='NNLS_ZERO_KKT_NOT_CERTIFIED'):
+            f._fit_arrays(f.NNLS_ZERO_ABSTAIN,x,y,None,None,lambda _:None,packet_width=5)
+
+
+def test_nnls_zero_abstain_spawn_worker_preserves_one_ack_fit_unit(tmp_path,monkeypatch):
+    events=[]
+    monkeypatch.setattr(values:=f.values,'_component_start',lambda log,auth,prior,model,year,component,identity:
+        events.append((model,year,component,identity)))
+    def synthetic_writer(path,data):
+        from pathlib import Path
+        import json
+        assert isinstance(path,Path) and path.is_relative_to(tmp_path)
+        path.write_text(json.dumps(data),encoding='utf-8')
+    monkeypatch.setattr(values,'write_json_atomic',synthetic_writer)
+    receipt=dict(receipt_path=str(tmp_path/'new_zero_receipt.json'),fit_units=0)
+    x=np.arange(1.,21.).reshape(4,5)
+    model=values._fit_job('fusion',f.NNLS_ZERO_ABSTAIN,x,-np.ones(4),np.zeros((4,4)),None,(),[],
+        dict(packet_width=5,fixed_weights=None),log=tmp_path/'synthetic_unused_log',auth=dict(max_fit_units=4),prior=0,
+        year=2023,tuple_sha='new-zero-synthetic',receipt=receipt,worker_target=f._fusion_worker)
+    assert events==[(f.NNLS_ZERO_ABSTAIN,2023,'FUSION_NNLS','new-zero-synthetic')]
+    assert receipt['fit_units']==1 and model.packet_width==5
+    assert model.zero_abstention_certificate['unique_zero_optimum'] is True
+    assert np.array_equal(model.predict(x,None),np.zeros(4))
+    assert not (tmp_path/'synthetic_unused_log').exists()

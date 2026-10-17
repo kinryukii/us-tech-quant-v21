@@ -17,6 +17,8 @@ import time
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .strategy import auto_completion_spread_is_valid
+
 
 class BrokerError(RuntimeError):
     """The broker response cannot be safely used; execution must stop."""
@@ -43,6 +45,25 @@ _RATE_LIMIT_KEYWORDS = (
     "frequency restriction", "frequency too high", "限频", "调用频率",
     "请求频率", "调用太频繁", "请求太频繁", "查询太频繁", "请求过于频繁",
 )
+
+
+_SYNC_QUERY_CONNECT_WAIT_SECONDS = 12
+
+
+def _configure_context_connect_wait(context):
+    """Bound only pre-send ready waiting, not construction or total RPC time."""
+    try:
+        setter = getattr(context, "set_sync_query_connect_timeout", None)
+        if not callable(setter):
+            raise TypeError("PUBLIC_CONNECT_WAIT_SETTER_REQUIRED")
+        setter(_SYNC_QUERY_CONNECT_WAIT_SECONDS)
+    except Exception:
+        try:
+            context.close()
+        except Exception:
+            pass
+        raise BrokerError("OpenD SDK 无法设置有界连接等待；已拒绝使用此上下文") from None
+    return context
 
 
 TERMINAL_STATUSES = frozenset({
@@ -101,7 +122,9 @@ class MoomooBroker:
     def __init__(self, host: str = "127.0.0.1", port: int = 18441,
                  security_firm: str = "FUTUSECURITIES", account_id: str | None = None,
                  *, sdk: Any = None, now: Any = None, cancel_check: Any = None,
-                 monotonic: Any = None):
+                 monotonic: Any = None, account_scope: str = "ordinary",
+                 expected_account_id: str | None = None,
+                 expected_competition_name: str | None = None):
         if host == "localhost":
             host = "127.0.0.1"
         try:
@@ -116,9 +139,27 @@ class MoomooBroker:
             raise BrokerError("券商区域参数无效")
         if account_id is not None and (isinstance(account_id, bool) or not re.fullmatch(r"[1-9][0-9]{0,19}", str(account_id))):
             raise BrokerError("必须明确选择非零模拟账户 ID")
+        if account_scope not in ("ordinary", "competition"):
+            raise BrokerError("模拟账户范围必须为 ordinary 或 competition")
+        if expected_account_id is not None and (isinstance(expected_account_id, bool)
+                or not re.fullmatch(r"[1-9][0-9]{0,19}", str(expected_account_id))):
+            raise BrokerError("预期模拟账户 ID 必须为非零账户编号")
+        if (account_id is not None and expected_account_id is not None
+                and str(account_id) != str(expected_account_id)):
+            raise BrokerError("选定模拟账户与预期账户身份不一致")
+        if expected_competition_name is not None and (
+                account_scope != "competition" or not isinstance(expected_competition_name, str)
+                or not expected_competition_name.strip() or expected_competition_name == "N/A"
+                or any(ord(char) < 32 or ord(char) == 127 for char in expected_competition_name)):
+            raise BrokerError("比赛账户名称必须是 competition 范围内的明确名称")
         self.host, self.port = host, port
         self.security_firm = security_firm
         self.account_id = str(account_id) if account_id is not None else None
+        # Scope constrains both discovery and every later account validation.
+        # A competition instance cannot change the ordinary SIM discovery set.
+        self.account_scope = account_scope
+        self.expected_account_id = str(expected_account_id) if expected_account_id is not None else None
+        self.expected_competition_name = expected_competition_name
         self._sdk = sdk
         self._trade = None
         self._quote = None
@@ -158,19 +199,21 @@ class MoomooBroker:
             sdk = self._load()
             firm = self._enum("SecurityFirm", self.security_firm)
             try:
-                self._trade = sdk.OpenSecTradeContext(
+                context = sdk.OpenSecTradeContext(
                     filter_trdmarket=self._enum("TrdMarket", "US"),
                     host=self.host, port=self.port, security_firm=firm)
             except Exception:
                 raise BrokerError("无法连接本机 OpenD 交易查询接口，请检查端口、登录和 SDK 版本") from None
+            self._trade = _configure_context_connect_wait(context)
         return self._trade
 
     def _quote_context(self):
         if self._quote is None:
             try:
-                self._quote = self._load().OpenQuoteContext(host=self.host, port=self.port)
+                context = self._load().OpenQuoteContext(host=self.host, port=self.port)
             except Exception:
                 raise BrokerError("无法连接本机 OpenD 行情接口") from None
+            self._quote = _configure_context_connect_wait(context)
         return self._quote
 
     def _call(self, method, **kwargs) -> list[dict]:
@@ -229,24 +272,40 @@ class MoomooBroker:
             raise BrokerError(f"{label} 返回数据格式无效")
         return data
 
-    @staticmethod
-    def _eligible(row: dict) -> bool:
+    def _eligible(self, row: dict) -> bool:
         markets = row.get("trdmarket_auth")
+        allowed_types = {"COMPETITION"} if self.account_scope == "competition" else {"STOCK", "STOCK_AND_OPTION"}
         return (
             _name(row.get("trd_env")) == "SIMULATE"
-            and _name(row.get("sim_acc_type")) in {"STOCK", "STOCK_AND_OPTION"}
+            and _name(row.get("sim_acc_type")) in allowed_types
             and _name(row.get("acc_status")) == "ACTIVE"
             and isinstance(markets, (list, tuple))
             and "US" in {_name(item) for item in markets}
             and re.fullmatch(r"[1-9][0-9]{0,19}", str(row.get("acc_id", ""))) is not None
+            and (self.expected_account_id is None or str(row["acc_id"]) == self.expected_account_id)
+            and (self.expected_competition_name is None
+                 or row.get("competition_acc_name") == self.expected_competition_name)
         )
 
     def probe(self) -> dict:
         """Read account metadata only; never return live IDs or live balances."""
         with self._lock:
             rows = self._call(self._trade_context().get_acc_list)
-            accounts = [{"account_id": str(row["acc_id"]), "market": "US", "environment": "SIMULATE"}
-                        for row in rows if self._eligible(row)]
+            accounts = []
+            for row in rows:
+                if not self._eligible(row):
+                    continue
+                account = {"account_id": str(row["acc_id"]), "market": "US", "environment": "SIMULATE"}
+                if self.account_scope == "competition":
+                    account.update(
+                        sim_acc_type=_name(row["sim_acc_type"]),
+                        competition_acc_name=row.get("competition_acc_name", "N/A"),
+                        acc_type=_name(row.get("acc_type", "N/A")),
+                        acc_status=_name(row["acc_status"]),
+                        trdmarket_auth=[_name(market) for market in row["trdmarket_auth"]],
+                        security_firm=_name(row.get("security_firm", "N/A")),
+                    )
+                accounts.append(account)
             return {"connected": True, "host": self.host, "port": self.port,
                     "sdk_version": str(getattr(self._load(), "__version__", "unknown")),
                     "security_firm": self.security_firm, "accounts": accounts,
@@ -323,7 +382,8 @@ class MoomooBroker:
         return self._snapshot_read(codes, include_quotes=include_quotes)
 
     def _snapshot_read(self, codes: list[str], *, include_quotes: bool = True,
-                       allow_partial_quotes: bool = False) -> dict:
+                       allow_partial_quotes: bool = False,
+                       include_held_quotes: bool = True) -> dict:
         """Read validated simulation funds/positions and, by default, live quotes.
 
         The explicit empty-code metadata path is usable after hours to prepare a
@@ -400,9 +460,9 @@ class MoomooBroker:
             all_codes = requested | set(positions)
             if len(all_codes) > 100:
                 raise BrokerError("持仓与目标证券合计超过 100 个")
-            if include_quotes:
-                # Holdings outside the requested targets must be freshly validated
-                # as well; never reuse a target price for a different security.
+            if include_quotes and (include_held_quotes or not allow_partial_quotes):
+                # Public snapshots also qualify holdings quotes. Partial submission
+                # needs only its candidate quote; all held account data stays fresh.
                 extra = all_codes - requested
                 if allow_partial_quotes and extra:
                     batch = self._feed().quotes_partial(sorted(extra), refresh=True)
@@ -480,8 +540,12 @@ class MoomooBroker:
             return self._market_cash_buyable(code, price)
 
     def submit(self, order: dict, client_id: str, *, allow_partial_quotes: bool = False,
-               execution_deadline_utc: str | None = None, order_type: str = "NORMAL") -> dict:
+               execution_deadline_utc: str | None = None, order_type: str = "NORMAL",
+               single_sell_spread_bps: int | None = None, allow_single_tick_spread: bool = False) -> dict:
         with self._lock:
+            if type(allow_single_tick_spread) is not bool or (allow_single_tick_spread and
+                    (not allow_partial_quotes or single_sell_spread_bps is not None)):
+                raise BrokerError("one-tick例外必须为已授权逐票模拟的明确布尔值")
             if type(allow_partial_quotes) is not bool:
                 raise BrokerError("逐票执行必须为明确布尔值")
             if type(order_type) is not str or order_type not in {"NORMAL", "MARKET"}:
@@ -496,7 +560,7 @@ class MoomooBroker:
                     raise BrokerError("逐票模拟执行缺少截止时间，订单尚未发送")
                 self._require_deadline(deadline)
                 place_order, submission, quote = self._submission_preflight(
-                    order, client_id, allow_partial_quotes, order_type)
+                    order, client_id, allow_partial_quotes, order_type, single_sell_spread_bps, allow_single_tick_spread)
                 # This is after the final account/quote RPC, immediately before I/O.
                 self._require_deadline(deadline)
                 age = (self._now().astimezone(timezone.utc) - datetime.fromisoformat(quote['asof'])).total_seconds()
@@ -524,7 +588,7 @@ class MoomooBroker:
                     "status": status if status in KNOWN_STATUSES else "UNKNOWN",
                     "order_type": order_type}
 
-    def _submission_preflight(self, order, client_id, allow_partial_quotes, order_type="NORMAL"):
+    def _submission_preflight(self, order, client_id, allow_partial_quotes, order_type="NORMAL", single_sell_spread_bps=None, allow_single_tick_spread=False):
         if not isinstance(order, dict) or set(order) != {"code", "side", "qty", "limit_price"}:
             raise BrokerError("订单字段不符合接口约定")
         code = _code(order["code"])
@@ -537,8 +601,14 @@ class MoomooBroker:
             raise BrokerError("订单数量必须为整数")
         qty = _quantity(order["qty"], "订单数量", positive=True)
         price = _number(order["limit_price"], "限价", positive=True)
-        # Partial execution excludes bad holdings quotes, not account/funds checks.
-        state = self.snapshot_partial([code]) if allow_partial_quotes else self.snapshot([code])
+        if single_sell_spread_bps is not None and (type(single_sell_spread_bps) is not int
+                or single_sell_spread_bps not in {50, 60} or not allow_partial_quotes
+                or order_type != "NORMAL" or side != "SELL"):
+            raise BrokerError("单笔价差例外仅允许明确50/60bp的逐票NORMAL卖出")
+        # Unrelated holdings quote errors never block partial submission. Avoid
+        # those reads while retaining the full fresh account and candidate quote.
+        state = (self._snapshot_read([code], allow_partial_quotes=True, include_held_quotes=False)
+                 if allow_partial_quotes else self.snapshot([code]))
         quote = state['quotes'].get(code)
         if quote is None:
             raise BrokerError(state.get('quote_errors', {}).get(code, code + " 缺少合格报价"))
@@ -555,8 +625,14 @@ class MoomooBroker:
             raise BrokerError("最终限价偏离最新行情超过 2%，已停止提交")
         if Decimal(str(quote["ask"])) - Decimal(str(quote["bid"])) > reference * Decimal("0.02"):
             raise BrokerError("最新买卖价差超过 200 bps，已停止提交")
-        if allow_partial_quotes and (quote['ask'] - quote['bid']) / ((quote['ask'] + quote['bid']) / 2) * 10000 > 50:
-            raise BrokerError("最新买卖价差超过50bp，订单尚未发送")
+        spread_cap = 50 if single_sell_spread_bps is None else single_sell_spread_bps
+        spread_ok = (auto_completion_spread_is_valid(quote) if allow_single_tick_spread
+            else (quote['ask'] - quote['bid']) / ((quote['ask'] + quote['bid']) / 2) * 10000 <= spread_cap)
+        if allow_partial_quotes and not spread_ok:
+            raise BrokerError(f"最新买卖价差超过授权50bp/一档200bp限制，订单尚未发送" if allow_single_tick_spread
+                else f"最新买卖价差超过{spread_cap}bp，订单尚未发送")
+        if single_sell_spread_bps is not None and price_decimal != Decimal(str(quote["bid"])):
+            raise BrokerError("新鲜买一已变化；限价必须等于最终新鲜买一，订单尚未发送")
         if side == "BUY":
             cash_reference = (max(price_decimal, Decimal(str(quote["ask"])))
                               if order_type == "MARKET" else price_decimal)

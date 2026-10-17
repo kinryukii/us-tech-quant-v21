@@ -88,10 +88,27 @@ def source_events(ca):
     return scope["events"], scope["known"], scope["unsupported"]
 
 
+def score_path(run_directory, cid):
+    """Read byte-bound borrowed C scores without copying or rewriting them."""
+    directory = Path(run_directory)
+    freeze = directory / "DESIGN_FREEZE.json"
+    if freeze.exists():
+        design = readj(freeze)
+        binding = design.get("score_reuse", {}).get(cid)
+        if binding:
+            if sha(freeze) != readj(directory / "DESIGN_FREEZE_SHA.json")["sha256"]:
+                raise ValueError("BORROWED_SCORE_FREEZE_CHANGED")
+            path = Path(binding["path"]).resolve()
+            if not path.is_relative_to(resolve(REPO).backtest_root) or sha(path) != binding["sha256"]:
+                raise ValueError("BORROWED_SCORE_IDENTITY_CHANGED")
+            return path
+    return directory / "predictions" / ("scores_" + cid + "_pre2026.parquet")
+
+
 def score_panel(run_directory, cid):
     if Path(cid).name != cid or cid in {".", ".."}:
         raise ValueError("INVALID_CANDIDATE_ID")
-    path = run_directory / "predictions" / ("scores_" + cid + "_pre2026.parquet")
+    path = score_path(run_directory, cid)
     frame = pre2026(path, ["signal_date", "ticker", "security_uid", "U_t_fingerprint", "candidate_id", "score", "rank"], "signal_date")
     frame["signal_date"] = pd.to_datetime(frame.signal_date)
     if (frame.signal_date.lt("2023-01-01").any() or frame.duplicated(["signal_date", "security_uid"]).any()

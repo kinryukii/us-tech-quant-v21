@@ -18,7 +18,8 @@ from scripts.research.a2.data.joint_input_binding import load_training_inputs, g
 from scripts.research.a2.evaluation.joint_method_coverage import JointMethodCoverage, mature_training_mask
 from scripts.research.a2.evaluation.joint_method_stages import prepare_market, task_writer, RISK_ROWS
 from scripts.research.a2.evaluation.joint_execution_resume import digest
-from scripts.research.a2.evaluation.continuous_research_account import run_continuous_account
+from scripts.research.a2.evaluation.joint_account_runtime import run_continuous_account_indexed
+from scripts.research.a2.evaluation import joint_account_runtime
 from scripts.research.a2.inference.joint_portfolio_policy import JointResearchPolicy
 from scripts.research.a2.inference.joint_stateful_policy import RuleStatefulPolicy, SequentialPolicy
 from scripts.research.a2.portfolio import joint_allocation_methods as allocation
@@ -52,7 +53,8 @@ def json_safe(value):
     if isinstance(value,(float,np.floating)):return float(value) if np.isfinite(value) else None
     if isinstance(value,np.integer):return int(value)
     if isinstance(value,np.bool_):return bool(value)
-    return value
+    if value is None or isinstance(value,(str,int,bool)):return value
+    return str(value)
 
 def sha_json(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,default=str,allow_nan=False).encode()).hexdigest()
@@ -291,6 +293,41 @@ def static_forecast_coverage(market,mu,sigma,known=None):
        by_year={str(y):dict(required=int(required[market.dates.year==y].sum()),
               missing=int(missing[market.dates.year==y].sum())) for y in YEARS})
 
+def verified_engineering_repair(task):
+    relative="receipts/ACCOUNT_ENGINEERING_REPAIR.json"
+    repair=task.read(relative)
+    if repair.get("status") not in ("VERIFIED_ENGINEERING_REPAIR_ONLY","VERIFIED_ENGINEERING_AND_UNATTEMPTED_PIT_REPAIR"):
+        raise ValueError("Account engineering repair is not verified")
+    if (repair["new_source_sha256"]!=digest(__file__)
+        or repair["runtime_source_sha256"]!=digest(joint_account_runtime.__file__)
+        or repair["old_source_sha256"]!=digest(repair["old_source_snapshot"])
+        or repair["old_policy_freeze_sha256"]!=digest(task.out(repair["old_policy_freeze_receipt"]))
+        or repair["validation_sha256"]!=digest(task.out(repair["validation_receipt"]))):
+        raise ValueError("Engineering repair lineage changed")
+    if "parent_policy_freeze_receipt" in repair:
+        if digest(task.out(repair["parent_policy_freeze_receipt"]))!=repair["parent_policy_freeze_sha256"]:
+            raise ValueError("Engineering parent freeze changed")
+    if "pit_variant_repair_receipt" in repair:
+        pit=task.read(repair["pit_variant_repair_receipt"])
+        if (digest(task.out(repair["pit_variant_repair_receipt"]))!=repair["pit_variant_repair_sha256"]
+            or pit["new_source_sha256"]!=digest(allocation.__file__)
+            or pit["old_source_sha256"]!=digest(pit["old_complete_source_snapshot"])
+            or pit.get("method_id")!="M073" or pit.get("status")!="PASS_SYNTHETIC_PIT_CORRECTION"
+            or pit.get("all_other_scientific_fields_exact_ast_equal") is not True
+            or pit.get("all_other_module_code_exact_ast_equal") is not True):
+            raise ValueError("PIT risk-budget repair lineage changed")
+        if any(r["identity"]["path_id"]=="M073" for r in task.status.get("account_records",[])):
+            raise ValueError("PIT variant was already economically attempted")
+    return repair
+
+def verify_retained_identity(task,record,identity):
+    expected=json.loads(json.dumps(json_safe(identity),default=str))
+    if record["identity"]==expected:return
+    repair=verified_engineering_repair(task)
+    expected["dependencies"]["policy_freeze_sha256"]=repair["old_policy_freeze_sha256"]
+    if record["identity"]!=expected:
+        raise ValueError("Account input identity changed; retained attempt cannot silently rerun:"+identity["path_id"])
+
 def freeze_accounts(task):
     from scripts.research.a2.evaluation import continuous_research_account
     from scripts.research.a2.inference import joint_portfolio_policy,joint_stateful_policy
@@ -300,7 +337,7 @@ def freeze_accounts(task):
     sources={str(Path(p).resolve()):digest(p) for p in [
       __file__,continuous_research_account.__file__,joint_portfolio_policy.__file__,
       joint_stateful_policy.__file__,allocation.__file__,joint_risk_estimators.__file__,fast_account.__file__,
-      optimization.__file__,corporate_action_transition_r1.__file__]}
+      optimization.__file__,corporate_action_transition_r1.__file__,joint_account_runtime.__file__]}
     freeze=dict(status="POLICY_FROZEN_BEFORE_ECONOMIC_REPLAYS",parameters=PARAMETERS,
        allocation_spec=allocation.SPEC,catalogue=catalogue(),aliases={f"M{k:03d}":resolve_alias(k) for k in ALIASES},
        blocked={"M098":"INTEGER_EXECUTION_SECONDARY_INCOMPATIBLE_WITH_FRACTIONAL_COMMON_ACCOUNT"},
@@ -315,10 +352,41 @@ def freeze_accounts(task):
        reference="stateless legal-new-buy Raw score Top20 (known close/quality/row/restriction/operational gates), normalized equal q; not incumbent Raw account target",
        scientific_coverage_gate="all required current legal PIT32 new-buy forecast rows finite mu/sigma>=0; actual held decision rows likewise; missing/partial dependencies excluded from finalist; scenario declared earlier count>=30 filter allowed; annual lineage equals corresponding Jan1 notNaT",
        selection=task.parameters["comparison"],economic_result_tuning=False,test2026_reads=0)
+    repair=verified_engineering_repair(task)
+    freeze["engineering_lineage"]={key:repair[key] for key in (
+         "old_source_sha256","old_policy_freeze_sha256","new_source_sha256","runtime_source_sha256",
+         "validation_receipt","validation_sha256","reason")}
+    freeze["runtime_projection"]=joint_account_runtime.source_lineage()
+    if "pit_variant_repair_receipt" in repair:
+        freeze["pit_variant_lineage"]=dict(receipt=repair["pit_variant_repair_receipt"],
+             sha256=repair["pit_variant_repair_sha256"],method_id="M073",
+             scope="unattempted risk_budgeting only; current active ranks; no result tuning")
     relative="receipts/ACCOUNT_POLICY_FREEZE.json"
     if task.out(relative).exists():
-        if task.read(relative)!=freeze:raise ValueError("Account policy freeze changed after replay")
-    else:task.write(relative,freeze)
+        old=task.read(relative)
+        if old!=freeze:
+            parents={repair["old_policy_freeze_sha256"],repair.get("parent_policy_freeze_sha256")}
+            if digest(task.out(relative)) not in parents:
+                raise ValueError("Account policy freeze changed after replay")
+            excluded=("source_sha256","engineering_lineage","runtime_projection","pit_variant_lineage")
+            scientific={k:v for k,v in freeze.items() if k not in excluded}
+            original={k:v for k,v in old.items() if k not in excluded}
+            pit=task.read(repair["pit_variant_repair_receipt"]) if "pit_variant_repair_receipt" in repair else None
+            if pit:
+                scientific["allocation_spec"]=dict(scientific["allocation_spec"])
+                if (scientific["allocation_spec"]["risk_budget"]!=pit["risk_budget_after"]
+                    or original["allocation_spec"]["risk_budget"]!=pit["risk_budget_before"]):
+                    raise ValueError("Undeclared risk-budget specification change")
+                scientific["allocation_spec"]["risk_budget"]=original["allocation_spec"]["risk_budget"]
+            if scientific!=original:raise ValueError("Repair changed unrelated scientific choices")
+            for path,sha in old["source_sha256"].items():
+                if Path(path).resolve()==Path(__file__).resolve():continue
+                if pit and Path(path).resolve()==Path(allocation.__file__).resolve():
+                    if sha!=pit["old_source_sha256"] or sources[path]!=pit["new_source_sha256"]:
+                        raise ValueError("Unapproved allocation source change")
+                elif sources.get(path)!=sha:raise ValueError("Unapproved business source changed")
+            task.write(relative,freeze)
+    else:raise ValueError("Original freeze required for verified engineering continuation")
     return freeze
 
 def account_audits_passed(audit):
@@ -479,8 +547,13 @@ def run_accounts(root,phase):
                       last_session=str(market.dates[-1].date()),scope_complete=bool(complete))
         records=task.status.setdefault("account_records",[])
         old=next((r for r in records if r["identity"]["path_id"]==pid),None)
+        prior_attempts=[]
+        if old and old["status"]=="ENGINEERING_RETRY_PENDING_VERIFICATION":
+            verify_retained_identity(task,old,identity)
+            prior_attempts=old["prior_attempts"]
+            records.remove(old);old=None
         if old:
-            if old["identity"]!=identity:raise ValueError("Account input identity changed; retained attempt cannot silently rerun:"+pid)
+            verify_retained_identity(task,old,identity)
             if old["status"]=="CONTINUOUS_REPLAY_COMPLETE":
                 verify_account_record(task,old)
                 results.append(old["metrics"]);continue
@@ -496,7 +569,8 @@ def run_accounts(root,phase):
             blocked=dict(identity=identity,status="BLOCKED_ALL_REQUIRED_DEPENDENCIES",scope_complete=False)
             records.append(blocked);task.checkpoint()
             results.append(dict(path_id=pid,status=blocked["status"]));continue
-        record=dict(identity=identity,status="CONTINUOUS_REPLAY_STARTED",scope_complete=bool(complete))
+        record=dict(identity=identity,status="CONTINUOUS_REPLAY_STARTED",scope_complete=bool(complete),
+                    attempt_number=len(prior_attempts)+1,prior_attempts=prior_attempts)
         records.append(record);task.status["account_paths"]+=1;task.checkpoint()
         print(json.dumps({"status":"ACCOUNT_STARTED","path_id":pid,"scope_complete":bool(complete)}),flush=True)
         begun=time.monotonic()
@@ -506,7 +580,7 @@ def run_accounts(root,phase):
             return coverage_policy(day,ctx)
         try:
             with threadpool_limits(limits=2):
-                replay=run_continuous_account(market,[pid],bounded_policy,inputs["account"],**inputs["replay_kwargs"])
+                replay=run_continuous_account_indexed(market,[pid],bounded_policy,inputs["account"],**inputs["replay_kwargs"])
             record["scope_complete"]=bool(record["scope_complete"] and coverage_policy.missing_rows==0)
             record["forecast_coverage"]=dict(static=forecast_coverage,
                  runtime_missing_rows=coverage_policy.missing_rows,
@@ -515,7 +589,9 @@ def run_accounts(root,phase):
             result=save_replay(task,pid,replay,diagnostics,record);results.append(result)
         except Exception as exc:
             record.update(status="CONTINUOUS_REPLAY_FAILED",error=repr(exc))
-            task.write("receipts/ACCOUNT_"+pid+"_FAILED.json",json_safe(dict(identity=identity,error=repr(exc),
+            failure_relative="receipts/ACCOUNT_"+pid+"_FAILED_ATTEMPT"+str(record["attempt_number"])+".json"
+            record["failure_receipt"]=failure_relative
+            task.write(failure_relative,json_safe(dict(identity=identity,error=repr(exc),
                        partial_diagnostics=diagnostics,test2026_reads=0)))
             results.append(dict(path_id=pid,status=record["status"],error=repr(exc)))
         record["seconds"]=time.monotonic()-begun
@@ -576,14 +652,86 @@ def finalize(root):
     task.status["status"]="V24_PRE2026_ALL106_ATTEMPTS_COMPLETE";task.checkpoint()
     return decision
 
+def failed_required_controls(records):
+    """A completed, verified control failure makes the frozen AND gate false."""
+    blockers=[]
+    for pid in CONTROLS:
+        record=records.get(pid)
+        if record and record["status"]=="CONTINUOUS_REPLAY_COMPLETE":
+            metric=record.get("metrics",{})
+            if metric.get("eligible_for_selection") is False:
+                blockers.append(dict(path_id=pid,receipt=record["receipt"],
+                    receipt_sha256=record["receipt_sha256"],
+                    accounting_qualified=metric.get("accounting_qualified"),
+                    scope_complete=metric.get("scope_complete"),
+                    required_audits_passed=metric.get("required_audits_passed")))
+    return blockers
+
+def close_blocked_comparison(root):
+    """Close metadata only when a required control already fails the frozen gate."""
+    task=JointMethodCoverage(root);freeze_accounts(task)
+    records={r["identity"]["path_id"]:r for r in task.status.get("account_records",[])}
+    if any(r["status"]=="FIT_STARTED" for r in task.status["records"]):raise ValueError("Training still active")
+    for rec in records.values():
+        if rec["status"]=="CONTINUOUS_REPLAY_COMPLETE":verify_account_record(task,rec)
+        if rec["status"]=="CONTINUOUS_REPLAY_STARTED":raise ValueError("Account replay still active")
+    blockers=failed_required_controls(records)
+    if not blockers:raise ValueError("No verified failed required control; comparison cannot be short-circuited")
+    metrics=[r["metrics"] for r in records.values() if r.get("metrics")]
+    finalist,controls_ok=select_finalist(metrics)
+    if finalist is not None or controls_ok:raise AssertionError("Closure contradicts frozen selection")
+    coverage=pd.read_csv(task.out("METHOD_COVERAGE.csv"))
+    if len(coverage)!=106 or set(coverage.method_id)!={f"M{r:03d}" for r in range(1,107)}:
+        raise ValueError("Incomplete method inventory")
+    if "training_status" not in coverage:coverage["training_status"]=coverage["status"]
+    for row in (20,29):
+        idx=coverage.method_id==f"M{row:03d}"
+        coverage.loc[idx,"training_status"]="BLOCKED_SHARED_NATIVE_FIXED_CONFIG_FAILURE"
+        coverage.loc[idx,"evidence"]="receipts/NATIVE_BRIDGE_SUMMARY.json;original shared fixed failures retained"
+    rows=[]
+    for row in range(1,107):
+        pid=resolve_alias(row);rec=records.get(pid);prior=rec["status"] if rec else "NOT_REPLAYED"
+        performed=bool(rec and (rec["status"]=="CONTINUOUS_REPLAY_COMPLETE" or rec.get("prior_attempts") or rec.get("attempt_number")))
+        basis="BLOCKED_INTEGER_EXECUTION_CONTRACT" if row==98 else "BLOCKED_SHARED_CONTROL_PREREQUISITE"
+        if rec and rec["status"]=="ENGINEERING_RETRY_PENDING_VERIFICATION":
+            rec.update(status="COMPARISON_BLOCKED_AFTER_RETAINED_FAILURE",retained_account_status=prior,
+                comparison_status=basis,blocked_by=blockers,retry_performed=False)
+        rows.append(dict(method_id=f"M{row:03d}",account_path_id=None if row==98 else pid,
+             account_status=rec.get("retained_account_status",prior) if rec else prior,equivalent_reuse=row in ALIASES,actual_replay_performed=performed,
+             comparison_status=basis,eligible_for_selection=False,
+             blocked_by_receipt_sha256=blockers[0]["receipt_sha256"]))
+    additive=pd.DataFrame(rows).set_index("method_id")
+    for col in additive:coverage[col]=coverage.method_id.map(additive[col])
+    coded=coverage.status.eq("REGISTERED_NOT_RUN")
+    coverage.loc[coded,"status"]="IMPLEMENTED_OR_CONTRACT_BOUND_ACCOUNT_COMPARISON_BLOCKED"
+    for row in (20,29):
+        coverage.loc[coverage.method_id==f"M{row:03d}","status"]="BLOCKED_SHARED_NATIVE_FIXED_CONFIG_FAILURE"
+    coverage.to_csv(task.out("METHOD_COVERAGE.csv"),index=False)
+    decision=dict(status="PRE2026_SELECTION_BLOCKED_SHARED_CONTROL_PREREQUISITE",
+       finalist=None,finalist_status="NOT_TESTABLE_REQUIRED_CONTROL",
+       selection=task.parameters["comparison"],control_accounts_qualified=False,blockers=blockers,
+       all_106_methods_registered=True,all_106_economically_evaluated=False,train_bank_complete=True,
+       methods=106,coverage=rows,actual_account_paths_attempted=task.status["account_paths"],
+       actual_fit_units=task.status["fit_attempts"],actual_rl_optimizer_updates=task.status["rl_optimizer_updates"],
+       closure="verified required-control failure makes existing all-controls-eligible AND gate false; no extra replay can admit a finalist",
+       skip_unqualified_account_comparisons=True,no_return_based_tuning=True,
+       test2026_pages_read=0,no_pristine_holdout_claim=True,no_deployment=True,
+       account_policy_freeze_sha256=digest(task.out("receipts/ACCOUNT_POLICY_FREEZE.json")))
+    task.write("receipts/PRE2026_SELECTION.json",decision)
+    task.status["status"]="V24_FIT_BANK_COMPLETE_ACCOUNT_COMPARISON_BLOCKED"
+    task.status["comparison_blockers"]=blockers;task.status["all_106_economically_evaluated"]=False
+    task.checkpoint()
+    return decision
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--task-root",required=True)
-    parser.add_argument("command",choices=("freeze","core","native","finalize"))
+    parser.add_argument("command",choices=("freeze","core","native","finalize","close-blocked"))
     args=parser.parse_args()
     with task_writer(args.task_root):
         if args.command=="freeze":freeze_accounts(JointMethodCoverage(args.task_root))
         elif args.command=="finalize":finalize(args.task_root)
+        elif args.command=="close-blocked":close_blocked_comparison(args.task_root)
         else:run_accounts(args.task_root,args.command)
 
 if __name__=="__main__":main()

@@ -468,3 +468,88 @@ def test_compact_row_availability_must_equal_its_selected_raw_day(tmp_path):
     with pytest.raises(ValueError, match='DATE_OR_OBSERVED_TIME'):
         m.compact_acquisition_manifest(source, tmp_path / 'compact')
     assert not (tmp_path / 'compact').exists()
+
+
+def mixed_checkpoint_source(tmp_path):
+    days = ["2025-11-07", "2025-11-10"]
+    roots, refs, frames = {}, [], []
+    for index, day in enumerate(days):
+        root = tmp_path / ("historic" if index == 0 else "incremental")
+        data = payload()
+        for row in data["results"]:
+            row["t"] = int(pd.Timestamp(day, tz="America/New_York").timestamp() * 1000)
+        acquired = m.acquire([day], ["ABC", "RESERVED"], "synthetic-secret", root,
+            request_get=lambda *a, data=data, **kw: Response(data), gate=lambda root: None)
+        source = json.loads(Path(acquired["manifest_path"]).read_bytes())
+        refs.extend(source["contract"]["inputs"])
+        frames.extend(pd.read_parquet(row["path"]) for row in source["catalog_records"])
+        roots[day] = root
+    combined = m.materialize(days, m.provider_mapping(["ABC", "RESERVED"]),
+        frames, [], refs, [], tmp_path / "combined", {"mode": "SYNTHETIC_MIXED_ROOTS"})
+    return roots, Path(combined["manifest_path"])
+
+
+def test_explicit_mixed_checkpoint_roots_no_network_exact_and_immutable(tmp_path, monkeypatch):
+    roots, original = mixed_checkpoint_source(tmp_path)
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    def forbidden(*args, **kwargs): raise AssertionError("NETWORK_FORBIDDEN")
+    monkeypatch.setattr(m, "acquire_day", forbidden)
+    monkeypatch.setattr(m.requests.sessions.Session, "request", forbidden)
+    result = m.normalize_cached_tickers(original, roots["2025-11-07"], ["OTHER"],
+        output_root=tmp_path / "explicit", checkpoint_roots_by_day=roots)
+    assert result["normalized_rows"] == 2 and result["network_requests_this_run"] == 0
+    published = json.loads(Path(result["manifest_path"]).read_bytes())
+    assert published["contract"]["inputs"] == json.loads(before[original])["contract"]["inputs"]
+    scope = published["contract"]["scope_source"]
+    assert scope["checkpoint_roots_by_day"] == {day: str(root.resolve()) for day, root in roots.items()}
+    assert scope["checkpoint_root_policy"] == "EXPLICIT_PER_DAY_ROOTS_WITH_UNCHANGED_RAW_AND_CHECKPOINT_BINDINGS"
+    frame = pd.read_parquet(published["catalog_records"][0]["path"])
+    for row in frame.to_dict("records"):
+        checkpoint = roots[row["date"]] / "days" / row["date"] / "checkpoint.json"
+        cp = json.loads(checkpoint.read_bytes())
+        raw = next(item for item in json.loads(Path(cp["raw"]["path"]).read_bytes())["results"] if item["T"] == "OTHER")
+        assert row["source_id"] == cp["raw"]["sha256"] and row["observed_at"] == cp["observed_at"]
+        assert [row[key] for key in ("open", "high", "low", "close", "volume")] == [raw[key] for key in ("o", "h", "l", "c", "v")]
+    assert m.normalize_cached_tickers(original, roots["2025-11-07"], ["OTHER"],
+        output_root=tmp_path / "explicit", checkpoint_roots_by_day=roots) == result
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+
+
+def test_mixed_checkpoint_default_interface_does_not_guess_other_root(tmp_path):
+    roots, original = mixed_checkpoint_source(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        m.normalize_cached_tickers(original, roots["2025-11-07"], ["OTHER"], output_root=tmp_path / "explicit")
+    assert not (tmp_path / "explicit").exists()
+
+
+@pytest.mark.parametrize("damage", ["missing_day", "extra_day", "relative", "wrong_root", "output", "changed_raw", "foreign_raw", "foreign_attempt", "checkpoint_ref", "failed_day"])
+def test_mixed_checkpoint_root_preflight_rejects_damage(tmp_path, monkeypatch, damage):
+    roots, original = mixed_checkpoint_source(tmp_path)
+    explicit_roots = dict(roots)
+    output = tmp_path / "explicit"
+    cp_path = roots["2025-11-10"] / "days/2025-11-10/checkpoint.json"
+    cp = json.loads(cp_path.read_bytes())
+    if damage == "missing_day": explicit_roots.pop("2025-11-10")
+    elif damage == "extra_day": explicit_roots["2025-11-11"] = roots["2025-11-10"]
+    elif damage == "relative": explicit_roots["2025-11-10"] = Path("relative")
+    elif damage == "wrong_root": explicit_roots["2025-11-10"] = roots["2025-11-07"]
+    elif damage == "output": output = roots["2025-11-10"] / "explicit"
+    elif damage == "changed_raw": Path(cp["raw"]["path"]).write_bytes(b"changed")
+    elif damage in {"foreign_raw", "foreign_attempt"}:
+        foreign = tmp_path / "foreign.json"; foreign.write_bytes(Path(cp["raw"]["path"]).read_bytes())
+        outside = m.file_identity(foreign)
+        if damage == "foreign_raw":
+            cp["raw"] = outside
+            manifest = json.loads(original.read_bytes()); manifest["contract"]["inputs"][-1].update(outside)
+            m.write_json(original, manifest)
+        else: cp["attempts"].append({"raw": outside})
+        m.write_json(cp_path, cp)
+    elif damage == "checkpoint_ref":
+        cp["observed_at"] = "2025-11-11T19:00:00Z"; m.write_json(cp_path, cp)
+    else:
+        cp["status"] = "FAILED"; m.write_json(cp_path, cp)
+    monkeypatch.setattr(m, "acquire_day", lambda *a, **kw: pytest.fail("network fallback forbidden"))
+    with pytest.raises((ValueError, FileNotFoundError)):
+        m.normalize_cached_tickers(original, roots["2025-11-07"], ["OTHER"],
+            output_root=output, checkpoint_roots_by_day=explicit_roots)
+    assert not output.exists()

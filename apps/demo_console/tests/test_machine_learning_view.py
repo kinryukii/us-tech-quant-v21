@@ -1,6 +1,5 @@
 """System and ML navigation using in-memory metadata and historical outputs only."""
 from dataclasses import asdict, replace
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +11,7 @@ from apps.demo_console.models import (
     DecisionOverview, HoldingRow, LearningProfile, ModelVintage, PipelineStage, Provenance,
 )
 from apps.demo_console.tests.test_research_view import _synthetic_archive
-from apps.demo_console.tests.test_terminal_interactions import _workspace_action, _content
+from apps.demo_console.tests.test_terminal_interactions import _workspace_action, _content, _synthetic_terminal
 
 _DATES = ("2025-12-01", "2025-12-02", "2025-12-03")
 _PRIVATE = r"C:\synthetic-private\ml\implementation.py"
@@ -30,8 +29,6 @@ def _control(app, key):
 
 @pytest.fixture
 def learning_app(monkeypatch, benchmark_stub):
-    from streamlit.testing.v1 import AppTest
-    from apps.demo_console import app as console
     from apps.demo_console.adapters import (
         decision_reader, performance_reader, selected_strategies_reader, updated_research_reader,
     )
@@ -105,16 +102,12 @@ def learning_app(monkeypatch, benchmark_stub):
     monkeypatch.setattr(research, "read_performance", performance)
     monkeypatch.setattr(system_overview, "read_performance", landing_performance)
     monkeypatch.setattr(performance_reader, "read_performance", forbidden)
-    # Exercise the current entry point with injected in-memory component records.
-    # This fixture does not cover production source routing or published packages.
-    monkeypatch.setattr(console, "_load_workspace_model",
-        lambda: overview(console.st.session_state.get("decision_date")))
+    # These component contracts inject historical records into the current
+    # entry point; production source routing and published packages are separate.
     for name in ("binding", "bundle", "load_overview", "read_performance"):
         monkeypatch.setattr(updated_research_reader, name, forbidden)
     monkeypatch.setattr(selected_strategies_reader, "load_package", forbidden)
-    state.app = AppTest.from_string("from apps.demo_console import app as console\nconsole.main()",
-                                    default_timeout=20)
-    state.app.session_state["workspace_sample"] = "historical"
+    state.app = _synthetic_terminal(monkeypatch)
     state.app.session_state["workspace_strategy"] = "RAW_A2"
     state.app.session_state["language"] = "en"
     state.app.run()

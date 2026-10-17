@@ -326,12 +326,14 @@ def normalize_cached(*, acquisition_manifest, checkpoint_root, symbol_map, outpu
 
 
 def normalize_cached_tickers(acquisition_manifest, checkpoint_root, tickers,
-                             symbol_map=None, *, output_root):
+                             symbol_map=None, *, output_root, checkpoint_roots_by_day=None):
     """Normalize explicitly selected symbols from verified full-market raw only.
 
     This adds neither a subscription nor identity/strategy membership. Optional
     effective dates bound transport selection; all source days are still verified
-    and retained in the candidate's coverage. No network fallback exists.
+    and retained in the candidate's coverage. Optional per-day roots bind mixed
+    immutable acquisition vintages without relocating their checkpoints. No
+    network fallback exists.
     """
     if isinstance(tickers, (str, bytes)) or tickers is None:
         raise ValueError("EXPLICIT_TICKER_LIST_REQUIRED")
@@ -339,11 +341,12 @@ def normalize_cached_tickers(acquisition_manifest, checkpoint_root, tickers,
     if not tickers or any(not isinstance(ticker, str) for ticker in tickers):
         raise ValueError("EXPLICIT_TICKER_LIST_REQUIRED")
     return _normalize_cached_selection(acquisition_manifest, checkpoint_root,
-        tickers, symbol_map, output_root, explicit_symbols=True)
+        tickers, symbol_map, output_root, explicit_symbols=True,
+        checkpoint_roots_by_day=checkpoint_roots_by_day)
 
 
 def _normalize_cached_selection(acquisition_manifest, checkpoint_root, tickers,
-                                symbol_map, output_root, *, explicit_symbols):
+                                symbol_map, output_root, *, explicit_symbols, checkpoint_roots_by_day=None):
     manifest_path = Path(acquisition_manifest).resolve()
     original = file_identity(manifest_path)
     manifest = json.loads(manifest_path.read_bytes())
@@ -368,13 +371,26 @@ def _normalize_cached_selection(acquisition_manifest, checkpoint_root, tickers,
            for ticker, item in mapping.items() for symbol, owner in original_owners):
         raise ValueError("ALIAS_PROVIDER_SYMBOL_ALREADY_OWNED_IN_ORIGINAL_SNAPSHOT")
     days = checked_days(contract["days"])
+    roots_by_day = None
+    if checkpoint_roots_by_day is not None:
+        if (not explicit_symbols or not isinstance(checkpoint_roots_by_day, dict)
+                or set(checkpoint_roots_by_day) != set(days)):
+            raise ValueError("EXPLICIT_CHECKPOINT_ROOTS_MUST_COVER_ALL_SOURCE_DAYS")
+        roots_by_day = {}
+        for day, value in checkpoint_roots_by_day.items():
+            if not isinstance(value, (str, Path)) or not Path(value).is_absolute():
+                raise ValueError("ABSOLUTE_EXPLICIT_CHECKPOINT_ROOT_REQUIRED")
+            selected_root = Path(value).resolve()
+            if output_root.is_relative_to(selected_root):
+                raise ValueError("OFFLINE_OUTPUT_MUST_BE_SEPARATE_FROM_SOURCE")
+            roots_by_day[day] = selected_root
     refs = contract["inputs"]
     if len(refs) != len(days) or sorted(ref["date"] for ref in refs) != days:
         raise ValueError("SOURCE_MANIFEST_DAY_COVERAGE_MISMATCH")
     frames, rejected, references, checkpoint_refs = [], [], [], []
     for ref in sorted(refs, key=lambda item: item["date"]):
         day = ref["date"]
-        day_root = root / "days" / day
+        day_root = (roots_by_day[day] if roots_by_day is not None else root) / "days" / day
         checkpoint = day_root / "checkpoint.json"
         if day_root.resolve() != day_root or checkpoint.resolve() != checkpoint:
             raise ValueError("DAY_CHECKPOINT_OUTSIDE_EXPECTED_DIRECTORY")
@@ -417,6 +433,9 @@ def _normalize_cached_selection(acquisition_manifest, checkpoint_root, tickers,
         "provider_collision_policy": "REJECT_ALIAS_DUPLICATING_EXISTING_PROVIDER_SYMBOL_OWNER",
         "acquisition_manifest": original, "day_checkpoints": checkpoint_refs,
         "original_ticker_scope_sha256": hashlib.sha256(json.dumps(sorted(contract["mapping"])).encode()).hexdigest()}
+    if roots_by_day is not None:
+        scope_source.update(checkpoint_root_policy="EXPLICIT_PER_DAY_ROOTS_WITH_UNCHANGED_RAW_AND_CHECKPOINT_BINDINGS",
+            checkpoint_roots_by_day={day: str(roots_by_day[day]) for day in days})
     if explicit_symbols:
         scope_source.update(mode="EXPLICIT_SYMBOLS",
             provider_collision_policy="REJECT_SYMBOL_OWNED_BY_ANOTHER_ORIGINAL_TICKER",

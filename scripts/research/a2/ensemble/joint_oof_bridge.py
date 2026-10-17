@@ -48,9 +48,9 @@ def _schema(frame,spec):
         elif 'scale' in fields and ('location' in fields or 'raw' in fields):role='distribution'
         elif 'p' in fields:role='probability'
         elif 'rank' in fields:role='rank'
-        elif 'raw' in fields:role='return'
+        elif 'raw' in fields:role='decision_margin' if name=='svc' else 'return'
         else:raise BridgeDependencyError('MISSING_NATIVE_INTERFACE:'+name)
-    required={'return':['raw'],'probability':['p'],'rank':['rank'],
+    required={'return':['raw'],'decision_margin':['raw'],'probability':['p'],'rank':['rank'],
               'quantile':['q10','q50','q90'],
               'distribution':['location' if 'location' in fields else 'raw','scale']}
     if role not in required:raise BridgeDependencyError('UNKNOWN_NATIVE_ROLE:'+str(role))
@@ -58,10 +58,10 @@ def _schema(frame,spec):
     if any(field not in fields for field in need):
         raise BridgeDependencyError('MISSING_NATIVE_DEPENDENCY:'+name+':'+','.join(need))
     native=[fields[field] for field in need]
-    canonical={'return':['raw_mu'],'probability':['p_up'],'rank':['rank_score'],
+    canonical={'return':['raw_mu'],'decision_margin':['raw_mu'],'probability':['p_up'],'rank':['rank_score'],
                'quantile':['q10','q50','q90'],'distribution':['raw_mu','sigma']}[role]
     return {'native_name':name,'role':role,'native_columns':native,
-            'canonical_columns':canonical,'member':{'return':'raw_','probability':'prob_',
+            'canonical_columns':canonical,'member':{'return':'raw_','decision_margin':'raw_','probability':'prob_',
             'rank':'rank_','quantile':'quant_','distribution':'dist_'}[role]+name}
 
 def _check_raw(frame,training):

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "policy_id": "RAW_TOP20_FROZEN_LEGACY",
+  "package_relative_path": "A2_selected_hgb/latest.json",
+  "activation_basis": "USER_EXPLICIT_RESTORE_PRE20261004_POLICY_AFTER_EXPOSURE",
+  "restored_from_policy": "HGB_TOP20_RISK_R1"
+}

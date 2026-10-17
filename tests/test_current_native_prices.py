@@ -343,3 +343,45 @@ def test_native_feature_reference_path_is_json_serializable(case):
     assert len(frame) == 1 and not gaps
     encoded = json.dumps({'lineage': lineage, 'gaps': gaps}, allow_nan=False)
     assert json.loads(encoded)['lineage'][0]['feature_source']['path'] == str(case.source_ref['path'])
+
+
+@pytest.mark.parametrize("logical", ["BGNE", "BLDE", "BSIG"])
+def test_reviewed_renamed_alias_uses_native_source_without_rewriting_leaf(case, logical):
+    alias = module.REVIEWED_TRANSPORT_ALIASES[logical]
+    native, code, sid = alias["source_ticker"], alias["provider_code"], alias["security_id"]
+    leaf = pd.read_csv(case.leaf_path)
+    leaf["ticker"], leaf["moomoo_symbol"] = native, code
+    leaf.to_csv(case.leaf_path, index=False)
+    normalized = pd.read_csv(case.leaf_path).rename(columns={"moomoo_symbol": "provider_code"})
+    normalized["source_id"] = module.prices.digest(case.leaf_path)
+    normalized.to_parquet(case.path, index=False)
+    case.record.update(ticker=native, source_sha256=module.prices.digest(case.path))
+    case.record["lineage"]["inputs"][0]["sha256"] = module.prices.digest(case.leaf_path)
+    case.universe["members"] = [{"ticker": logical, "security_id": sid, "moomoo_symbol": code}]
+    case.args[-1] = [{"ticker": logical, "reasons": ["ORIGINAL_RAW_ANCHOR_UNBOUND"]}]
+    case.factors["code"] = code
+    case.factors.to_parquet(case.factor_path, index=False)
+    case.rehab["results"][0].update(code=code, sha256=module.prices.digest(case.factor_path))
+    before = {path: module.prices.digest(path) for path in (case.leaf_path, case.path)}
+    frame, lineage, gaps = module.build_current_native_features(*case.args)
+    assert not gaps and frame.ticker.tolist() == [logical]
+    assert lineage[0]["anchor_proof"]["native_source"]["transport_alias_proof"] == alias
+    assert pd.read_parquet(case.path).ticker.eq(native).all()
+    assert all(module.prices.digest(path) == expected for path, expected in before.items())
+
+
+@pytest.mark.parametrize("logical", ["BGNE", "BLDE", "BSIG"])
+@pytest.mark.parametrize("problem", ["wrong_cusip", "wrong_code", "wrong_primary_url", "wrong_effective_date"])
+def test_renamed_alias_rejects_unreviewed_binding(logical, problem):
+    proof = dict(module.REVIEWED_TRANSPORT_ALIASES[logical])
+    code, ids = proof["provider_code"], [proof["security_id"]]
+    if problem == "wrong_cusip":
+        ids = ["OTHER_CUSIP"]; proof["security_id"] = ids[0]
+    elif problem == "wrong_code":
+        code = "US.OTHER"; proof["provider_code"] = code
+    elif problem == "wrong_primary_url":
+        proof["identity_evidence_url"] = "https://example.invalid/identity"
+    else:
+        proof["symbol_effective_from"] = "2026-10-06"
+    with pytest.raises(ValueError, match="EXPLICIT_TRANSPORT_ALIAS_INVALID"):
+        module.validate_explicit_alias(proof, logical, code, ids)

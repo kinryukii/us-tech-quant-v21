@@ -142,7 +142,9 @@ def test_usd_quotes_do_not_rescale_index_or_fill_and_missing_dates_stay_blank():
 @pytest.fixture
 def price_app():
     # Ordinary mkdir avoids the managed Windows temporary-directory ACL issue.
-    root = Path(__file__).resolve().parents[3]
+    from scripts.common.storage_paths import resolve_cache_path
+    root = resolve_cache_path("_maintenance", "DEMO_FIVE_STRATEGY_PAPER_20261013_R1", "selection-price-fixtures")
+    root.mkdir(parents=True, exist_ok=True)
     folder = root / ("selection-price-test-" + uuid4().hex)
     folder.mkdir()
     script = folder / "app.py"

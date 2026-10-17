@@ -20,7 +20,7 @@ from apps.demo_console.components.decision_trace import remember_case, resolve_c
 from apps.demo_console.components.ml_comparison import comparison_rows
 from apps.demo_console.components.replay import pause_replay
 from apps.demo_console.components.system_overview import render_system_overview
-from apps.demo_console.i18n import option_labeler, tr
+from apps.demo_console.i18n import catalog, option_labeler, tr
 from apps.demo_console.adapters import workspace_reader
 
 
@@ -202,6 +202,21 @@ def _render_portfolio(model: DecisionOverview) -> None:
         render_rx_portfolio(selected_model)
 
 
+def _coverage_limitation_caption(limitation):
+    """Translate only registered fixed reader notes; retain unknown source text."""
+    sources = (
+        'Descriptive research replay after the data update, using the original fixed holdings and cost rules; this is not a live account.',
+        'Rankings, actual simulated holdings and execution-day performance are read separately; pending signals have no executed holdings or returns.',
+        'Securities with insufficient coverage do not enter these rankings. Historical price-adjustment event snapshots do not represent the publication snapshot at every historical point in time.',
+        '2023–2025 annual models are reconstructed with fixed rules; 2026 uses the original pre-2026 frozen model. This performance replay does not train or tune models.',
+        'Performance is the valuation of holdings after next-day open execution. The first signal day is a cash baseline; this is not same-day closing NAV.',
+    )
+    for source in sources:
+        if isinstance(limitation, str) and limitation == catalog().get(source, {}).get("zh"):
+            return tr(source)
+    return tr(limitation)
+
+
 def _render_coverage(model: DecisionOverview) -> None:
     with st.expander(tr("Coverage & limitations"), expanded=True):
         for label, value in (("Raw A2 proposed changes", model.raw_proposed_changes),
@@ -210,7 +225,7 @@ def _render_coverage(model: DecisionOverview) -> None:
             st.write(f'{tr(label)}: {tr("N/A") if value is None else value}')
         st.caption(tr("N/A = not exposed by the current artifact. Ranking alone is not a trade decision."))
         for limitation in model.limitations:
-            st.write(tr(limitation))
+            st.write(_coverage_limitation_caption(limitation))
 
 
 def _render_evidence(model: DecisionOverview, *, presentation: bool) -> None:

@@ -1,0 +1,12 @@
+/* Shared presentation tokens for the single US Tech Quant workspace.
+   Strategy series colours and financial meanings remain in their original owners. */
+:root {
+  --ui-bg:#f8faff; --ui-panel:#ffffff; --ui-soft:#f0f4fb;
+  --ui-text:#11243a; --ui-muted:#536780; --ui-line:#dce5f0;
+  --ui-accent:#315efb; --ui-accent-soft:#edf2ff;
+  --ui-positive:#127255; --ui-negative:#ad3847; --ui-nav:#131b2a;
+  --ui-radius:12px;
+  --ui-glass:rgba(255,255,255,.74); --ui-glass-line:rgba(183,200,224,.5);
+  --ui-elevation:0 8px 28px rgba(33,65,109,.07),inset 0 1px 0 #fff;
+  --ui-font:"Segoe UI","Microsoft YaHei UI","Yu Gothic UI",Meiryo,sans-serif;
+}

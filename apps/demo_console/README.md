@@ -1,433 +1,81 @@
-# US Tech Quant — Daily Recommendations & Research Console
+# US Tech Quant 工作台
 
-## VS Code 终端的两个命令
+8506 是唯一产品入口：<http://127.0.0.1:8506/>。原账户、历史记录、冻结策略与发布来源沿用原 owner。
+8766 是工作台嵌入使用的账户组件服务。
 
-在 `D:\us-tech-quant` 中打开 VS Code 的 PowerShell 终端。
+## 研究、演示与执行
 
-打开 DEMO：
+首页展示整个系统的技术能力：信息可得性、冻结推断、组合风险、模拟执行，
+以及贯穿流程的版本追溯与缓存管理。交互架构图标注为原理示意，不生成研究结果或账户状态。
+五个已接入策略在应用案例中解释不同模型如何使用这条工程链路。
+「开始系统导览」沿七步展开讲解；技术能力目录可查询11类机制，包含特征工程、
+机器学习方法族、时间验证、风险配置和按需内存管理，复用原特征图谱及合成时点练习。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\打开DEMO.ps1
-```
+同一主界面包含技术展厅、应用案例、数据图表、每日模拟；只加载当前打开的区块。
+应用案例内直接提供「该方法如何工作 → 机器学习 → 决策与组合」三个相邻视图；原理卡可以一键打开对应工作台，历史查询返回同一主界面。
+首页本身不读取研究历史或账户数据。演示模式下案例记录需要主动展开，研究模式直接进入原查询；旧URL导向同一主界面的对应区块。
+语言和显示设置统一，样本、研究日期与策略焦点仅在记录视图出现，切换展示区时保留上下文。
+设计依据与视觉约定见 [DESIGN.md](DESIGN.md)。
 
-这个终端保持打开，页面地址是 <http://127.0.0.1:8506/>。若服务已运行，命令会打开现有页面并返回。
+研究视图保留筛选、来源、明细和紧凑表格。演示视图使用较大的字号与留白，
+默认收起辅助详情；它不改变数据、未知状态、覆盖缺口、账户权限或交易规则。
+观察日限制研究记录；账户快照、目标信号和真实成交保留各自日期。
 
-更新全部已配置数据源、重新计算当天 A2 推荐，并把结果打印到终端和同步到 DEMO：
+五策略比较复用同一份已验证 snapshot，在一张表中显示。搜索先于每策略行数限制；
+排序保留各模型自己的记录顺序，不跨模型比较分数。研究目标与账户目标分列，
+缺失记录保持未知。原动作代码、分数和输入排名保留于可选列或详情。
+选择记录联动原策略焦点与个股查询；未打开的历史、统计和详情不加载。
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\更新今日推荐.ps1
-```
+五套策略共用「机器学习工作台」的模型引擎、双股对比、训练谱系、决策解剖和验证证据。原 `render_machine_learning` 负责交互，`workspace_reader.ml_workspace` 仅投影同一已验证快照，不新增模型或数据读取。Raw/HGB 展示股票评分，ElasticNet/Ridge 展示原生动作值，R7 展示已记录仓位档位和目标权重；缺失的数值、特征顺序与年度训练资料保持未知，不借用其他策略补齐。策略、日期、当前案例和三语切换沿用同一上下文；当前 PAPER 计划与 MAIN 研究记录明确标注。
 
-更新命令会依次尝试股票池、Moomoo、MASSIVE、备用行情和公开数据，重算推荐及 DEMO 绩效。它显示覆盖率及缺口，并核对 DEMO 的排名和绩效均到达数据日期；若有缺口或绩效滞后，会明确显示，不能把部分覆盖当作全部完成。已打开的 DEMO 每约 20 秒检查一次新发布结果并自动刷新。登录自启任务不参与这些命令。
+执行区直接嵌入原组件。预算不是实际现金；历史委托与成交不是当前持仓。
+当前资金、持仓或目标未核验时明确显示未知，不用空字典推断空仓。
+账户记录及退役策略历史保留；原实盘锁定、模拟窗口、报价资格和控制权限不变。
 
-## 展示工作区
+## 展面名单、全目录与技术讲解
 
-活动交易组件位于 `apps/moomoo_trading_component`，模拟账户与恢复状态位于共享 `daily_root/moomoo_trading_component`。默认在下一交易日开盘后第一份合格报价上执行，实际时间不会倒签；详见 [组件说明](../moomoo_trading_component/README.md)。
+主展面固定 Raw A2、HGB 对角风险，其余三个位置由已接受的共同区间记录按年化夏普优先、区间收益与较浅回撤作并列比较。名单保存为有来源、窗口与生效时间的修订；浏览和刷新不会重新排名或更换账本。方法入口只读取小型名单元数据，进入账户记录才请求原有界金融快照。2026 筛选属于已暴露样本的展示选择，不是重新训练或独立验证。
 
-**已应用策略 · 3**进入统一工作台，同页固定显示 Raw A2、`HGB_DIAG_5`（HGB＋对角风险）和 `HGB_FACTOR_5`（HGB＋因子／收缩风险）。首屏先展示完整宽度的组合净值，回撤对照可展开，三策略摘要及原始指标表随后呈现。决策与组合、个股跨策略历史、量化指标通过页内标签切换；侧栏**详情策略**只选择细查对象。暖白、深墨、电蓝的共同视觉体系保留关键说明、正负收益颜色、键盘焦点与关闭动效选项；平板控件分行，手机控件全宽堆叠。
+全目录共八套：原五套加 R6 Buy NEURAL、R6 Duration TREE、同池 RAW；H5 Ridge MID 复用原 Ridge 身份。同池 RAW 使用 Consensus Top100 股票池，与 Raw A2 保持不同身份。五卡之外的候选通过“查询其他方法”及原策略查询控件访问，保留原生输出和各自真实截止。
 
-三方研究绩效复用既有决策时钟修复批次的同一空仓起始账本；早期冻结批次覆盖 2026-01-05 至 2026-08-18（156 个真实记录日）。当前日更沿既有账本续接，页面头部、图表区间和目标方案分别读取已发布包的实际截止日，最新目标不会延长历史净值。原 Raw PIT 前向账本的每日模拟执行持仓保留在详情中，其不同期初持仓与价格坐标不会混入三方研究比较。
+讲解共用一个无数据、无模型加载的组件：第一层沿“问题→输入→模型处理→原生输出→组合与记录”点击演示；展开技术机制可查公式、术语与边界；展开研究提示检查方法特有的假设、盲点和问题。示意交互不会修改模型、目标、观察日或账户。
 
-统一观察日控制同日评分与目标；研究区间独立控制绩效窗口。三列榜单同时展示模型排名、代码、模型分数和目标权重，支持 Top10/20/40/全部、全记录搜索、评分或权重排序、仅看入选。Raw 使用已验证全池及其实际覆盖状态；两 HGB 共享 Raw Top40 范围的冻结评分，风险模型生成各自权重。Raw 预测多周期相对 QQQ 超额收益，HGB 预测次日开盘至五交易日后开盘毛价格收益，分数不跨模型比较。
+名单修订由原模拟组件显式接受。新选中账本从真实接受时刻以独立现金开始，退出展面的账本暂停并保留历史，重新选中不重置。研究历史曲线与真实纸面成交分开。每套方法的输入成熟度由原日更资格门检查；未通过时明确阻断，不借用其他模型或补造成交；原券商模拟账户的策略与预算不由展面名单改变。
 
-点击榜单证券直接进入同页个股查询。搜索范围为已验证历史全池，不受当前 Top40 或组合入选限制；按 CUSIP／已有公司连续身份规则保留历史。查询区间与个股快照独立，均不越过全局观察日。评分缺失、候选范围外、已评分未入选及目标缺失分别保留状态；不将缺失目标当零权重，也不拿旧日目标冒充当日。9/24 历史批次的 Raw 全池有 568 只评分，9/23 历史批次仅有 Top40 绑定记录；当前覆盖率以所选日期的实际包为准。
+## 每个交易日下午手动更新
 
-量化矩阵同屏对照收益、年化波动、Sharpe、Sortino、区间 Calmar、回撤恢复、正收益日／月比例、持仓／现金、费用和换手。月度热图、现金路径、21 记录日滚动收益及日收益相关性复用同一窗口。Sharpe 为日频、252 日、样本标准差及零无风险收益；不足一年年化值为推算。毛收益是原持仓路径的毛日收益复利，毛净差与累计费用金额分别展示。不完整月份明确标记。
+在权威仓库的 PowerShell 中使用原入口：
 
-QQQ 默认为灰色虚线价格参考，SPY 可选；参考仅用完整同日 RAW 开盘价序列，不含股息／费用。其价格坐标与三方 QFQ 回放不匹配，因此 Beta、跟踪误差、信息比率保持不可用。账户交易胜率和闭合交易盈亏比缺少账户账本，不用回放收益代填。
+    .\打开DEMO.ps1
+    .\更新今日推荐.ps1
 
-目标对照为同日计划：Raw Top20 等权规则目标与两 HGB 目标分别保留类型；三方完整目标中缺席证券才显示 0，目标批次缺失显示 —。三套权重 CSV 可下载。Raw 规则目标没有已验证的前仓位或调整指令，CSV 对应字段留空；HGB 保留原记录。
+需要显式重新采集同日资料时，才使用原 -RefreshData 选项。
+日更完成后，在工作台「数据更新」中检查并重新加载已发布缓存。 正常重复运行同一入口会恢复已接受阶段；是否需要补采由原 owner 的缺口与回执判断。
+打开页面、切换语言、模式、日期或标签不启动采集、拟合、回放、计划准备或下单。
+界面账户刷新只读取原有界展示 GET。
 
-侧栏“已应用策略”和旧 `/strategies` 书签沿用当前观察日、详情焦点和研究区间。原五个章节、Raw 股票案例／决策链／执行持仓／费用细查，以及历史训练样本继续复用。HGB 机器学习章节保留冻结的 21 项特征，不重训，不改模型、风险参数或策略规则。
+更新保留原过程锁、来源身份与完整资格核验。模型和大型中间表在原有限短进程中存活；
+阶段顺序、1.5 GiB 可用物理内存门槛及原页面空间门槛不放宽。
+可重建图表缓存可由合法更新覆盖，冻结来源与历史账本不可因此删除。
+失败只保留通过验证的真实截止日，不能用旧推荐伪装成当天结果。
+完整流程、恢复和日志入口见 [日更说明](../../docs/daily_recommendation.md)。
 
-侧栏支持筛选历史区间并选择有记录的信号日，与顶部日期同步；排名支持 Top20、21–40 与 Top40。
-组合页区分 **信号排名** 与 **已执行持仓**。最新信号尚待执行时，可查看截至该日已验证的实际持仓，
-并单独标明其原信号日和执行日，不把待执行推荐当作已经成交。
-紧凑状态栏保留股票池覆盖和绩效截止日期，详细来源、排除与执行状态可展开查看。
-绩效与风险页保留收益、回撤、恢复、月度表现和费用分析，读取已验证的固定规则执行结果；
-新数据尚无可比对照时不生成对照收益，也不在主指标卡放置空白对照。
-2023–2025 使用冻结 OOF 原生排名及对应年度模型身份指纹；2026 回放和真实每日记录使用当前冻结模型。
-年度模型未保存序列化文件，界面不会把当前模型的 SHA256 标成过去年度的模型身份。
+## 可复用的工程边界
 
-不再提供“更新研究／原冻结研究”全局切换。排名、持仓、绩效和风险共用已验证的更新数据和同一个日期。
-侧栏 **样本范围** 将历史训练／验证（2023–2025，包含年度 OOF 验证）与 **2026 测试集** 分开。
-两个样本分别保存所选信号日；绩效按执行日期隔离，历史绩效不会延伸到 2026，2026 不混入历史收益。
-绩效页两边均支持日历月、日历季度、任意单日、任意时间段、随机时间段及原滚动窗口。
-随机范围只抽取当前样本的实际记录，并保持不变直至点击“重新随机”；边界月或季度会标明不足完整期间。
-更新绩效主图及风险表同时显示 A2、QQQ、SPY；ETF 使用统一 RAW 开盘到开盘价格收益，不含现金分红及基准费用。
-ETF 来源边界和文件哈希可在来源说明查看；缺失价格不补值，也不会截短策略区间来掩盖缺失。
-每日更新会从既有 MASSIVE 行情缓存同步延长 QQQ、SPY，只有两者的新交易日均通过校验才发布；
-基准补充失败单独记录状态，保留旧参考，不影响已生成的推荐和绩效。
-原冻结 A2、A 与 ETF 对照直接保留在 **绩效与风险 → 表现路径** 的同页历史对照区，
-按所选区间与其可用历史取交集，明确标记实际区间与原研究口径；不会拼接到最新净值或补造后续对照。
-旧浏览器的冻结版本选择自动迁移到统一工作台，原始冻结研究文件继续保留。
-本次展示调整不改变模型、13F 披露生效规则或绩效计算规则。
+- app.py 是唯一外壳，维护同页分区、旧URL兼容及共享上下文。
+- components/strategy_workbench.py 组织技术展示与应用案例，复用原 strategy.py 的可查询身份目录和组件已接受的五套展面名单；
+  说明文案属于展示层，不是新的模型、策略注册表或推断实现。原 selected_strategies 的名称 API 保留兼容。
+- components/top20_table.py 处理统一策略记录展示，复用现有 adapters。
+- components/trading_workspace.py 只桥接原账户组件，不直接查询券商或实现交易规则。
+- apps/shared_ui/theme.css 是两个前端共用的基础视觉 tokens；Streamlit 原生配置与它一起校验，策略曲线颜色保留原含义。
+- 已发布包、历史查询和绩效缓存每类只保留一份内容身份；变化后仍通过原 reader 重新资格核验。重新加载按钮检查发布绑定，变化时触发重绘；reader 的 `clear_cache()` 维护接口同时释放基础解码和扩展历史合并缓存。
+  Arrow 读取按既有列和范围投影，不因展示优化复制全部模型或历史。
+- 源码、测试和小配置在唯一项目仓库；运行状态、缓存、报告通过原共享 resolver
+  分别进入 daily_root、cache_root、results_root。其他任务进程和成果不得清理。
 
-使用原启动器启动新实例，例如：
+训练与开发验证严格早于 2026-01-01。2026 展示应用已冻结的模型及变换，
+已暴露窗口不重新称为独立留出集；本工作台整理不授权调参、研究重开或补造未来记录。
+研究绩效、账户目标和实际成交分开保存与展示，工程通过不等于研究有效或账户已成交。
 
-```powershell
-powershell -ExecutionPolicy Bypass -File apps/demo_console/start.ps1 -Port 8506
-```
-
-打开 `http://127.0.0.1:8506`。启动器关闭文件监听，因此部署新模块后应使用新实例；浏览器刷新不会可靠地更新旧进程中已导入的模块。
-
-## 冻结历史研究
-
-A read-only Streamlit presentation workspace over existing frozen pre-2026
-research artifacts. The current, explicitly authorized extension includes Raw A2
-execution performance and a separately verified frozen A control. It does not
-train models, rerun research, alter strategy rules, connect to a broker, or write
-authoritative data.
-
-## Five main sections
-
-- **System overview (landing page; internal workspace key `Overview`):** one
-  ranked-stock selector leads a four-step case: recorded information boundary,
-  original model score/rank, before/after portfolio membership and linked
-  execution date. The observed membership state is explicit, including names
-  not held and unavailable membership. **Follow this case** starts the guided
-  walkthrough; **Inspect this decision** opens its decision trace.
-  The portfolio context follows the case. Its original net return path, frozen
-  A control and return/cost/drawdown metrics describe the whole Raw A2 portfolio,
-  not the selected stock's contribution. Changing the case does not change that
-  path. The execution window and fee/comparison basis remain beside the metrics;
-  the underwater path is expandable. The canvas reuses
-  the canonical read-only `performance_reader.read_performance()` at the selected
-  decision's linked execution cutoff, over the same already-authorized daily
-  archives used by Research. Clicking a point or choosing an execution date
-  updates the local daily-record inspector; it never changes the global decision
-  date or extends that cutoff. The six-capability inspector is inside the
-  collapsed **System mechanisms & research coverage** section: information timing, model lineage, execution
-  mechanics, risk inspection, research discipline and storage separation. Each
-  capability explains its mechanism, inspectable evidence and limits. This is
-  an editorial explanation, not an accepted component registry or a live health
-  monitor. Source-based engineering descriptions are distinguished from frozen
-  replay observations; current adoption or operational status is not inferred.
-  Comparison, portfolio recovery and the Reliability drill are secondary tools
-  within this same collapsed section. The drill includes a clearly labeled synthetic example
-  calling the canonical 13F pure timing functions. Fixed New York timestamps
-  before, at and after the inclusive 16:00 cutoff, plus a timestamp without a
-  timezone, demonstrate availability, deferral or rejection using only the two
-  supplied sessions, January 2 and 3, 2025. It reads no filings, prices, models,
-  registries or new result artifacts, and does not validate the full PIT chain.
-  Its four stages show supplied input, canonical validation, timing impact and
-  correction/recheck. The default missing-timezone case is rejected; the recheck
-  supplies the explicit New York offset and actually runs the same pure helper.
-  Changing the input clears a previous recheck; language changes preserve it.
-- **Machine learning:** the selected date's complete recorded Top20 score profile
-  sits beside a four-step research case: decision date, original rank/score,
-  before/after membership and linked execution date. Clicking a score bar or selecting a
-  ranked stock links its original rank, score and before/after portfolio membership.
-  The chart preserves negative and zero scores, omits missing coordinates, and
-  does not re-rank or turn scores into probabilities. The focused stock carries
-  into the existing decision-trace and comparison actions without changing the
-  global date. The two main actions inspect and compare the case; lineage,
-  portfolio recovery and provenance are grouped in a secondary popover.
-  Compact model context is below the working area; the mechanism
-  schematic, objective and abbreviated configuration identity are inside
-  **Model mechanism and objective**. The separate expandable feature atlas has
-  32 feature definitions in five families. Other sections expose
-  same-date dual-stock raw scores and ranks; 20/60-snapshot comparison charts;
-  and annual training/label-maturity endpoints from the verified freeze.
-  The selected studio section is retained across languages and navigation.
-  Decision trace links a selected ranked name to the recorded eligible universe,
-  raw score, prior membership and subsequent execution holdings, with the exact
-  information/decision/execution dates. This is a factual record sequence, not
-  local feature attribution or evidence of RX approval. Its actions carry the
-  selected name into History or open the drawdown and recovery workspace.
-  Original HGB parameters are displayed as configuration limits, not measured
-  tree counts. The evidence map separates recorded metadata, historical outputs,
-  missing local attribution, and uncomputed predictive-quality diagnostics.
-  Historical stage models were not persisted; the supplemental full-period
-  model is not substituted for historical predictions or explanations. The
-  feature atlas shows definitions and formulas, never fabricated feature values.
-- **Decisions & portfolio:** one main navigation item groups the existing
-  `Portfolio` and `History` routes. A native segmented control switches between
-  Holdings and Historical replay; external callbacks, selected dates and language
-  changes retain the correct subgroup. Holdings provides ticker search,
-  record-set and membership filters, a linked security inspector, and consecutive
-  recorded holdings comparisons. Historical replay provides decision-date selection;
-  20/60/120/all-snapshot windows; entries,
-  exits and executed turnover; security rank/score trajectories; holdings bands;
-  and inspectable snapshot and security logs. Missing observations remain gaps.
-  The current Top20 holdings matrix preserves the current recorded ranking order,
-  with at most 20 securities and the latest 60 snapshots in the selected window.
-  Its cells describe subsequent execution holdings. Clicking a row updates the
-  security selector, summary and trajectory; a later manual choice takes priority
-  over an old matrix selection.
-- **Performance & risk (internal route `Research`):** net/gross growth, window drawdown, monthly and yearly returns,
-  the optional A control, daily return distribution, growth concentration,
-  descriptive autocorrelation, fixed 63-execution-day rolling net returns and
-  explicit evidence limits. Rolling windows use only the selected range, include
-  their first day's return, and share observations; they are not independent
-  trials. A read-only table under the rolling chart exposes the same start/end
-  dates, observation counts and raw returns; the A column follows the chart's
-  reference toggle and availability. An expandable matched-date table places each portfolio's cumulative
-  net return beside its maximum drawdown and worst daily net return. This keeps
-  the return comparison's downside visible without claiming a risk-adjusted rank.
-  The wealth chart marks the deepest recorded drawdown with a pale amber span
-  between its actual peak and trough, plus the trough's actual net-wealth point.
-  An initial undated peak never creates a fabricated dated span.
-  A dedicated **Drawdown & recovery** tab enumerates all underwater episodes
-  inside the selected execution window. Each episode retains its actual peak,
-  trough and observed recovery or unrecovered cutoff, together with depth and
-  observed intervals. The default is the latest episode chronologically;
-  selecting an episode changes only the display. Initial window baselines have
-  no invented date, and a shorter window cannot borrow recovery from later rows.
-  Episode records describe this portfolio's historical path, not independent
-  trials, forecast recovery times or proof of a risk controller.
-  A dedicated Execution frictions subtab
-  shows days with recorded flags, cash/NAV, recorded simulated turnover, costs in
-  source units and daily details. A month inspector drills into the selected
-  window's recorded daily path, month-local drawdown and cost ledger; its month
-  selector preserves valid choices across languages and never changes the global
-  decision date. Clicking a recorded heatmap month opens this same inspector;
-  later manual choices or changed windows supersede old chart selections.
-  Missing fields are not converted to zero.
-- **Research evidence (internal route `Evidence`):** information/decision/execution dates, source coverage, immutable
-  artifact identities and limitations. Presentation Mode hides full private
-  paths, complete hashes and debug details; turning it off exposes diagnostics,
-  including a separately failed reference source.
-
-The light canvas uses dark text and cobalt-blue actions; ink navigation and
-dark analytical plots provide contrast, with amber drawdown accents. The top utility bar contains the global
-decision-date selector and language selector. The narrow sidebar contains the
-five main sections, previous/next snapshot controls and the Display & motion
-popover. Its walkthrough launcher appears only outside Overview; the landing
-page has a single main **Follow this case** entry. The former six-node navigation
-map and duplicate full-portfolio panel are removed. Full holdings inspection
-remains in Decisions & portfolio.
-
-The landing panel places its actual execution window, recorded-fee basis and
-same-study comparison scope directly above the return metrics. The displayed
-end date is bounded by the selected decision's linked execution. The case and
-its two main actions precede this portfolio context. Simulation flags remain
-available in the inspector's popover. A compact geometric UTQ mark and consistent
-tabular numerals identify the workspace. At narrow widths, the date and language
-controls remain beside each other while the return metrics form two rows.
-Key evidence notes follow Presentation Mode's text size instead of fixed tiny
-type. Detailed walkthrough notes use a secondary popover; its current question and
-navigation remain visible.
-
-The ML engine includes a four-step selected-security case
-joining the original rank and score with recorded before/after membership and
-the linked execution date. Missing observations remain explicitly unrecorded.
-The case links to portfolio drawdown and source provenance without changing the
-global decision date. Portfolio drawdown is not represented as the security's
-contribution. The validation map separates observable records from unestablished
-claims, including incremental model advantage and independent confirmation.
-These additions reuse the existing immutable models and readers; they add no
-economic source, prediction-quality computation or new research evaluation.
-
-The interface supports 中文, 日本語 and English using a local translation
-catalog. Language changes preserve dates, filters and raw ticker
-values. Fixed native tab groups store their original source identifiers, keeping
-the active tab across translations and leaving/returning to its workspace.
-History's security log also keeps its selected tab when the displayed ticker changes.
-The language choice is URL-bound. No translation service is used.
-
-Public design references: [Linear](https://linear.app/),
-[Palantir AIP](https://www.palantir.com/platforms/aip/),
-[Goldman Sachs Marquee](https://marquee.gs.com/welcome/our-platform/portfolio-analytics/equities)
-and [Two Sigma](https://www.twosigma.com/). These public pages inform visual
-hierarchy, typography and navigation only; they do not imply equivalent model
-capabilities, investment results or production maturity.
-
-The recommended walkthrough follows **System overview → Machine
-learning → Portfolio → History → Research: Drawdown & recovery → Evidence**.
-The opening stop follows one recorded case; the model stop inspects its original
-score and lineage, and the Portfolio stop opens the ranked records with its
-subsequent holding status. Each stop poses one question and points to the
-available evidence. The shared
-`start_guided_tour()` callback serves the landing action and sidebar launcher.
-The tour carries the same valid ranked security through ML, Portfolio and
-History while preserving the selected decision date; it does not start replay.
-A compact case strip on every other page retains the stock, decision date and
-execution date. Research additionally labels this as portfolio context.
-Changing the comparison's primary security updates the shared case; its
-secondary security remains independent. The model stop opens Model engine, and the Research
-stop opens Drawdown & recovery with the full window through the selected
-execution, so setbacks are inspected before the broader performance story.
-Manual navigation preserves the user's selected Research tab and controls.
-History playback starts only with **Play**, advances through
-existing snapshots with a three-second timer between rendered frames, and supports
-pause, resume and restart. Its range is locked to the chosen window and endpoint. Each frame shows
-only the locked start through the current decision; stale timer events cannot
-advance a changed view, date or window. Navigation and language changes pause it.
-Playback and manual date selection change the research cutoff. For a full-range
-presentation after demonstrating a few replay frames, pause and restore the
-decision date to 2025-12-29 before continuing to Research. On leaving the tour,
-keyboard focus returns to the visible landing action, sidebar launcher or
-sidebar opener, with the page heading as a final visible fallback.
-
-Display & motion controls provide presentation sizing and optional transitions.
-Chart axis and legend text uses 15px in Presentation Mode and 13px otherwise,
-without changing the displayed observations or scale domains.
-Single-view charts size the complete frame, including axes and legends, so
-native fullscreen retains the date axis within the available screen height.
-Motion respects reduced-motion preferences. Score-chart hover highlighting is
-client-side and preserves the underlying scores. The ML chart's click selection
-updates the focused case without changing its date; stale or foreign selection events
-cannot override a changed record context. Ranking tables retain recorded rank
-order; scores are not probabilities, weights or returns.
-
-## Run locally
-
-From `D:\us-tech-quant`:
-
-```powershell
-./apps/demo_console/start.ps1
-```
-
-The launcher uses the existing external
-`D:\us-tech-quant-envs\demo-console\Scripts\python.exe` runtime with Streamlit
-1.63.0, resolved through the canonical storage helper. Its default remains
-`127.0.0.1:8501`; use `-Port 8502` for an explicitly chosen alternate port.
-The current demonstration session on **8504 is maintained separately** and does
-not change the launcher's default or shared configuration.
-
-The foreground launcher disables file watching, suppresses browser error details,
-installs nothing, and restores its process environment on exit. Stop a console
-you started with Ctrl+C. The app-local `.streamlit/config.toml` disables usage
-telemetry. No global Streamlit configuration or environment is changed.
-
-## Frozen sources and read boundary
-
-The Raw A2 economic identity is `RAW_A2_HGB_BASELINE`, backed by the accepted
-canonical `A2/` artifact arm. These are retrospectively assembled historical
-research records, not live account positions or daily production output.
-The default selected decision is **2025-12-29**, linked to execution on
-**2025-12-30**; dates are selected by recorded coverage, not by returns.
-
-Pinned inputs under `results_root/A_VS_A2_QUARTERLY_13F_R1`:
-
-| Input | Consumed role |
-| --- | --- |
-| `audit/freeze_r1/frozen_baseline_manifest.json` | Frozen identity, producer, contracts and recorded audit metadata |
-| `audit/freeze_r1/frozen_artifact_hashes.csv` | Exact path/hash/role bindings; references do not cause other artifacts to be opened |
-| `A2/top20_selections.parquet` | Signal date, ticker, original rank, optional prediction and eligible-universe count |
-| `A2/position_ledger.parquet` | Recorded date alignment, quantities and portfolio/model identity for membership comparisons |
-| `A2/portfolio_daily.parquet` | Execution metadata; NAV, gross/net daily returns, cash, position value, turnover, costs, execution counts and accounting checks for Overview and Research |
-| `A/portfolio_daily.parquet` | Optional fixed A control, using the same validated performance schema and execution calendar |
-
-`config/demo_config.py` binds exact frozen SHA identities. Each Parquet read uses
-one read-only handle: read only the exact footer, prove every declared date
-column's row-group bounds are pre-2026, verify the hash, then project the columns
-needed by that consumer. Primary dates cannot be null; the position source's
-explicitly permitted initial `previous_date` nulls remain missing. Its additional
-mark-date boundary is also checked. No unknown mixed-year file is loaded first
-and filtered afterward. Missing statistics, columns, identity or hash mismatches
-fail closed. No disk cache of economic records is written by the app.
-
-Performance validation checks unique ascending execution dates, finite values,
-positive NAV, returns above -100%, initial capital, terminal liquidation, model
-identity and accounting continuity, including gross/net/cost relationships with
-an absolute tolerance of `1e-12`. The A control additionally requires its frozen
-model/contract/role bindings and the same complete execution calendar. If A is
-missing or invalid, only the comparison becomes unavailable; verified A2 data
-remains available. Requested 2026+ performance dates are rejected before I/O.
-
-The extension consumes existing execution returns and NAV. It does not load
-training data, full features, OOF prediction files, independent price histories,
-broker data or real 2026 outcomes. It does not reconstruct new prices or run a
-second strategy engine.
-
-## Research interpretation
-
-- The frozen execution archive spans **2023-01-04 through 2025-12-31**, with
-  **751 rows**. At the latest selected decision's execution, **2025-12-30**, the
-  Overview and Research views have **750 rows**. The final 2025-12-31 liquidation is excluded
-  because it occurs after that execution. Earlier selections likewise stop at
-  their linked execution. The adapter's explicit full-archive request
-  `read_performance(None)` includes the terminal row; the selected-decision UI
-  does not silently extend its cutoff to include it.
-- Growth is rebased to 1 immediately before the first included daily return.
-  The first observation and its entry cost are included. Shorter windows compound
-  all included returns; their drawdown is measured within that window. Period
-  tables distinguish a window cutting through recorded observations from an
-  archive boundary. They do not invent missing trading days.
-- Gross returns are before that execution's recorded transaction cost on the
-  existing holdings path. Compounding them is **not a separate fee-free backtest**.
-  Cost amounts, cash and position values retain the original initial-NAV unit
-  (initial capital = 1), even in a shorter window. The sum of cost amounts is
-  different from the gross–net compounded return gap in percentage points.
-- The frozen A portfolio is a strategy control, **not QQQ or a market benchmark**.
-  Same-date return differences do not establish risk-adjusted alpha. Concentration,
-  positive-period frequency and autocorrelation are descriptive; the display
-  does not claim independent statistical advantage, skill probability or live
-  readiness, and does not infer Sharpe significance, DSR or PBO.
-- Execution flags describe recorded simulation events. Zero means no such flag
-  was recorded, not proof of execution capability. A buy cash scale below 1 can
-  reflect ordinary fee funding. The first two holdings comparison gaps
-  remain visible and do not create gaps in the separately validated performance
-  series.
-- Ranks and membership changes remain producer output and consecutive-record
-  comparisons. They are not trade instructions, RX actions or inferred causes.
-  Stateful RX has no authorized historical backfill here; its accepted/prevented
-  actions and combined final portfolio remain **NOT_EXPOSED / N/A**. Previous-
-  interval `position_weight` is not presented as a final holding weight.
-- Recorded as-of dates and consumed-file checks do not constitute new upstream
-  PIT validation or prove that retrospective history was untouched during model
-  selection. Presentation Mode changes disclosure and sizing, never model values.
-
-## Architecture and validation
-
-`frozen outputs → adapters → immutable models → pages/components → Streamlit`.
-`decision_reader.py` supplies decision/history snapshots; `performance_reader.py`
-supplies cutoff-limited execution observations and the verified archive calendar.
-Pure components compute display statistics from those immutable records. Native
-selection callbacks link views, and the replay timer carries only date/token
-metadata. Storage resolution and existing date-alignment contracts are reused.
-`system_overview.py` joins the selected case's existing output and membership
-records, then reuses the canonical performance reader and existing wealth,
-drawdown and summary components for the portfolio context. Its native
-execution selection inspects only records already inside the global cutoff;
-there is no parallel reader, source archive or strategy calculation. Its folded
-capability inspector uses source references without reading the current research
-registry or operational status. `pit_timing.py` delegates
-its fixed synthetic example to `accepted_utc`, `filing_is_public_for_signal` and
-`first_legal_signal_session`; it does not implement a second timing policy or
-call filing readers or research runners.
-Charts use the installed Altair runtime; playback uses Streamlit's native
-component API. No new runtime package is required.
-
-Run the focused suite from the repository root:
-
-```powershell
-$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'
-& D:\us-tech-quant-envs\demo-console\Scripts\python.exe -B -c "import sys,streamlit,pandas,pyarrow; sys.path.append(r'D:\us-tech-quant-envs\us-tech-quant-main\Lib\site-packages'); import pytest; raise SystemExit(pytest.main(['-q','apps/demo_console/tests','-o','cache_dir=D:/us-tech-quant-cache/demo-console/pytest']))"
-```
-
-This reuses the existing quant environment's test runner without installing
-packages or changing either environment. Fixtures use synthetic records in the
-resolved external test cache. Coverage includes footer-first rejection, frozen
-identity, accounting and cutoff checks, optional-control degradation, immutable
-values, chart gaps, privacy, translations, guided navigation and replay. System
-coverage includes default landing navigation, capability scope, the canonical
-synthetic timing boundaries, and the walkthrough's initial drawdown tab. Native
-AppTest events verify local execution inspection, score-to-security selection,
-matrix-to-security linkage and translated tab persistence;
-all tab contents continue to render. A skipped runtime test is not acceptance.
-
-CUA now provides actual browser interaction and visual inspection against the
-running local demonstration. Earlier localhost-access limitations are historical,
-not the current validation status. The task's final report records the exact
-focused-suite run and browser evidence rather than freezing a changing pass count
-in this README. Harness preflight remains intentionally unused because its
-independent-code path would read holdout content outside this UI task's scope.
-
-## Historical static fallback
-
-The original console exposed decision/membership evidence only. Before the user
-provided the working Streamlit runtime, a thin English HTML export was retained
-as an emergency preview. Those earlier scope and runtime notes do not describe
-the current authorized performance extension or browser access.
-
-```powershell
-& D:\us-tech-quant-envs\demo-console\Scripts\python.exe -B -m apps.demo_console.tools.render_static_preview
-```
-
-The exporter writes `overview.html` and `overview_debug.html` under
-`results_root/DEMO_CONSOLE_R1_RUNTIME_CLOSURE_AND_VISUAL_ACCEPTANCE`, using the same
-read-only model and escaped display primitives. It is a static fallback, not a
-replacement for the five-section Streamlit demonstration.
+项目入口和具体契约见 [项目地图](../../docs/PROJECT_MAP.md)、
+[存储说明](../../docs/STORAGE_LAYOUT.md) 及仓库 AGENTS.md。

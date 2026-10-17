@@ -47,14 +47,16 @@ def read_catalog(store: DataStore) -> tuple[list[dict], list[dict]]:
     return prices, subscriptions
 
 
-def acquisition_tickers(store: DataStore) -> list[str]:
+def acquisition_tickers(store: DataStore, catalog_snapshot: tuple[list[dict], list[dict]] | None = None) -> list[str]:
     """Union explicitly catalogued price symbols and requested subscriptions.
 
     This is a data acquisition scope, never a strategy or historical identity.
     Provider-only additions remain discoverable on subsequent maintenance runs.
+    A supplied snapshot is only for one caller-owned planning stage. Other daily
+    price datasets are still checked through the original schema-validating owner.
     """
     from scripts.storage.storage_r2a import DAILY_PRICE_CONTRACTS
-    prices, subscriptions = read_catalog(store)
+    prices, subscriptions = read_catalog(store) if catalog_snapshot is None else catalog_snapshot
     symbols = {row['ticker'] for row in prices} | {row['ticker'] for row in subscriptions}
     for dataset in DAILY_PRICE_CONTRACTS:
         if dataset != 'prices_daily':
@@ -62,8 +64,9 @@ def acquisition_tickers(store: DataStore) -> list[str]:
     return sorted(store._ticker(ticker) for ticker in symbols)
 
 
-def status(store: DataStore) -> dict:
-    prices, subscriptions = read_catalog(store)
+def status(store: DataStore, catalog_snapshot: tuple[list[dict], list[dict]] | None = None) -> dict:
+    """Report current metadata, optionally reusing this planning stage's catalog read."""
+    prices, subscriptions = read_catalog(store) if catalog_snapshot is None else catalog_snapshot
     with sqlite3.connect(store.catalog_path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
         connection.row_factory = sqlite3.Row
         datasets = [dict(row) for row in connection.execute("""

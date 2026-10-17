@@ -243,7 +243,7 @@ def _validate_shared_scores(scores, hashes):
         _fail("shared_scores.current.unavailable_rows_or_reason")
 
 
-def _validate_application_history(strategy, hashes, scores):
+def _validate_application_history(strategy, hashes, scores, policy="RAW_TOP20_FROZEN_LEGACY"):
     history = strategy.get("application_history", [])
     if not isinstance(history, list):
         _fail("application_history")
@@ -255,8 +255,11 @@ def _validate_application_history(strategy, hashes, scores):
     previous = None
     for app in history:
         _object(app, "application_history.row")
-        if set(app) != allowed:
+        expected_fields = allowed | {"policy_id"} if "policy_id" in app else allowed
+        if set(app) != expected_fields:
             _fail("application_history.fields")
+        if app.get("policy_id", "RAW_TOP20_FROZEN_LEGACY") != policy:
+            _fail("application_history.policy_id")
         day = _day(app.get("signal_date"), "application_history.signal_date")
         if previous is not None and day <= previous or cutoff and day >= cutoff:
             _fail("application_history.date_order_or_future")
@@ -272,7 +275,8 @@ def _validate_application_history(strategy, hashes, scores):
                 or app["reason"] != "" or not isinstance(app["account_label"], str) or not app["account_label"]):
             _fail("application_history.cash_start_identity")
         scored = [row for row in scores.get("historical", []) if row["signal_date"] == day]
-        tickers = {row["ticker"] for row in scored if row["raw_rank"] <= 20}
+        rank_field = "hgb_rank" if policy == "HGB_TOP20_RISK_R1" else "raw_rank"
+        tickers = {row["ticker"] for row in scored if row[rank_field] <= 20}
         total = _rows(app["rows"], "application_history.rows", cash_start=True)
         if len(scored) != 40 or any(set(row) != {"ticker", "target_weight", "weight_before", "action"}
                 or row["ticker"] not in tickers or row["target_weight"] > .10 + _WEIGHT_TOLERANCE for row in app["rows"]):
@@ -337,6 +341,9 @@ def validate_package(payload):
             if (not end < execution <= requested or signal >= execution
                     or not isinstance(blocked.get("reason"), str) or not blocked["reason"]):
                 _fail("performance_extension.blocked_next")
+    policy = payload.get("policy_id", "RAW_TOP20_FROZEN_LEGACY")
+    if policy not in {"RAW_TOP20_FROZEN_LEGACY", "HGB_TOP20_RISK_R1"}:
+        _fail("policy_id")
     strategies = _object(payload.get("strategies"), "strategies")
     if set(strategies) != set(STRATEGY_IDS):
         _fail("strategy_ids")
@@ -351,6 +358,8 @@ def validate_package(payload):
         calendars.append(_validate_recorded(strategy, strategy_id, period))
         application = _object(strategy.get("application"), "application")
         status = application.get("status")
+        if policy == "HGB_TOP20_RISK_R1" and status != "BLOCKED" and application.get("policy_id") != policy:
+            _fail("application.policy_id")
         if status not in APPLICATION_STATUSES:
             _fail("application.status")
         if application.get("requested_signal_date") is not None:
@@ -383,14 +392,14 @@ def validate_package(payload):
     if "shared_scores" in payload:
         _validate_shared_scores(payload["shared_scores"], hashes)
     for strategy in strategies.values():
-        _validate_application_history(strategy, hashes, payload.get("shared_scores", {}))
+        _validate_application_history(strategy, hashes, payload.get("shared_scores", {}), policy)
     if [p["signal_date"] for p in strategies[STRATEGY_IDS[0]].get("application_history", [])] != [
             p["signal_date"] for p in strategies[STRATEGY_IDS[1]].get("application_history", [])]:
         _fail("application_history.calendar_mismatch")
     return payload
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=1)
 def _decode(raw):
     def reject_constant(value):
         _fail("nonfinite_json:" + value)
@@ -403,7 +412,8 @@ def _decode(raw):
             result[key] = value
         return result
 
-    payload = json.loads(raw, parse_constant=reject_constant, object_pairs_hook=unique_object)
+    payload = json.loads(raw.decode("utf-8-sig") if isinstance(raw, bytes) else raw,
+                         parse_constant=reject_constant, object_pairs_hook=unique_object)
     return validate_package(payload)
 
 
@@ -412,20 +422,134 @@ def package_path():
     if override:
         return Path(override)
     from scripts.common.storage_paths import resolve
-    return Path(resolve().daily_root) / "A2_selected_hgb/latest.json"
+    from scripts.research.a2.portfolio.selected_hgb import active_policy
+    return active_policy(resolve())[1]
 
 
-def load_package(path=None):
-    """Read bytes each rerun, caching only a specific immutable JSON content."""
+def _display_reference(source, base_sha):
+    """Small, base-bound chart reference; explicit file readers never use it."""
+    reference_path = Path(source).parent / "performance_reference.json"
+    if not reference_path.is_file():
+        return None
+    with reference_path.open("rb") as stream:
+        raw = stream.read(16385)
+    if len(raw) > 16384:
+        _fail("display_reference_size")
+    reference = json.loads(raw.decode("utf-8-sig"))
+    if (set(reference) != {"schema", "policy_id", "base_package_sha256", "performance_manifest"}
+            or reference["schema"] != "HGB_DISPLAY_PERFORMANCE_REFERENCE_V1"):
+        _fail("display_reference_schema")
+    # A later canonical publication owns its own history; never reuse an older overlay.
+    if reference["base_package_sha256"] != base_sha:
+        return None
+    ref = reference["performance_manifest"]
+    if (not isinstance(ref, dict) or set(ref) != {"path", "sha256"}
+            or not isinstance(ref["path"], str)
+            or not isinstance(ref["sha256"], str)
+            or not re.fullmatch("[a-f0-9]{64}", ref["sha256"])):
+        _fail("display_manifest_reference")
+    from scripts.common.storage_paths import resolve
+    target = Path(ref["path"]).resolve()
+    if not target.is_relative_to(resolve().backtest_root.resolve()):
+        _fail("display_manifest_outside_backtest")
+    return raw, reference, target
+
+
+@lru_cache(maxsize=1)
+def _display_merge(base_raw, manifest_raw, manifest_path, history_root):
+    """Reuse the producer's verifier once per immutable content; load no models."""
+    from scripts.research.a2.evaluation.selected_performance_update import merge_extension
+    base = _decode(base_raw)
+    manifest = json.loads(manifest_raw.decode("utf-8-sig"))
+    if manifest.get("policy_id") != base.get("policy_id"):
+        _fail("display_policy_mismatch")
+    merged = merge_extension(base, manifest, manifest_path, history_root=history_root)
+    for sid in STRATEGY_IDS:
+        if (merged["strategies"][sid]["application"] != base["strategies"][sid]["application"]
+                or merged["strategies"][sid].get("application_history")
+                    != base["strategies"][sid].get("application_history")):
+            _fail("display_execution_targets_changed")
+    if merged.get("shared_scores", {}).get("current") != base.get("shared_scores", {}).get("current"):
+        _fail("display_current_scores_changed")
+    return validate_package(merged)
+
+
+def package_observation_sha256(path=None, *, include_performance=True):
+    """Observe content for refresh only; this does not validate package readiness."""
+    if type(include_performance) is not bool:
+        _fail("include_performance")
+    source = Path(path) if path is not None else package_path()
+    digest, size = hashlib.sha256(), 0
+    with source.open("rb") as stream:
+        while chunk := stream.read(min(1024 * 1024, _MAX_BYTES + 1 - size)):
+            size += len(chunk)
+            if size > _MAX_BYTES:
+                _fail("package_size")
+            digest.update(chunk)
+    base_sha = digest.hexdigest()
+    overlay = _display_reference(source, base_sha) if path is None and include_performance else None
+    if overlay is None:
+        return base_sha
+    raw, reference, manifest_path = overlay
+    manifest_sha = package_observation_sha256(manifest_path)
+    return hashlib.sha256(base_sha.encode() + raw + manifest_sha.encode()).hexdigest()
+
+
+def _package_bytes(path=None):
+    """Read the original bounded bytes on every call; never trust file stamps."""
     source = Path(path) if path is not None else package_path()
     with source.open("rb") as stream:
         raw = stream.read(_MAX_BYTES + 1)
     if len(raw) > _MAX_BYTES:
         _fail("package_size")
-    package = deepcopy(_decode(raw.decode("utf-8-sig")))
+    return source, raw
+
+
+def load_package(path=None, *, include_performance=True):
+    """Validate/copy the base package; optionally merge its display-only overlay."""
+    if type(include_performance) is not bool:
+        _fail("include_performance")
+    source, raw = _package_bytes(path)
+    package = dict(_decode(raw))
     package["package_sha256"] = hashlib.sha256(raw).hexdigest()
     package["package_path"] = str(source.resolve())
-    return package
+    overlay = _display_reference(source, package["package_sha256"]) if path is None and include_performance else None
+    if overlay is not None:
+        reference_raw, reference, manifest_path = overlay
+        if reference["policy_id"] != package.get("policy_id"):
+            _fail("display_policy_mismatch")
+        with manifest_path.open("rb") as stream:
+            manifest_raw = stream.read(_MAX_BYTES + 1)
+        if len(manifest_raw) > _MAX_BYTES:
+            _fail("display_manifest_size")
+        manifest_sha = hashlib.sha256(manifest_raw).hexdigest()
+        if manifest_sha != reference["performance_manifest"]["sha256"]:
+            _fail("display_manifest_hash_changed")
+        merged = deepcopy(_display_merge(raw, manifest_raw, str(manifest_path), str(source.parent / "history")))
+        merged["package_sha256"] = package["package_sha256"]
+        merged["package_path"] = package["package_path"]
+        merged["display_binding_sha256"] = hashlib.sha256(
+            package["package_sha256"].encode() + reference_raw + manifest_sha.encode()).hexdigest()
+        merged["display_performance_reference"] = deepcopy(reference)
+        if package_observation_sha256(manifest_path) != manifest_sha:
+            _fail("display_manifest_changed_during_read")
+        if (Path(source).parent / "performance_reference.json").read_bytes() != reference_raw:
+            _fail("display_reference_changed_during_read")
+        return merged
+    return deepcopy(package)
+
+
+def load_workspace_calendar(path=None):
+    """Project the fully validated base calendar without copying its history tree.
+
+    Native ML uses only these dates and the exact base identity. The original
+    bounded read and content-keyed validator still run; no overlay is opened.
+    """
+    source, raw = _package_bytes(path)
+    package = _decode(raw)
+    return {"available_dates": workspace_dates(package),
+        "package_sha256": hashlib.sha256(raw).hexdigest(),
+        "package_path": str(source.resolve()), "policy_id": package.get("policy_id")}
 
 
 def workspace_dates(package, strategy_id=None):
@@ -597,6 +721,17 @@ def _workspace_target(strategy, cutoff):
     return target
 
 
+def model_identity(strategy_id, *, prediction_scores_available=False):
+    """Return the existing selected-policy metadata without reading its package."""
+    if strategy_id not in STRATEGY_IDS:
+        _fail("workspace.strategy_id")
+    return deepcopy({"model_family": "HGB", "feature_count": 21,
+        "feature_family": "RAW_TOP40_RANK_SCORE_BASE9_RET_LAGS",
+        "target": "NEXT_OPEN_TO_FIVE_SESSION_LATER_OPEN_ABSOLUTE_RETURN",
+        "fit_cutoff_exclusive": "2026-01-01", "prediction_scores_available": prediction_scores_available,
+        "risk_model": "diagonal" if strategy_id == "HGB_DIAG_5" else "factor_shrink"})
+
+
 def workspace_view(strategy_id, cutoff=None, *, package=None, path=None):
     """Project one selected policy into the main workspace at an observed cutoff.
 
@@ -635,12 +770,10 @@ def workspace_view(strategy_id, cutoff=None, *, package=None, path=None):
         "package_sha256": package.get("package_sha256"), "source_path": package.get("package_path") or (str(path) if path is not None else None),
         "source_hashes": deepcopy(package["source_hashes"]), "source_refs": deepcopy(package.get("source_refs", {})),
         "limitations": deepcopy(package.get("limitations", [])),
-        "model_identity": {"model_family": "HGB", "feature_count": 21,
-            "feature_family": "RAW_TOP40_RANK_SCORE_BASE9_RET_LAGS",
-            "target": "NEXT_OPEN_TO_FIVE_SESSION_LATER_OPEN_ABSOLUTE_RETURN",
-            "fit_cutoff_exclusive": "2026-01-01", "prediction_scores_available": score_snapshot(cutoff, package=package)["status"] == "READY",
-            "risk_model": "diagonal" if strategy_id == "HGB_DIAG_5" else "factor_shrink"}}
+        "model_identity": model_identity(strategy_id,
+            prediction_scores_available=score_snapshot(cutoff, package=package)["status"] == "READY")}
 
 
 def clear_cache():
     _decode.cache_clear()
+    _display_merge.cache_clear()

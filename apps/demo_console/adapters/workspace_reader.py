@@ -94,6 +94,14 @@ def load_selected_overview(strategy_id, day=None, *, package=None, sample="test_
     if any(value is None for value in observed_dates):
         raise ValueError("INVALID_SELECTED_WORKSPACE_CALENDAR")
     dates = tuple(sorted({value for value in observed_dates if start <= value <= end}))
+    if day is None:
+        # A later execution record is not a new signal snapshot on first entry.
+        current = [strategy["application"].get("requested_signal_date") or
+                   strategy["application"].get("signal_date") for strategy in package["strategies"].values()]
+        scores = package.get("shared_scores", {}).get("current", {})
+        current.append(scores.get("requested_signal_date") or scores.get("signal_date"))
+        current = [value for value in current if value in dates]
+        day = max(current) if current else None
     eligible = dates if day is None else tuple(value for value in dates if value <= day)
     observed = eligible[-1] if eligible else None
     view = selected.workspace_view(strategy_id, observed, package=package) if observed else None
@@ -158,7 +166,37 @@ def _raw_signal_target(model, cutoff):
         return target
 
 
-def _applied_raw_view(latest, cutoff, sample):
+def applied_history_cutoff(day, *, raw_model=None, sample="test_2026"):
+    """Allow only the current owner's verified next-session execution in a latest view.
+
+    This does not move the signal/score/target cutoff or extend an archived binding.
+    Historical callers retain their exact selected observation day.
+    """
+    cutoff = _observation_day(day)
+    if (sample != "test_2026" or cutoff is None or raw_model is None
+            or not is_updated(raw_model) or raw_model.error or raw_model.decision_date != cutoff
+            or raw_model.execution_status != "EXECUTED"):
+        return cutoff
+    try:
+        start, end = SAMPLE_BOUNDS[sample]
+        dates = tuple(_observation_day(value) for value in raw_model.available_dates if start <= value <= end)
+        execution = _observation_day(raw_model.provenance.execution_date)
+        scheduled = _observation_day(raw_model.scheduled_execution_date)
+        performance = _observation_day(raw_model.performance_cutoff_date)
+        if (not dates or max(dates) != cutoff or raw_model.provenance.information_as_of != cutoff
+                or execution is None or not cutoff < execution <= end
+                or execution != scheduled or execution != performance):
+            return cutoff
+        reference = source_reference(raw_model)
+        current = updated.binding()
+        if any(current[key] != reference[key] for key in ("path", "sha256")):
+            return cutoff
+        return execution
+    except (ValueError, TypeError, KeyError, OSError):
+        return cutoff
+
+
+def _applied_raw_view(latest, cutoff, sample, *, history_cutoff=None):
     if not is_updated(latest) or latest.error:
         raise ValueError(latest.error or "APPLIED_RAW_CANONICAL_SOURCE_UNAVAILABLE")
     scoped = scope_overview(latest, sample)
@@ -171,11 +209,12 @@ def _applied_raw_view(latest, cutoff, sample):
         load_overview(signal, source=LATEST, reference=reference), sample)
     if not is_updated(model) or model.error or not model.performance_cutoff_date:
         raise ValueError(model.error or "APPLIED_RAW_PERFORMANCE_CUTOFF_UNAVAILABLE")
-    model = replace(model, performance_cutoff_date=min(model.performance_cutoff_date, cutoff))
+    history_end = history_cutoff or cutoff
+    model = replace(model, performance_cutoff_date=min(model.performance_cutoff_date, history_end))
     history = read_performance(model)
     if history.error or not history.points:
         raise ValueError(history.error or "APPLIED_RAW_PERFORMANCE_UNAVAILABLE")
-    points = tuple(point for point in history.points if point.execution_date <= cutoff)
+    points = tuple(point for point in history.points if point.execution_date <= history_end)
     if len(points) != len(history.points) or not points:
         raise ValueError("APPLIED_RAW_PERFORMANCE_EXCEEDS_CUTOFF")
     dates = tuple(_observation_day(point.execution_date) for point in points)
@@ -204,7 +243,7 @@ def _applied_raw_view(latest, cutoff, sample):
         raise ValueError("APPLIED_RAW_EXECUTED_BOOK_UNAVAILABLE")
     execution = _observation_day(book.provenance.execution_date)
     book_signal = _observation_day(book.decision_date)
-    if not execution or not book_signal or not book_signal <= execution <= cutoff:
+    if not execution or not book_signal or not book_signal <= cutoff or not book_signal <= execution <= history_end:
         raise ValueError("APPLIED_RAW_EXECUTED_BOOK_CLOCK_INVALID")
     rows, seen = [], set()
     for row in book.holdings:
@@ -229,13 +268,13 @@ def _applied_raw_view(latest, cutoff, sample):
             "start": daily[0]["date"], "end": daily[-1]["date"],
             "archive_start": history.archive_start, "archive_end": history.archive_end,
             "initial_nav": 1., "baseline_source_nav": baseline, "baseline_date": history.baseline_date,
-            "normalization_basis": "NAV_BEFORE_FIRST_SAMPLE_RECORD", "requested_end_date": cutoff},
+            "normalization_basis": "NAV_BEFORE_FIRST_SAMPLE_RECORD", "requested_end_date": history_end},
         "target": {"kind": "RECORDED_EXECUTED_BOOK", "status": "READY", "signal_date": book_signal,
             "execution_date": execution, "rows": rows, "target_cash_weight": cash_weight,
             "account_basis": "RECORDED_EXECUTED_BOOK", "execution_status": "EXECUTED", "reason": ""}}
 
 
-def load_applied_strategies(day, *, package, sample="test_2026", raw_model=None):
+def load_applied_strategies(day, *, package, sample="test_2026", raw_model=None, history_cutoff=None):
     """Read three applied policies at one cutoff, retaining each evidence basis.
 
     Research curves use the same frozen cash-start batch. The separate Raw
@@ -256,7 +295,16 @@ def load_applied_strategies(day, *, package, sample="test_2026", raw_model=None)
             error=raw_error or "APPLIED_RAW_CANONICAL_SOURCE_UNAVAILABLE")
         dates = applied_observation_dates(package, sample, raw_model=calendar_raw)
         cutoff = max(dates) if dates else None
+    history_end = _observation_day(history_cutoff) if history_cutoff is not None else cutoff
+    if history_end != cutoff and history_end != applied_history_cutoff(cutoff, raw_model=latest, sample=sample):
+        raise ValueError("APPLIED_HISTORY_CUTOFF_NOT_VERIFIED_LATEST_EXECUTION")
     views = {sid: selected.workspace_view(sid, cutoff, package=package) for sid in selected.STRATEGY_IDS}
+    if history_end != cutoff:
+        for sid, view in views.items():
+            if view.get("status") == "AVAILABLE":
+                # Reuse the original projection; copy performance only, never its later target.
+                recorded = selected.workspace_view(sid, history_end, package=package)
+                view["history"] = recorded["history"]
     if cutoff is None:
         for view in views.values():
             view["requested_cutoff"] = None
@@ -266,7 +314,7 @@ def load_applied_strategies(day, *, package, sample="test_2026", raw_model=None)
     try:
         if latest is None or cutoff is None:
             raise ValueError(raw_error or "APPLIED_RAW_NO_AVAILABLE_OBSERVATION")
-        raw = _applied_raw_view(latest, cutoff, sample)
+        raw = _applied_raw_view(latest, cutoff, sample, history_cutoff=history_end)
     except Exception as exc:
         raw = _unavailable_raw_view(cutoff, str(exc), debug_error=f"{type(exc).__name__}: {exc}")
     # New packages carry the same cash-start research ledger as both HGB
@@ -276,6 +324,8 @@ def load_applied_strategies(day, *, package, sample="test_2026", raw_model=None)
         latest_book = raw
         try:
             raw = selected.raw_reference_view(cutoff, package=package)
+            if history_end != cutoff:
+                raw["history"] = selected.raw_reference_view(history_end, package=package)["history"]
             raw = {**raw, "latest_book": latest_book,
                    "research_target": raw["target"], "target": latest_book["target"]}
             if cutoff is None or not start <= (raw["history"].get("start") or "") <= end:
@@ -304,10 +354,16 @@ def load_applied_rankings(day, *, package=None, raw_model=None, history=None):
         day, package=package, raw_model=raw_model, history=history)
 
 
-def load_applied_stock_history(*, package=None, raw_model=None, as_of=None):
+def load_applied_stock_history(*, package=None, raw_model=None, as_of=None, catalog=None):
     """Bind full Raw coverage and shared HGB scores to one observation cutoff."""
     from apps.demo_console.adapters import stock_history_reader
-    return stock_history_reader.load_applied_history(package=package, raw_model=raw_model, as_of=as_of)
+    history = stock_history_reader.load_applied_history(package=package, raw_model=raw_model, as_of=as_of)
+    return stock_history_reader.bind_catalog_history(catalog, history) if catalog is not None else history
+
+
+def load_applied_stock_catalog(*, package=None, raw_model=None, as_of=None):
+    from apps.demo_console.adapters import stock_history_reader
+    return stock_history_reader.load_applied_catalog(package=package, raw_model=raw_model, as_of=as_of)
 
 
 def query_applied_stock_history(history, ticker, start_date=None, end_date=None, security_id=None,
@@ -387,3 +443,343 @@ def rank_band(model, selection):
     bounds = {"Top20": (1, 20), "21–40": (21, 40), "Top40": (1, 40)}
     low, high = bounds.get(selection, bounds["Top20"])
     return replace(model, ranking=tuple(row for row in model.ranking if row.rank is not None and low <= row.rank <= high))
+
+
+def load_active_strategies(day, *, package, sample="test_2026", raw_model=None,
+                           history_cutoff=None, account_state=None, research_views=None, strategy_ids=None):
+    """Keep replay evidence separate from all five actual-account target plans."""
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    from apps.moomoo_trading_component.moomoo_component.strategy import ACTIVE_PAPER_STRATEGY_IDS, QUERYABLE_STRATEGY_IDS
+    ids = ACTIVE_PAPER_STRATEGY_IDS if strategy_ids is None else tuple(strategy_ids)
+    if len(set(ids)) != len(ids) or not set(ids) <= set(QUERYABLE_STRATEGY_IDS):
+        raise ValueError("UNKNOWN_QUERYABLE_STRATEGY")
+    original = load_applied_strategies(day, package=package, sample=sample,
+        raw_model=raw_model, history_cutoff=history_cutoff)
+    cutoff = original["RAW_A2"]["requested_cutoff"]
+    state = accounts.load_state() if account_state is None else account_state
+    current = {sid: accounts.current_view(state, sid, cutoff) for sid in ids}
+    for sid in set(ids) & set(ACTIVE_PAPER_STRATEGY_IDS[:2]):
+        view, plan = original[sid], current[sid]
+        original[sid] = {**view, "research_target": view.get("research_target", view["target"]),
+            "target": plan["target"], "signal_target": plan["target"],
+            "current_account": plan.get("current_account"), "target_source_refs": plan.get("source_refs", {})}
+    if research_views is None:
+        from apps.demo_console.adapters import new_strategy_replay_reader
+        research_views = new_strategy_replay_reader.load_views(cutoff,
+            history_cutoff=history_cutoff, sample=sample,
+            **({"strategy_ids": tuple(sid for sid in ids if sid not in ACTIVE_PAPER_STRATEGY_IDS[:2])}
+               if any(sid not in ACTIVE_PAPER_STRATEGY_IDS for sid in ids) else {}))
+    for sid, replay in research_views.items():
+        if sid in current and sid not in original:
+            current[sid] = {**current[sid], **{key: replay[key] for key in (
+                "history", "model_identity", "provenance") if key in replay}}
+    return {sid: original[sid] if sid in original else current[sid] for sid in ids}
+
+
+def load_active_rankings(day, *, package, raw_model=None, account_state=None, research_rankings=None, strategy_ids=None):
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    from apps.moomoo_trading_component.moomoo_component.strategy import ACTIVE_PAPER_STRATEGY_IDS, QUERYABLE_STRATEGY_IDS
+    ids = ACTIVE_PAPER_STRATEGY_IDS if strategy_ids is None else tuple(strategy_ids)
+    if len(set(ids)) != len(ids) or not set(ids) <= set(QUERYABLE_STRATEGY_IDS):
+        raise ValueError("UNKNOWN_ACTIVE_RANKING_STRATEGY")
+    # Raw/HGB share the original qualified ranking capture. Native actions need
+    # neither that capture nor any strategy's performance history.
+    snapshot = (load_applied_rankings(day, package=package, raw_model=raw_model)
+        if set(ids) & set(ACTIVE_PAPER_STRATEGY_IDS[:2]) else {"strategies": {}})
+    state = accounts.load_state() if account_state is None else account_state
+    current = accounts.rankings(state, day, **({"strategy_ids": ids} if ids != ACTIVE_PAPER_STRATEGY_IDS else {}))
+    strategies = {}
+    for sid in ids:
+        if sid not in snapshot.get("strategies", {}):
+            strategies[sid] = current[sid]
+            continue
+        recorded = snapshot["strategies"][sid]
+        target = accounts.current_view(state, sid, day)["target"]
+        known = target["kind"] != "UNAVAILABLE"
+        weights = {row["ticker"]: row["target_weight"] for row in target["rows"]}
+        rows = [{**row, "target_weight": weights.get(row["ticker"], 0.) if known else None,
+            "selected": weights.get(row["ticker"], 0.) > 0 if known else None,
+            "target_kind": target["kind"], "weight_date": target["signal_date"]}
+            for row in recorded.get("rows", [])]
+        strategies[sid] = {**recorded, "rows": rows, "target_kind": target["kind"],
+            "weight_date": target["signal_date"], "target_status": target["status"],
+            "target_source_refs": target.get("source_refs", {})}
+    needed = tuple(sid for sid in ids if sid not in ACTIVE_PAPER_STRATEGY_IDS[:2]
+                   and current[sid]["status"] == "UNAVAILABLE")
+    if needed and isinstance(day, str) and "2026-01-01" <= day < "2027-01-01":
+        try:
+            if research_rankings is None:
+                from apps.demo_console.adapters import new_strategy_stock_history_reader as native
+                research = native.rankings(day, cutoff=day, strategy_ids=needed)
+            else:
+                research = research_rankings
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            research = {"strategies": {}, "error": str(exc)}
+        for sid in needed:
+            leaf = research.get("strategies", {}).get(sid, {})
+            book_plan = (accounts.books(state).get(sid, {}).get("plan") or {})
+            if (leaf.get("status") == "AVAILABLE" and leaf.get("actual_signal_date") == day
+                    and leaf.get("weight_date") == day and leaf.get("source_kind") == "research"
+                    and leaf.get("target_kind") == "RECORDED_RESEARCH_SIGNAL_PLAN"):
+                strategies[sid] = {**leaf, "current_target_status": current[sid]["status"],
+                    "paper_plan_signal_date": book_plan.get("signal_date")
+                        if book_plan.get("strategy_id") == sid else None}
+            elif leaf.get("error") or research.get("error") or leaf.get("status") == "AVAILABLE":
+                strategies[sid] = {**strategies[sid], "status": "BLOCKED", "source_kind": "research",
+                    "error": leaf.get("error") or research.get("error") or "RESEARCH_RANKING_DATE_BINDING_FAILED",
+                    "current_target_status": current[sid]["status"],
+                    "paper_plan_signal_date": book_plan.get("signal_date")
+                        if book_plan.get("strategy_id") == sid else None}
+    return {**snapshot, "strategies": strategies}
+
+
+def load_active_stock_history(*, package=None, raw_model=None, as_of=None, account_state=None, catalog=None):
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    history = load_applied_stock_history(package=package, raw_model=raw_model, as_of=as_of, **({"catalog": catalog} if catalog is not None else {}))
+    from apps.demo_console.adapters import new_strategy_stock_history_reader as native
+    first = min(history.get("start_date") or native._FIRST, native._FIRST) if str(as_of or history.get("as_of") or "") >= native._FIRST else history.get("start_date")
+    from apps.moomoo_trading_component.moomoo_component.strategy import QUERYABLE_STRATEGY_IDS
+    return {**history, "start_date": first, "_active_account_state": accounts.load_state() if account_state is None else account_state,
+        "_native_stock_sources": native.source_refs(strategy_ids=QUERYABLE_STRATEGY_IDS[2:])}
+
+
+def load_active_stock_catalog(*, package=None, raw_model=None, as_of=None, account_state=None):
+    history = load_applied_stock_catalog(package=package, raw_model=raw_model, as_of=as_of)
+    # The native history starts at its frozen baseline. Source verification and
+    # account capture are deferred to the original full loader after selection.
+    if history.get('status') == 'CATALOG_READY':
+        from apps.demo_console.adapters import new_strategy_stock_history_reader as native
+        first = min(history['start_date'], native._FIRST) if str(as_of) >= native._FIRST else history['start_date']
+        history = {**history, 'start_date': first, '_active_catalog': True, '_catalog_account_state': account_state}
+    return history
+
+
+def query_active_stock_history(history, ticker, start_date=None, end_date=None, security_id=None, **kwargs):
+    from apps.demo_console.adapters import applied_account_reader as accounts, new_strategy_stock_history_reader as native
+    from apps.moomoo_trading_component.moomoo_component.strategy import ACTIVE_PAPER_STRATEGY_IDS, QUERYABLE_STRATEGY_IDS
+    result = query_applied_stock_history(history, ticker, start_date, end_date, security_id=security_id, **kwargs)
+    if result.get("status") == "AMBIGUOUS_IDENTITY":
+        return result
+    start, end = str(start_date or history["start_date"]), str(end_date or history["as_of"])
+    research = native.query(ticker, start, min(end, history["as_of"]), sources=history.get("_native_stock_sources", {}), strategy_ids=QUERYABLE_STRATEGY_IDS[2:])
+    recorded = {row["date"]: row for row in result.get("daily", [])}
+    native_days = {day for leaf in research["strategies"].values() for day in leaf["daily"]}
+    if result.get("status") != "READY" and not native_days:
+        return result
+    daily = []
+    symbol = result.get("ticker", str(ticker).strip().upper())
+    for day in sorted(set(recorded) | native_days):
+        row = recorded.get(day, {"date": day, "in_pool": None, "security_id": None,
+                                "status": "NO_VERIFIED_RAW_POOL_RECORD"})
+        current = accounts.rankings(history.get("_active_account_state", {}), day, strategy_ids=QUERYABLE_STRATEGY_IDS)
+        strategies = {sid: row.get("strategies", {}).get(sid, {}) for sid in ACTIVE_PAPER_STRATEGY_IDS[:2]}
+        for sid in QUERYABLE_STRATEGY_IDS[2:]:
+            historical = research["strategies"].get(sid, {}).get("daily", {}).get(day, {})
+            leaf = current[sid]
+            ticker_rows = [item for item in leaf["rows"] if item["ticker"] == symbol]
+            security = row.get("security_id")
+            known = lambda value: value is not None and str(value).strip().lower() not in {"", "none", "nan", "null", "unknown", "<na>"}
+            matches = [item for item in ticker_rows if known(security)
+                and known(item.get("security_id")) and str(item["security_id"]) == str(security)]
+            plan = matches[0] if len(matches) == 1 else {}
+            absent = leaf["status"] == "AVAILABLE" and not ticker_rows
+            target = {**historical}
+            if leaf["status"] == "AVAILABLE":
+                identity_ok = len(matches) == 1 or absent
+                target.update(plan, target_weight=plan.get("target_weight", 0. if absent else None),
+                    selected=plan.get("selected", False if absent else None), weight_date=leaf["weight_date"],
+                    target_kind=leaf["target_kind"] if identity_ok else "UNAVAILABLE",
+                    target_status="READY" if identity_ok else "SECURITY_IDENTITY_UNVERIFIED")
+            strategies[sid] = {"model_rank": None, "score": None, "target_weight": None, "selected": None,
+                "weight_date": None, "target_kind": None, "score_status": "NO_VERIFIED_SCORE",
+                "target_status": "NO_RECORDED_TARGET", **target}
+        daily.append({**row, "strategies": strategies})
+    return {**result, "status": "READY", "ticker": symbol, "daily": daily,
+        "memberships": result.get("memberships", []), "selected_security_ids": result.get("selected_security_ids", []),
+        "native_stock_note": research["note"], "native_stock_source_refs": {
+            sid: leaf["source_refs"] for sid, leaf in research["strategies"].items()},
+        "native_stock_errors": {sid: leaf["error"] for sid, leaf in research["strategies"].items() if leaf.get("error")}}
+
+
+
+
+def ml_observation_dates(package=None, sample="test_2026", *, account_state=None, package_dates=None):
+    """Union original package dates and one current capture, without Raw/history."""
+    if sample not in SAMPLE_BOUNDS:
+        raise ValueError("UNKNOWN_ML_WORKSPACE_SAMPLE")
+    if sample == "historical":
+        return ()
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    start, end = SAMPLE_BOUNDS[sample]
+    if package_dates is not None and not isinstance(package_dates, tuple):
+        raise ValueError("INVALID_ML_PACKAGE_DATES")
+    observed = list(selected.workspace_dates(package) if package_dates is None else package_dates)
+    state = accounts.load_state() if account_state is None else account_state
+    if isinstance(state, dict):
+        ids = tuple(accounts.books(state))
+        for day in accounts.observation_dates(state):
+            if any(accounts.current_view(state, sid, day)["status"] == "AVAILABLE" for sid in ids):
+                observed.append(day)
+    return tuple(sorted({day for day in observed if start <= day <= end}))
+
+
+def _ml_identity(strategy_id):
+    """Delegate frozen declarations to their original owners; never open models."""
+    from apps.moomoo_trading_component.moomoo_component.strategy import QUERYABLE_STRATEGY_IDS
+    if strategy_id not in QUERYABLE_STRATEGY_IDS:
+        raise ValueError("UNKNOWN_ML_WORKSPACE_STRATEGY")
+    if strategy_id in selected.STRATEGY_IDS:
+        return selected.model_identity(strategy_id)
+    if strategy_id in QUERYABLE_STRATEGY_IDS[2:]:
+        from apps.demo_console.adapters import new_strategy_replay_reader
+        return new_strategy_replay_reader.model_identity(strategy_id)
+    return {}
+
+
+def load_ml_overview(strategy_id, day=None, *, sample="test_2026", observation_dates=()):
+    """A source-free shell for the selected ML view; no Raw or performance read."""
+    identity = _ml_identity(strategy_id)
+    if sample not in SAMPLE_BOUNDS:
+        raise ValueError("UNKNOWN_ML_WORKSPACE_SAMPLE")
+    requested = _observation_day(day)
+    start, end = SAMPLE_BOUNDS[sample]
+    dates = tuple(sorted({_observation_day(value) for value in observation_dates
+        if value is not None and start <= _observation_day(value) <= end}))
+    # A shared explicit day is a query, not proof that this model has a record.
+    # Keep it even when its package calendar lags; exact output reads stay gated.
+    chosen = (requested if start <= requested <= end else None) if requested is not None else (dates[-1] if dates else None)
+    from apps.demo_console.models import LearningProfile
+    return DecisionOverview(decision_date=chosen, available_dates=dates, source_id=strategy_id,
+        provenance=Provenance(strategy_identity=strategy_id,
+            information_as_of=chosen if chosen in dates else None),
+        learning=LearningProfile(target=identity.get("target")),
+        sample_start_date=start, sample_end_date=end, ranking_limit=40)
+
+
+def load_ml_workspace(strategy_id, day, *, package=None, sample="test_2026",
+                      raw_model=None, account_state=None):
+    """Load only the selected output/target; reuse original qualification owners."""
+    from copy import deepcopy
+    identity = _ml_identity(strategy_id)
+    if sample not in SAMPLE_BOUNDS:
+        raise ValueError("UNKNOWN_ML_WORKSPACE_SAMPLE")
+    cutoff = _observation_day(day)
+    start, end = SAMPLE_BOUNDS[sample]
+    context = {"strategy_id": strategy_id, "model_identity": identity}
+    if sample == "historical" or cutoff is None or not start <= cutoff <= end:
+        result = ml_workspace(strategy_id, cutoff, snapshot={"strategies": {}}, context=context)
+        return {**result, "mechanism_only": True}
+    if package is None and (strategy_id == "RAW_A2" or strategy_id in selected.STRATEGY_IDS):
+        package = selected.load_package(include_performance=False)
+    from apps.demo_console.adapters import applied_account_reader as accounts
+    state = accounts.load_state() if account_state is None else account_state
+    current = accounts.current_view(state, strategy_id, cutoff)
+    context.update(target=current["target"], target_source_refs=current.get("source_refs", {}))
+    if current["target"].get("signal_date") == cutoff:
+        context["model_identity"] = {**identity, **deepcopy(current.get("model_identity") or {})}
+    snapshot = load_active_rankings(cutoff, package=package, raw_model=raw_model,
+        account_state=state, strategy_ids=(strategy_id,))
+    if strategy_id in selected.STRATEGY_IDS:
+        context["model_identity"]["prediction_scores_available"] = (
+            snapshot.get("strategies", {}).get(strategy_id, {}).get("status") in ("READY", "AVAILABLE"))
+    return ml_workspace(strategy_id, cutoff, snapshot=snapshot, context=context,
+        raw_model=raw_model, package=package)
+
+
+def ml_workspace(strategy_id, day, *, snapshot, context, raw_model=None, package=None):
+    """Project already verified same-date outputs into one ML display contract.
+
+    This is a pure presentation adapter: callers supply the original reader
+    capture. No fallback reads, fitted objects, predictions, ranks or cash are
+    created here. In particular, a native action value is never a stock score.
+    """
+    from copy import deepcopy
+    from dataclasses import asdict
+    from apps.demo_console.models import LearningProfile
+    from apps.moomoo_trading_component.moomoo_component.strategy import ACTIVE_PAPER_STRATEGY_IDS, QUERYABLE_STRATEGY_IDS
+
+    if strategy_id not in QUERYABLE_STRATEGY_IDS:
+        raise ValueError("UNKNOWN_ML_WORKSPACE_STRATEGY")
+    day = _observation_day(day)
+    leaf = snapshot.get("strategies", {}).get(strategy_id, {})
+    if not isinstance(leaf, dict) or not isinstance(context, dict):
+        raise ValueError("INVALID_ML_WORKSPACE_CAPTURE")
+    kind = ("RANK_SCORE" if strategy_id in (*ACTIVE_PAPER_STRATEGY_IDS[:2], "RAW_s10") else
+            "GROSS_EXPOSURE" if strategy_id == "R7_GROSS_LINEAR" else "ACTION_VALUE")
+    source = leaf.get("source_kind", "recorded")
+    basis = ("RECORDED_MAIN_RESEARCH" if source == "research" else
+             "CURRENT_PAPER_ACCOUNT" if leaf.get("target_kind") == "CURRENT_ACCOUNT_TARGET" else
+             "RECORDED_MODEL_OUTPUT")
+    identity = deepcopy(context.get("model_identity") or {})
+    context_target = context.get("target") or {}
+    for field in ("requested_gross", "previous_requested_gross", "previous_gross"):
+        if field in context_target and context_target.get("signal_date") == day:
+            identity[field] = deepcopy(context_target[field])
+    learning = LearningProfile(target=identity.get("target"))
+    provenance = deepcopy(context.get("provenance") or {})
+    if not isinstance(provenance, dict):
+        provenance = asdict(provenance)
+    if strategy_id == "RAW_A2" and raw_model is not None and not raw_model.error and raw_model.decision_date == day:
+        learning = raw_model.learning
+        provenance = {**asdict(raw_model.provenance), **provenance}
+    provenance.update(scope=leaf.get("scope"),
+        source_refs=deepcopy(leaf.get("source_refs", snapshot.get("source_refs", context.get("source_refs", {})))),
+        target_source_refs=deepcopy(leaf.get("target_source_refs", context.get("target_source_refs", {}))))
+    status = leaf.get("status", "UNAVAILABLE")
+    score_day, target_day = leaf.get("actual_signal_date"), leaf.get("weight_date")
+    result = dict(strategy_id=strategy_id, output_kind=kind, rows=[], model_identity=identity,
+        learning=learning, provenance=provenance, source=source, status=status,
+        score_date=score_day, target_date=target_day, record_basis=basis,
+        target={"kind": "UNAVAILABLE", "status": "UNAVAILABLE", "signal_date": None,
+                "execution_date": None, "rows": [], "target_cash_weight": None}, error=None)
+    if context.get("strategy_id", strategy_id) != strategy_id:
+        result.update(status="BLOCKED", error="ML_WORKSPACE_CONTEXT_IDENTITY_MISMATCH")
+        return result
+    if day is None or status not in ("AVAILABLE", "READY") or score_day != day:
+        result["error"] = leaf.get("error") or "ML_WORKSPACE_EXACT_DATE_OUTPUT_UNAVAILABLE"
+        if score_day is not None and score_day != day:
+            result["status"] = "UNAVAILABLE"
+        return result
+    rows = leaf.get("rows", [])
+    if not isinstance(rows, (list, tuple)) or any(not isinstance(row, dict) or not isinstance(row.get("ticker"), str)
+            or not row["ticker"] for row in rows) or len({row["ticker"] for row in rows}) != len(rows):
+        result.update(status="BLOCKED", error="ML_WORKSPACE_INVALID_OUTPUT_ROWS")
+        return result
+
+    def number(value):
+        return value if type(value) in (int, float) and isfinite(value) else None
+
+    target_rows = {}
+    if target_day == day and context_target.get("signal_date") == day and context_target.get("kind") == leaf.get("target_kind"):
+        target_rows = {row["ticker"]: row for row in context_target.get("rows", []) if isinstance(row, dict) and row.get("ticker")}
+    for original in rows:
+        matched = target_rows.get(original["ticker"], {})
+        if (original.get("security_id") is not None and matched.get("security_id") is not None
+                and original["security_id"] != matched["security_id"]):
+            matched = {}
+        row = {**{key: value for key, value in matched.items() if key in (
+            "action", "weight_before", "explicit_target", "exact_hold_units", "raw_model_weight", "adaptation_reasons")},
+            **original}
+        projected = {key: deepcopy(row[key]) for key in (
+            "ticker", "security_id", "action", "explicit_target", "policy_explicit", "decision_semantic",
+            "adaptation_reasons", "security_identity_status", "target_kind", "weight_date") if key in row}
+        projected.update(rank=row.get("model_rank") if kind == "RANK_SCORE" else None,
+            score=number(row.get("score")) if kind == "RANK_SCORE" else None,
+            raw_rank=row.get("raw_rank"), raw_score=number(row.get("raw_score")
+                if row.get("raw_score") is not None else row.get("raw_input_score")),
+            native_action_score=number(row.get("source_score")) if kind == "ACTION_VALUE" else None,
+            target_weight=number(row.get("target_weight")) if target_day == day else None)
+        for field in ("weight_before", "research_weight_before", "original_policy_weight", "hold_units",
+                      "exact_hold_units", "raw_model_weight", "research_order_target_weight", "adapted_target_weight"):
+            projected[field] = number(row.get(field))
+        result["rows"].append(projected)
+    if target_day == day:
+        if (context_target.get("signal_date") == day
+                and context_target.get("kind") == leaf.get("target_kind")):
+            result["target"] = deepcopy(context_target)
+        else:
+            result["target"] = {"kind": leaf.get("target_kind"), "status": leaf.get("target_status", status),
+                "signal_date": day, "execution_date": None,
+                "rows": [{"ticker": row["ticker"], "target_weight": row["target_weight"]} for row in result["rows"]],
+                "target_cash_weight": None}
+    return result

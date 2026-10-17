@@ -173,3 +173,78 @@ def test_real_graph_audit_is_json_serializable_without_changing_values(example,t
     assert actual['graph']['maximum_price_date_materialized']==calendar[-1].isoformat()
     assert actual['graph']['minimum_history_sessions']==audit['graph']['minimum_history_sessions']
     assert isinstance(audit['graph']['maximum_price_date_materialized'],pd.Timestamp)
+
+
+@pytest.mark.parametrize('source_date,bridge,error',[
+    ('2026-01-01',False,None),
+    ('2026-01-02',False,'SOURCE_AFTER_REQUESTED_END'),
+    ('2026-01-01',True,'EXECUTION_ONLY_INPUT_FORBIDDEN'),
+])
+def test_feature_lineage_recovers_only_absent_parent_names(tmp_path,monkeypatch,source_date,bridge,error):
+    import json
+    from types import SimpleNamespace
+    from scripts import daily_recommendation_prices as original
+    from scripts.research.a2.inference import historical_top40_prices as historical
+    raw=pd.DataFrame({'ticker':['P']*4,'trade_date':pd.bdate_range('2025-12-29',periods=4),
+        'open':[100.]*4,'high':[101.]*4,'low':[99.]*4,'close':[100.]*4,'volume':[1000.]*4})
+    factor=tmp_path/'rehab.parquet';pd.DataFrame({'code':['US.P']}).to_parquet(factor,index=False)
+    entry={'ticker':'P','code':'US.P','rehab':{**module.base.reference(factor),'kind':'CURRENT_SNAPSHOT'}}
+    if bridge:entry['execution_bridge']={'execution_only':True}
+    inputs=tmp_path/'prices.json';inputs.write_text(json.dumps({'lineage':[]}))
+    hist=tmp_path/'manifest.json';hist.write_text(json.dumps({'price_manifest':module.base.reference(inputs)}))
+    source=tmp_path/'prior_report.json';source.write_text(json.dumps({'data_date':source_date}))
+    coverage=tmp_path/'coverage.json';coverage.write_text(json.dumps({'adjustment':{'wolf_event_date':'2025-09-29','wolf_new_shares_per_old_share':.008352}}))
+    monkeypatch.setattr(original,'COVERAGE_PATH',coverage);monkeypatch.setattr(original,'COVERAGE_SHA',module.base.digest(coverage))
+    monkeypatch.setattr(historical,'_store',lambda paths:object())
+    seen=[]
+    def entries(path,hpath,hsha,checked):
+        assert Path(path)==source and hpath==hist.resolve() and hsha==module.base.digest(hist)
+        # An unrelated known name must not be imported by the absent-name repair.
+        return [entry,{'ticker':'KNOWN'}],{'data_date':source_date}
+    monkeypatch.setattr(module.price_reader,'_current_entries',entries)
+    monkeypatch.setattr(module.price_reader,'_raw',lambda entry,*a:seen.append(entry['ticker']) or raw.copy())
+    monkeypatch.setattr(original,'_adapter',lambda end:SimpleNamespace(adjusted_price_frame=lambda *a:(raw.copy(),[])))
+    kwargs={'recommendation_reports':[module.base.reference(source)]}
+    if error:
+        with pytest.raises(ValueError,match=error):module.qualified_feature_prices(SimpleNamespace(),hist,{'P'},'2026-01-01',**kwargs)
+        assert seen==[]
+    else:
+        result,refs,gaps=module.qualified_feature_prices(SimpleNamespace(),hist,{'P'},'2026-01-01',**kwargs)
+        pd.testing.assert_frame_equal(result,raw);assert seen==['P'] and gaps==[]
+        assert module.base.reference(source) in refs and module.base.reference(factor) in refs
+        kwargs['recommendation_reports'][0]['sha256']='0'*64
+        with pytest.raises(ValueError):module.qualified_feature_prices(SimpleNamespace(),hist,{'P'},'2026-01-01',**kwargs)
+
+
+def test_missing_frozen_source_stops_before_large_price_reads(tmp_path,monkeypatch):
+    import json
+    from types import SimpleNamespace
+    hist=tmp_path/'history.json';hist.write_text('{}')
+    parent=tmp_path/'parent.json';parent.write_text(json.dumps({'status':'READY','ranking_manifest':module.base.reference(hist)}))
+    monkeypatch.setattr(module.base,'canonical_manifest',lambda path:(parent,module.base.reference(parent)))
+    def unavailable():raise ValueError('PIN_UNAVAILABLE')
+    monkeypatch.setattr(module,'authority',unavailable)
+    def must_not_load(*a,**k):raise AssertionError('large price materialization reached')
+    monkeypatch.setattr(module,'qualified_feature_prices',must_not_load)
+    result=module.refresh_rx_performance(SimpleNamespace(daily_root=tmp_path),hist,tmp_path/'current.json',parent,
+        tmp_path/'A2_updated_research_rx/runs/early_fail')
+    assert result['status']=='BLOCKED' and result['error']=='PIN_UNAVAILABLE'
+    assert 'outputs' not in result
+
+
+def test_real_2026_producer_blocks_cluster_refit_before_source_or_prices(tmp_path,monkeypatch):
+    import json
+    from types import SimpleNamespace
+    hist=tmp_path/'history.json';hist.write_text('{}')
+    parent=tmp_path/'parent.json'
+    parent.write_text(json.dumps({'status':'PARTIAL','ranking_end_date':'2026-10-02',
+        'ranking_manifest':module.base.reference(hist)}))
+    monkeypatch.setattr(module.base,'canonical_manifest',lambda path:(parent,module.base.reference(parent)))
+    def forbidden(*args,**kwargs):
+        raise AssertionError('real 2026 graph source or prices reached')
+    monkeypatch.setattr(module,'authority',forbidden)
+    monkeypatch.setattr(module,'qualified_feature_prices',forbidden)
+    result=module.refresh_rx_performance(SimpleNamespace(daily_root=tmp_path),hist,
+        tmp_path/'unread_current.json',parent,tmp_path/'A2_updated_research_rx/runs/temporal_guard')
+    assert result['status']=='BLOCKED' and result['error']=='RX_2026_CLUSTER_FIT_PROHIBITED'
+    assert 'outputs' not in result

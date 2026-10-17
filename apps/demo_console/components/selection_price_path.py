@@ -8,6 +8,7 @@ import streamlit as st
 
 from apps.demo_console.adapters import rx_research_reader
 from apps.demo_console.components.chart_display import render_chart
+from apps.demo_console.components.localized_tabs import localized_expander
 from apps.demo_console.i18n import tr
 
 
@@ -256,29 +257,36 @@ def render_selection_price_path(model, rx_view):
             st.caption(tr("Verified unadjusted USD quotes are unavailable for this date; index values are not dollar prices."))
         render_chart(price_path_chart(window))
         if raw and raw.get('rows'):
-            from apps.demo_console.components.stock_quote_chart import render_quote_history
-            with st.expander(tr('Dollar price history and splits')):
-                render_quote_history(raw, key=f'selection_quote_basis_{strategy}_{ticker}')
+            quote_key = f'selection_quote_basis_{strategy}_{ticker}'
+            with localized_expander('Dollar price history and splits', key='selection_quote_details') as quotes:
+                if quotes.open:
+                    from apps.demo_console.components.stock_quote_chart import render_quote_history
+                    render_quote_history(raw, key=quote_key)
+                elif quote_key in st.session_state:
+                    st.session_state[quote_key] = st.session_state[quote_key]
         if window["trades"]:
-            with st.expander(tr("Recorded executions")):
-                st.dataframe([{**{key: row.get(key) for key in ("date", "side", "shares", "execution_price", "notional")},
-                               tr("Market open (USD)"): row.get('raw_open')}
-                              for row in window["trades"]], hide_index=True)
+            with localized_expander("Recorded executions", key="selection_execution_details") as executions:
+                if executions.open:
+                    st.dataframe([{**{key: row.get(key) for key in ("date", "side", "shares", "execution_price", "notional")},
+                                   tr("Market open (USD)"): row.get('raw_open')}
+                                  for row in window["trades"]], hide_index=True)
         st.caption(tr("Overnight gap = open / previous session close − 1. Missing previous-session prices remain blank. Only shares held before the open are exposed; a new opening buy does not earn the preceding gap. This breakdown is descriptive and is not added again to portfolio returns."))
-        with st.expander(tr("Daily prices and overnight gaps")):
-            detail = []
-            for row in window["prices"]:
-                exposure = ("Held before open" if row["held_before"] else "New buy at open: preceding gap excluded"
-                    if row["new_buy_at_open"] else "Not held before open" if row["held_before"] is False else "Pre-open holding unavailable")
-                detail.append({tr("Date"): row["date"], tr("Previous session"): row["previous_session"],
-                    tr("Previous close"): row["previous_close"], tr("Open"): row["open"], tr("Close"): row["close"],
-                    tr("Market open (USD)"): row.get("raw_open"), tr("Market close (USD)"): row.get("raw_close"),
-                    tr("Overnight gap (%)"): row["overnight_gap"] * 100 if row["overnight_gap"] is not None else None,
-                    tr("Holding before open"): tr(exposure)})
-            st.dataframe(detail, hide_index=True)
+        with localized_expander("Daily prices and overnight gaps", key="selection_daily_price_details") as daily_prices:
+            if daily_prices.open:
+                detail = []
+                for row in window["prices"]:
+                    exposure = ("Held before open" if row["held_before"] else "New buy at open: preceding gap excluded"
+                        if row["new_buy_at_open"] else "Not held before open" if row["held_before"] is False else "Pre-open holding unavailable")
+                    detail.append({tr("Date"): row["date"], tr("Previous session"): row["previous_session"],
+                        tr("Previous close"): row["previous_close"], tr("Open"): row["open"], tr("Close"): row["close"],
+                        tr("Market open (USD)"): row.get("raw_open"), tr("Market close (USD)"): row.get("raw_close"),
+                        tr("Overnight gap (%)"): row["overnight_gap"] * 100 if row["overnight_gap"] is not None else None,
+                        tr("Holding before open"): tr(exposure)})
+                st.dataframe(detail, hide_index=True)
         if window["events"]:
-            with st.expander(tr("Corporate actions and price adjustments")):
-                st.dataframe(list(window["events"]), hide_index=True)
+            with localized_expander("Corporate actions and price adjustments", key="selection_event_details") as events:
+                if events.open:
+                    st.dataframe(list(window["events"]), hide_index=True)
         else:
             st.caption(tr("No dated corporate-action event is recorded for this stock in the displayed interval."))
     except (OSError, ValueError, KeyError, TypeError):

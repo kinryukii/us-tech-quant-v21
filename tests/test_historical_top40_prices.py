@@ -336,3 +336,36 @@ def test_internal_gap_requests_qualified_source_even_when_target_exists(case):
     assert gate.call_args.kwargs['gap_dates'] == [str(case.dates[130].date())]
     assert len(frame) == 55 and not gaps
     assert lineage[0]['alternate_bridge'] == proof
+
+def test_absent_legacy_rehab_and_price_evidence_routes_to_current_native_candidate(case):
+    pd.DataFrame(columns=["code", "status", "row_count"]).to_csv(
+        case.coverage["rehab"]["status_path"], index=False)
+    case.coverage["rehab"]["status_sha256"] = module.prices.digest(case.coverage["rehab"]["status_path"])
+    case.ledger.iloc[:0].to_parquet(case.ledger_path, index=False)
+    case.refs["ledger"]["sha256"] = module.prices.digest(case.ledger_path)
+    case.coverage_path.write_text(json.dumps(case.coverage))
+    case.refs["coverage"]["sha256"] = module.prices.digest(case.coverage_path)
+    frame, lineage, gaps = module.build_price_features(*case.args)
+    assert frame.empty and lineage == []
+    assert gaps[0]["reasons"] == ["ORIGINAL_RAW_ANCHOR_UNBOUND"]
+    assert gaps[0]["missing_all_requested_dates"] is True
+
+
+@pytest.mark.parametrize("fault", ["failed_rehab", "ambiguous_rehab", "existing_prices", "frozen_code", "unbound_code_map"])
+def test_missing_evidence_routing_never_bypasses_real_legacy_evidence(case, fault):
+    status = pd.DataFrame(columns=["code", "status", "row_count"])
+    ledger = case.ledger.iloc[:0]
+    codes = {}
+    if fault == "failed_rehab":
+        status = pd.DataFrame([{"code": "US.TEST", "status": "FAIL", "row_count": 0}])
+    elif fault == "ambiguous_rehab":
+        status = pd.DataFrame([{"code": "US.TEST", "status": "PASS", "row_count": 0}] * 2)
+    elif fault == "existing_prices":
+        ledger = case.ledger
+    elif fault == "frozen_code":
+        codes = {"US.TEST": {"ticker": "TEST"}}
+    else:
+        codes = None
+    with pytest.raises(ValueError, match="EXPANDED_ANCHOR_ORIGINAL_REHAB_NOT_PASS"):
+        module._prove_expanded_anchor("US.TEST", "TEST", case.raw, case.factors,
+            status, ledger, None, {}, frozen_code_map=codes)

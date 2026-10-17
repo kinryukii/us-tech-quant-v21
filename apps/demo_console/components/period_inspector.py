@@ -93,7 +93,9 @@ def render_period_inspector(points: tuple[PerformancePoint, ...], *, full_histor
         if _EXPANDER_OPEN in st.session_state:
             st.session_state[_EXPANDER_KEY] = st.session_state[_EXPANDER_OPEN]
         st.session_state["_research_month_detail_label"] = label
-    with st.expander(label, expanded=False, key=_EXPANDER_KEY, on_change=_remember_expander):
+    with st.expander(label, expanded=False, key=_EXPANDER_KEY, on_change=_remember_expander) as detail:
+        if not detail.open:
+            return
         if not window.months:
             st.info(tr("No recorded months are available in this window."))
             return

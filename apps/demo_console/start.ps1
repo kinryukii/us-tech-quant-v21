@@ -29,11 +29,11 @@ $originalBytecode = $env:PYTHONDONTWRITEBYTECODE
 try {
     $env:PYTHONPATH = $repo
     $env:PYTHONDONTWRITEBYTECODE = '1'
-    Push-Location $repo
+    Push-Location $PSScriptRoot
     try {
         $headless = $NoBrowser.IsPresent.ToString().ToLowerInvariant()
         Write-Host "Starting DEMO at $url. Keep this terminal open while using it."
-        & $demoPython -B -m streamlit run apps/demo_console/app.py --server.address 127.0.0.1 --server.port $Port --server.headless $headless --server.fileWatcherType none --client.showErrorDetails false
+        & $demoPython -B -m streamlit run launch/app.py --server.address 127.0.0.1 --server.port $Port --server.headless $headless --server.fileWatcherType none --client.showErrorDetails false
         if ($LASTEXITCODE -ne 0) { throw "Streamlit could not start (exit $LASTEXITCODE). See apps/demo_console/README.md." }
     } finally { Pop-Location }
 } finally {

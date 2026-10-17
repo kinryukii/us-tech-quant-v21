@@ -297,3 +297,179 @@ def test_registry_loader_works_in_new_layout_without_a_root_compatibility_file(w
     assert registry.SCHEMA_VERSION == 1
     assert root == (config.parent / "synthetic-registry").resolve()
     assert not (workspace / "research_registry.py").exists()
+
+
+def test_registry_loader_registers_module_for_self_lookup(workspace, monkeypatch):
+    import sys
+
+    name = "ustq_inventory_registry"
+    monkeypatch.delitem(sys.modules, name, raising=False)
+    source = workspace / "scripts/maintenance/research_registry.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("import sys\nSELF = sys.modules[__name__]\nSCHEMA_VERSION = 1\n", encoding="utf-8")
+    config = workspace / "config/research_registry.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"schema_version": 1, "registry_root": "synthetic-registry"}), encoding="utf-8")
+    registry, root = inventory.load_registry(workspace)
+    assert registry.SELF is registry
+    assert sys.modules[name] is registry
+    assert root == (config.parent / "synthetic-registry").resolve()
+
+
+@pytest.mark.parametrize("had_previous", [False, True])
+@pytest.mark.parametrize("failure", ["module", "missing_config", "config"])
+def test_registry_loader_restores_module_binding_on_failure(workspace, monkeypatch, had_previous, failure):
+    import sys
+
+    name = "ustq_inventory_registry"
+    previous = SimpleNamespace(original=True)
+    if had_previous:
+        monkeypatch.setitem(sys.modules, name, previous)
+    else:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    source = workspace / "scripts/maintenance/research_registry.py"
+    source.parent.mkdir(parents=True)
+    code = "import sys\nSELF = sys.modules[__name__]\nSCHEMA_VERSION = 1\n"
+    if failure == "module":
+        code += "raise RuntimeError('synthetic import failure')\n"
+    source.write_text(code, encoding="utf-8")
+    config = workspace / "config/research_registry.json"
+    config.parent.mkdir()
+    if failure != "missing_config":
+        config.write_text(json.dumps({"schema_version": 2 if failure == "config" else 1,
+                                      "registry_root": "synthetic-registry"}), encoding="utf-8")
+    error = RuntimeError if failure == "module" else FileNotFoundError if failure == "missing_config" else ValueError
+    match = "synthetic import failure" if failure == "module" else "research_registry.json" if failure == "missing_config" else "CONFIG_SCHEMA_VERSION_INVALID"
+    with pytest.raises(error, match=match):
+        inventory.load_registry(workspace)
+    if had_previous:
+        assert sys.modules[name] is previous
+    else:
+        assert name not in sys.modules
+
+
+def retirement_fixture(workspace, payload):
+    root = workspace / "registry"
+    root.mkdir(exist_ok=True)
+    path = root / inventory.RETIREMENT_RECORD
+    path.write_bytes(payload if isinstance(payload, bytes) else json.dumps(payload, ensure_ascii=False).encode())
+    return root, path
+
+
+def test_retired_projection_never_loads_whole_record_or_decodes_unselected_values(workspace, monkeypatch):
+    payload = (b'{"schema_version":1,"ignored":{"number":' + b"9" * 6000
+               + b',"text":"UNSELECTED_SECRET","nested":[true,null,{"x":1.25e-3}]},'
+               + b'"entries":[{"path":"D:/cache/kept","study_terms":["Item2.02"],'
+               + b'"outcome":{"value":123.456,"raw":"UNSELECTED_SECRET"},'
+               + b'"source_index":[{"file":"kept.py","sha256":"abc",'
+               + b'"financial":"UNSELECTED_SECRET"}]}]}')
+    root, record_path = retirement_fixture(workspace, payload)
+    original_loads = json.loads
+    decoded = []
+
+    def scalar_strings_only(raw, *args, **kwargs):
+        assert isinstance(raw, bytes) and raw.startswith(b'"')
+        assert b"UNSELECTED_SECRET" not in raw
+        decoded.append(raw)
+        return original_loads(raw, *args, **kwargs)
+
+    original_text, original_bytes = Path.read_text, Path.read_bytes
+
+    def forbid_whole_read(path, *args, **kwargs):
+        assert path != record_path, "retirement record must use the binary projection stream"
+        return original_text(path, *args, **kwargs)
+
+    def forbid_bytes_read(path, *args, **kwargs):
+        assert path != record_path, "whole record materialization is forbidden"
+        return original_bytes(path, *args, **kwargs)
+
+    monkeypatch.setattr(inventory.json, "loads", scalar_strings_only)
+    monkeypatch.setattr(Path, "read_text", forbid_whole_read)
+    monkeypatch.setattr(Path, "read_bytes", forbid_bytes_read)
+    matches = inventory.retired_artifact_matches(root, "Item2.02")
+    assert decoded
+    assert matches == [{"path": "D:/cache/kept", "study_terms": ["Item2.02"],
+                        "research_status": "REVIEW_REQUIRED", "registry_entity_id": "",
+                        "record": "retired_artifacts.json"}]
+    assert inventory.retired_artifact_matches(root, "kept.py")[0]["source_matches"] == [
+        {"file": "kept.py", "sha256": "abc"}]
+
+
+def test_retired_projection_preserves_escaped_metadata_and_same_path_entries(workspace):
+    payload = (b'{"schema_version":1,"entries":['
+               b'{"p\\u0061th":"D:\\\\cache\\\\\\u7814\\u7a76\\\"x",'
+               b'"study_terms":["\\u9996\\u635f\\u8def\\u5f84"],'
+               b'"research_status":"NATIVE_BLOCKED","registry_entity_id":""},'
+               b'{"path":"D:\\\\cache\\\\\\u7814\\u7a76\\\"x",'
+               b'"study_terms":["\\u9996\\u635f\\u8def\\u5f84","second"]}]}')
+    root, _ = retirement_fixture(workspace, payload)
+    matches = inventory.retired_artifact_matches(root, "首损路径")
+    assert len(matches) == 2
+    assert matches[0]["path"] == 'D:\\cache\\研究"x'
+    assert matches[0]["research_status"] == "NATIVE_BLOCKED"
+    assert matches[1]["study_terms"][-1] == "second"
+
+
+@pytest.mark.parametrize("record", [
+    {"schema_version": 2, "entries": []},
+    {"schema_version": True, "entries": []},
+    {"entries": []},
+    {"schema_version": 1},
+    {"schema_version": 1, "entries": {}},
+    {"schema_version": 1, "entries": [{"path": "x"}]},
+    {"schema_version": 1, "entries": [{"path": "x", "study_terms": [12]}]},
+    {"schema_version": 1, "entries": [{"path": "x", "study_terms": [], "research_status": 12}]},
+    {"schema_version": 1, "entries": [{"path": "x", "study_terms": [], "source_index": [{"file": 12}]}]},
+])
+def test_retired_projection_rejects_invalid_metadata_schema(workspace, record):
+    root, _ = retirement_fixture(workspace, record)
+    with pytest.raises(ValueError, match="RETIREMENT_RECORD_"):
+        inventory.retired_artifact_matches(root, "x")
+
+
+@pytest.mark.parametrize("unknown", [
+    b'{"a":1,}', b'[1,]', b'01', b'1.e3', b'tru', b'"bad\\q"',
+    b'"unterminated', b'"bad\x01"', b'"bad\xc0\xaf"',
+])
+def test_retired_projection_strictly_validates_skipped_json(workspace, unknown):
+    payload = b'{"schema_version":1,"entries":[],"unknown":' + unknown + b'}'
+    root, _ = retirement_fixture(workspace, payload)
+    with pytest.raises(ValueError, match="RETIREMENT_RECORD_"):
+        inventory.retired_artifact_matches(root, "x")
+
+
+def test_retired_projection_rejects_duplicate_projected_fields_and_trailing_document(workspace):
+    for payload in (b'{"schema_version":1,"schema_version":1,"entries":[]}',
+                    b'{"schema_version":1,"entries":[{"path":"x","path":"y","study_terms":[]}]}',
+                    b'{"schema_version":1,"entries":[]} null'):
+        root, _ = retirement_fixture(workspace, payload)
+        with pytest.raises(ValueError, match="RETIREMENT_RECORD_"):
+            inventory.retired_artifact_matches(root, "x")
+
+
+def test_retired_only_cli_reads_no_accepted_registry_or_source_catalog(workspace, monkeypatch, capsys):
+    root, _ = retirement_fixture(workspace, {"schema_version": 1, "entries": [
+        {"path": "retained/R2", "study_terms": ["Item2.02", "事件证据", "支持不足"]}]})
+    config = workspace / "config/research_registry.json"
+    config.parent.mkdir()
+    config.write_text(json.dumps({"schema_version": 1, "registry_root": str(root)}), encoding="utf-8")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("retired-only must not import/read accepted registry or inspect source catalogs")
+
+    for name in ("load_registry", "accepted_context", "source_matches", "retired_source_matches"):
+        monkeypatch.setattr(inventory, name, forbidden)
+    assert inventory.main(["query", "--repo-root", str(workspace), "--retired-only", "--text", "Item2.02"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "FOUND_REVIEW_REQUIRED"
+    assert result["query_scope"] == "RETIRED_ARTIFACT_METADATA_ONLY"
+    assert result["entities"] == [] and result["registry_head_sha256"] is None
+    assert result["new_research_authorized"] is False
+    assert result["source_name_matches"] == [] and not result["repo_root_file_names_searched"]
+    args = argparse.Namespace(repo_root=workspace, retired_only=True, text=None, alias="支持不足", entity_id=None)
+    assert inventory.query(args)["status"] == "FOUND_REVIEW_REQUIRED"
+    args.alias = None
+    args.entity_id = "R2"
+    assert inventory.query(args)["status"] == "FOUND_REVIEW_REQUIRED"
+    (root / inventory.RETIREMENT_RECORD).unlink()
+    assert inventory.query(args)["status"] == "NOT_FOUND_REQUIRES_REVIEW"

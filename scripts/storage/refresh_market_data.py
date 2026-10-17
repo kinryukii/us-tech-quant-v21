@@ -17,11 +17,13 @@ import math
 import os
 import re
 import sys
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 FETCHER = "scripts/v21/v21_231_moomoo_only_historical_refetch_and_canonical_rebuild.py"
 PROFILE = "scripts/v22/v22_047_r1c_moomoo_opend_connection_profile.py"
+CURRENT_KLINE_NUM = 130
 FIELDS = ["ticker", "moomoo_symbol", "market", "date", "open", "high", "low",
           "close", "volume", "turnover", "adjustment", "source", "source_policy",
           "snapshot_id", "fetched_at_utc"]
@@ -184,6 +186,139 @@ class QuoteHistoryOnly:
         return response
 
 
+
+def _current_subscription_snapshot(context, sdk):
+    returned, value = context.query_subscription(is_all_conn=True)
+    if returned != sdk.RET_OK or not isinstance(value, dict):
+        raise RuntimeError("SUBSCRIPTION_QUERY_REJECTED:" + str(value))
+    if any(type(value.get(key)) is not int or value[key] < 0
+           for key in ("total_used", "own_used", "remain")):
+        raise ValueError("INVALID_SUBSCRIPTION_QUOTA_RESPONSE")
+    return value
+
+
+def _run_current_kline(summary, pending, root, repo, context, sdk):
+    """Official subscribed RAW/RTH daily API; no history request or fallback."""
+    fetcher = load_module(repo / FETCHER, "current_kline_original_normalizer")
+    source_hash = digest(repo / FETCHER)
+    limiter = fetcher.HistoryKlineLimiter(max_calls=40, window_seconds=30.0, min_interval=0.75)
+    owned = []
+    summary.update(current_kline_calls=0, subscribe_calls=0, unsubscribe_calls=0,
+                   owned_subscriptions=[], subscription_api_audit=[], response_isolation=[],
+                   other_quote_api_calls=0, current_kline_num=CURRENT_KLINE_NUM)
+    report = root / "runs" / (hashlib.sha256(json.dumps(summary["plan"], sort_keys=True).encode()).hexdigest()[:20] + ".json")
+    before = _current_subscription_snapshot(context, sdk)
+    summary["subscription_before"] = {key: before[key] for key in ("total_used", "own_used", "remain")}
+    if before["own_used"] != 0:
+        raise ValueError("FRESH_CONNECTION_ALREADY_OWNS_SUBSCRIPTIONS")
+    try:
+        for item in pending:
+            code = item["moomoo_symbol"]
+            result = {"item": item, "status": "FAILED_CURRENT_KLINE"}
+            try:
+                quota = _current_subscription_snapshot(context, sdk)
+                if quota["remain"] < 1:
+                    raise RuntimeError("SUBSCRIPTION_QUOTA_INSUFFICIENT")
+                limiter.acquire(item)
+                returned, message = context.subscribe([code], [sdk.SubType.K_DAY],
+                    is_first_push=False, subscribe_push=False, extended_time=False, session=sdk.Session.RTH)
+                summary["subscribe_calls"] += 1
+                audit = {"code": code, "api": "subscribe", "retcode": int(returned),
+                         "observed_at_utc": datetime.now(timezone.utc).isoformat(),
+                         "subscription_type": "K_DAY", "session": "RTH", "subscribe_push": False,
+                         "preexisting_global_kday": code in quota.get("sub_list", {}).get("K_DAY", [])}
+                summary["subscription_api_audit"].append(audit)
+                if returned != sdk.RET_OK:
+                    audit["error"] = str(message)
+                    raise RuntimeError("SUBSCRIBE_REJECTED:" + str(message))
+                owned.append((code, time.monotonic()))
+                summary["owned_subscriptions"].append(code)
+                limiter.acquire(item)
+                returned, frame = context.get_cur_kline(code, CURRENT_KLINE_NUM,
+                    ktype=sdk.KLType.K_DAY, autype=sdk.AuType.NONE)
+                observed = datetime.now(timezone.utc).isoformat()
+                summary["current_kline_calls"] += 1
+                audit = {"code": code, "api": "get_cur_kline", "retcode": int(returned),
+                         "observed_at_utc": observed, "num": CURRENT_KLINE_NUM,
+                         "ktype": "K_DAY", "autype": "NONE", "session": "RTH"}
+                summary["subscription_api_audit"].append(audit)
+                if returned != sdk.RET_OK:
+                    audit["error"] = str(frame)
+                    raise RuntimeError("GET_CUR_KLINE_REJECTED:" + str(frame))
+                if (not hasattr(frame, "columns") or not hasattr(frame, "to_parquet")
+                        or not {"code", "time_key", "open", "high", "low", "close", "volume", "turnover"} <= set(frame.columns)):
+                    raise ValueError("CURRENT_KLINE_RESPONSE_SCHEMA")
+                if len(frame) > CURRENT_KLINE_NUM or frame.empty:
+                    raise ValueError("CURRENT_KLINE_EMPTY_OR_OVER_REQUEST_LIMIT")
+                if not frame.code.eq(code).all():
+                    raise ValueError("CURRENT_KLINE_RESPONSE_CODE_MISMATCH")
+                days = frame.time_key.astype(str).str[:10]
+                for value in days:
+                    date.fromisoformat(value)
+                if any(value > date.today().isoformat() for value in days):
+                    raise ValueError("CURRENT_KLINE_FUTURE_DATE")
+                if days.duplicated().any():
+                    raise ValueError("CURRENT_KLINE_DUPLICATE_DATE")
+                # Capture actual SDK dataframe values before selecting completed
+                # rows. This quarantine is not a raw wire/protobuf byte claim.
+                raw_path = root / "sdk_responses" / (interval_key(item) + ".parquet")
+                raw_path.parent.mkdir(parents=True, exist_ok=True)
+                if raw_path.exists():
+                    raise FileExistsError("IMMUTABLE_SDK_RESPONSE_ALREADY_EXISTS")
+                frame.to_parquet(raw_path, index=False)
+                allowed = days.between(item["planned_start_date"], item["planned_end_date"])
+                isolation = {"code": code, "returned_rows": len(frame), "accepted_rows": int(allowed.sum()),
+                    "post_target_rows": int((days > item["planned_end_date"]).sum()),
+                    "pre_start_rows": int((days < item["planned_start_date"]).sum()),
+                    "post_target_dates": sorted(set(days[days > item["planned_end_date"]])),
+                    "prices_outside_target_not_published": True}
+                summary["response_isolation"].append(isolation)
+                completed = frame.loc[allowed].copy()
+                records = fetcher.normalize_records(completed, item["ticker"], code, "US", "raw",
+                    "current_kline_" + interval_key(item), observed)
+                result = save_interval(root, item, records, source_hash)
+                result["current_kline_provenance"] = {**audit,
+                    "sdk_response": {"path": str(raw_path), "sha256": digest(raw_path)},
+                    "sdk_response_semantics": "RETURNED_DATAFRAME_PARQUET_NOT_WIRE_RESPONSE",
+                    "isolation": isolation, "owned_subscription": True,
+                    "collector_implementation_sha256": digest(Path(__file__)),
+                    "availability": "CURRENT_RETRIEVAL_NOT_HISTORICAL_PIT"}
+                write_json(Path(result["path"]).with_suffix(".json"), result)
+            except Exception as exc:
+                result.update(status="FAILED_CURRENT_KLINE", error_type=type(exc).__name__, error=str(exc))
+            summary["results"].append(result)
+            write_json(report, summary)
+            print(json.dumps({"ticker": item["ticker"], "status": result["status"]}), flush=True)
+            if result.get("error") and any(token in result["error"].lower()
+                    for token in ("quota", "permission", "entitlement", "rate limit", "频率", "额度", "权限")):
+                break
+    finally:
+        for code, started in owned:
+            delay = max(0.0, 60.0 - (time.monotonic() - started))
+            if delay:
+                time.sleep(delay)
+            summary["unsubscribe_calls"] += 1
+            try:
+                returned, message = context.unsubscribe([code], [sdk.SubType.K_DAY], unsubscribe_all=False)
+                audit = {"api": "unsubscribe", "code": code, "retcode": int(returned),
+                         "only_owned": True, "error": None if returned == sdk.RET_OK else str(message)}
+            except Exception as exc:
+                audit = {"api": "unsubscribe", "code": code, "only_owned": True,
+                         "error": type(exc).__name__ + ":" + str(exc)}
+            summary["subscription_api_audit"].append(audit)
+            write_json(report, summary)
+        after = _current_subscription_snapshot(context, sdk)
+        summary["subscription_after"] = {key: after[key] for key in ("total_used", "own_used", "remain")}
+        summary["owned_subscriptions_released"] = after["own_used"] == 0
+    successful = {"FETCHED_VALIDATED_INTERVAL", "REUSED_VERIFIED_INTERVAL"}
+    done = {interval_key(row["item"]) for row in summary["results"]}
+    summary["results"].extend({"item": item, "status": "BLOCKED_AFTER_PROVIDER_PERMISSION_QUOTA_OR_RATE_LIMIT"}
+        for item in pending if interval_key(item) not in done)
+    summary["status"] = ("ACQUIRED" if summary["owned_subscriptions_released"]
+        and all(row["status"] in successful for row in summary["results"]) else "PARTIAL")
+    summary["request_audit"] = limiter.audit_rows
+    return summary
+
 def run(args) -> dict:
     root = args.work_root.resolve()
     repo = args.repo_root.resolve()
@@ -191,6 +326,16 @@ def run(args) -> dict:
         raise ValueError("ACQUISITION_OUTPUT_MUST_BE_EXTERNAL_TO_CODE_REPOSITORY")
     universe = load_universe(args.tickers, args.universe_csv)
     plan = make_plan(universe, args.start, args.end, args.adjustments)
+    acquisition_mode = getattr(args, "acquisition_mode", "history")
+    if acquisition_mode not in {"history", "current-kline"}:
+        raise ValueError("UNKNOWN_ACQUISITION_MODE")
+    if acquisition_mode == "current-kline":
+        if args.adjustments != ["raw"] or args.max_retries != 0:
+            raise ValueError("CURRENT_KLINE_REQUIRES_RAW_AND_ZERO_RETRIES")
+        if any(not re.fullmatch(r"[A-Z0-9]{9}", row["security_id"]) for row in universe):
+            raise ValueError("CURRENT_KLINE_EXPLICIT_SECURITY_ID_REQUIRED")
+        plan = [{**item, "acquisition_method": "GET_CUR_KLINE", "num": CURRENT_KLINE_NUM,
+                 "session": "RTH", "subscribe_push": False} for item in plan]
     plan_hash = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()[:20]
     report = root / "runs" / f"{plan_hash}.json"
     summary = {"schema_version": 1, "observed_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -198,10 +343,21 @@ def run(args) -> dict:
                "plan": plan, "results": [], "source_policy": "MOOMOO_ONLY",
                "trade_context_opened": False, "canonical_pointer_modified": False,
                "history_request_count": 0, "new_unique_security_touch_count": 0}
+    known_only = getattr(args, "known_only", False)
+    if type(known_only) is not bool:
+        raise ValueError("KNOWN_ONLY_REQUIRES_BOOLEAN")
+    summary["known_history_securities_only"] = known_only
+    summary["acquisition_mode"] = acquisition_mode
     pending = []
     for item in plan:
         cached = read_checkpoint(root, item)
         if cached:
+            if acquisition_mode == "current-kline":
+                ref = cached.get("current_kline_provenance", {}).get("sdk_response", {})
+                response_path = Path(ref.get("path", "")).resolve()
+                if (not response_path.is_relative_to(root / "sdk_responses")
+                        or not response_path.is_file() or digest(response_path) != ref.get("sha256")):
+                    raise ValueError("CURRENT_KLINE_SDK_RESPONSE_CHECKPOINT_CHANGED")
             summary["results"].append(cached)
         else:
             pending.append(item)
@@ -233,6 +389,8 @@ def run(args) -> dict:
         sdk.SysConfig.set_all_thread_daemon(True)
         context = sdk.OpenQuoteContext(host=profile.host, port=profile.port, is_async_connect=True)
         context.set_sync_query_connect_timeout(10)
+        if acquisition_mode == "current-kline":
+            return _run_current_kline(summary, pending, root, repo, context, sdk)
         quota_result, quota = context.get_history_kl_quota(get_detail=True)
         if quota_result != sdk.RET_OK:
             raise RuntimeError("QUOTA_QUERY_FAILED:" + str(quota))
@@ -249,8 +407,8 @@ def run(args) -> dict:
         errors, recovered = [], []
         for item in pending:
             code = item["moomoo_symbol"]
-            result = {"item": item, "status": "BLOCKED_QUOTA"}
-            if code in known or remaining > 0:
+            result = {"item": item, "status": "BLOCKED_KNOWN_SECURITY_ONLY" if known_only else "BLOCKED_QUOTA"}
+            if code in known or (not known_only and remaining > 0):
                 if code not in known:
                     known.add(code)
                     remaining -= 1  # conservative accounting even if a request fails
@@ -306,6 +464,10 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int)
     parser.add_argument("--max-retries", type=int, choices=(0, 1), default=1)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--acquisition-mode", choices=("history", "current-kline"), default="history",
+                        help="Current-kline uses official subscribed RAW/RTH daily data, fixed num130 and zero retries.")
+    parser.add_argument("--known-only", action="store_true",
+                        help="Fetch only current history-quota known codes; never spend an additional unique-security slot.")
     args = parser.parse_args(argv)
     summary = run(args)
     print(json.dumps({key: value for key, value in summary.items()

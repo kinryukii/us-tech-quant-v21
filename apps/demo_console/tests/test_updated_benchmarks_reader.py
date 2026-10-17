@@ -14,12 +14,14 @@ DATES = ('2025-12-30', '2025-12-31', '2026-01-02', '2026-01-05')
 
 @pytest.fixture
 def updated_config(artifact_dir):
-    def create(mutate_rows=None, mutate_manifest=None):
+    def create(mutate_rows=None, mutate_manifest=None, mutate_all_rows=None):
         artifacts = []
         for symbol in ('QQQ', 'SPY'):
             rows = [dict(date=day, ticker=symbol, open=price,
                          source='MOOMOO_OPEND' if i < 2 else 'MASSIVE_GROUPED', adjustment='raw')
                     for i, (day, price) in enumerate(zip(DATES, (100., 110., 99., 101.)))]
+            if mutate_all_rows:
+                mutate_all_rows(rows)
             if symbol == 'QQQ' and mutate_rows:
                 mutate_rows(rows)
             path = artifact_dir / f'{symbol}.parquet'
@@ -102,3 +104,46 @@ def test_manifest_and_projection_hashes_are_enforced(updated_config):
 def test_source_contract_cannot_silently_change(updated_config, mutate):
     history = reader.read_updated_benchmarks(DATES, config=updated_config(mutate_manifest=mutate))
     assert history.error or history.series[0].error
+
+
+def fallback_manifest(manifest):
+    from scripts.storage.refresh_demo_benchmarks import CUTOVER, FALLBACK_POLICY, ETF_IDENTITIES
+    manifest.update(fixed_source_cutover=CUTOVER, end_date=DATES[-1])
+    source = {"path": "X:/NEVER_OPEN/original_raw.csv", "sha256": "a" * 64}
+    proofs = {symbol: {**identity, "source": "MOOMOO_OPEND", "adjustment": "raw", "comparison": "EXACT_FLOAT_EQUALITY",
+        "overlap_days": 5, "exact_equal_count": 5, "latest_five_dates": ["2025-12-26", "2025-12-29", *DATES[:3]],
+        "all_overlap_exact": True, "source_refs": [source]} for symbol, identity in ETF_IDENTITIES.items()}
+    manifest["source_fallbacks"] = [{"schema": FALLBACK_POLICY, "dates": [DATES[-1]], "previous_end_date": DATES[-2],
+        "previous_manifest": source, "massive_failures": [{"date": DATES[-1], "status": "FAILED", "error": "HTTP_403", "reference": source, "origin_reference": source}],
+        "qualifications": proofs}]
+
+
+def fallback_rows(rows):
+    for row in rows:
+        row['source'] = 'MASSIVE_GROUPED'
+    rows[-1]['source'] = 'MOOMOO_OPEND'
+
+
+def test_explicit_bound_source_fallback_uses_original_return_math(updated_config):
+    config = updated_config(mutate_all_rows=fallback_rows, mutate_manifest=fallback_manifest)
+    history = reader.read_updated_benchmarks(DATES, config=config)
+    assert not history.error and all(not series.error and len(series.points) == 4 for series in history.series)
+    assert history.series[0].total_return == pytest.approx(.01)
+
+
+@pytest.mark.parametrize('problem', ['unknown_policy', 'no_qualifications', 'false_exact', 'wrong_cusip', 'unknown_currency', 'not_failed', 'duplicate_dates', 'unbound_ref', 'silent_source'])
+def test_fallback_protocol_or_silent_source_mutation_is_rejected(updated_config, problem):
+    def mutation(manifest):
+        fallback_manifest(manifest)
+        record = manifest['source_fallbacks'][0]
+        if problem == 'unknown_policy': record['schema'] = 'UNREVIEWED'
+        elif problem == 'no_qualifications': record['qualifications'] = {}
+        elif problem == 'false_exact': record['qualifications']['SPY']['all_overlap_exact'] = False
+        elif problem == 'wrong_cusip': record['qualifications']['SPY']['security_id'] = '000000000'
+        elif problem == 'unknown_currency': record['qualifications']['QQQ']['currency'] = 'HKD'
+        elif problem == 'not_failed': record['massive_failures'][0]['status'] = 'SUCCESS'
+        elif problem == 'duplicate_dates': record['dates'] = [DATES[-1], DATES[-1]]
+        elif problem == 'unbound_ref': record['previous_manifest']['sha256'] = 'NOT_A_HASH'
+        elif problem == 'silent_source': manifest['source_fallbacks'] = []
+    history = reader.read_updated_benchmarks(DATES, config=updated_config(mutate_all_rows=fallback_rows, mutate_manifest=mutation))
+    assert history.error or all(series.error and not series.points for series in history.series)

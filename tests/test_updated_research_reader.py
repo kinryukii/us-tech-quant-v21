@@ -33,7 +33,8 @@ def save(path, value):
 @pytest.fixture
 def tmp_path():
     # Ordinary directories avoid Python 3.14's Windows owner-only temp ACL.
-    base = (ROOT / 'updated-reader-synthetic').resolve()
+    from scripts.common.storage_paths import resolve
+    base = (resolve(ROOT).cache_root / 'pytest/daily_update_20261006/raw_updated_reader').resolve()
     path = base / uuid4().hex
     path.mkdir(parents=True)
     yield path
@@ -284,3 +285,48 @@ def test_sample_performance_never_crosses_the_2026_boundary(monkeypatch):
     assert result.archive_start == '2026-01-02'
     assert result.baseline_date == '2025-12-31'
     assert history.points == points and model.performance_cutoff_date == '2026-01-02'
+
+
+@pytest.fixture
+def reused_bundle(bundle):
+    bundle.manifest.update(model_fit_count=0, parameter_search_count=0, calendar_lineage={'synthetic':True})
+    original_reference=bundle.publish();origin=json.loads(Path(original_reference['path']).read_text())
+    for name in ('trades','price_paths','corporate_action_events'):
+        path=bundle.work/(name+'.parquet');pq.write_table(pa.table({'synthetic':[1]}),path);origin['outputs'][name]=ref(path)
+    save(bundle.work/'manifest.json',origin)
+    work=bundle.work.parent/'synthetic_reuse';work.mkdir()
+    current=deepcopy(origin);current.update(run_id=work.name,report_path=str(work/'manifest.json'))
+    current['performance_origin']={'schema':'A2_IMMUTABLE_PERFORMANCE_ORIGIN_V1','mode':'REUSE_VERIFIED_EXECUTED_LEDGER_SAME_END','manifest':ref(bundle.work/'manifest.json')}
+    for name in ('rankings','decision_calendar'):
+        path=work/(name+'.parquet');pq.write_table(pa.Table.from_pylist(bundle.tables[name]),path);current['outputs'][name]=ref(path)
+    old_contract=json.loads(Path(origin['evaluation_contract']['path']).read_text())
+    contract={**old_contract,'rankings':current['outputs']['rankings'],'performance_origin':current['performance_origin']}
+    save(work/'evaluation_contract.json',contract);current['evaluation_contract']=ref(work/'evaluation_contract.json')
+    save(work/'manifest.json',current);reader.clear_cache()
+    return SimpleNamespace(current=current,origin=origin,work=work,original_work=bundle.work,contract=contract,reference=ref(work/'manifest.json'))
+
+
+def test_same_end_reader_borrows_only_bound_exact_immutable_economic_outputs(reused_bundle):
+    state=reused_bundle
+    selected=reader.load_overview(reference=state.reference)
+    assert selected.decision_date=='2026-09-22' and selected.provenance.execution_date is None
+    history=reader.read_performance('2026-09-22',reference=state.reference)
+    assert len(history.points)==3 and history.points[-1].execution_date=='2026-09-22'
+    assert len(workspace.latest_executed_overview(selected).holdings)==20
+
+
+@pytest.mark.parametrize('fault',['origin_hash','output_ref','mark_bytes','origin_contract','origin_fit','current_rank_borrow'])
+def test_reused_outputs_still_fail_closed_on_origin_or_path_changes(reused_bundle,fault):
+    state=reused_bundle
+    if fault=='origin_hash':state.current['performance_origin']['manifest']['sha256']='0'*64
+    elif fault=='output_ref':state.current['outputs']['positions']={**state.current['outputs']['positions'],'rows':999}
+    elif fault=='mark_bytes':Path(state.origin['outputs']['price_paths']['path']).write_bytes(b'changed original price paths')
+    elif fault=='origin_contract':Path(state.origin['evaluation_contract']['path']).write_bytes(b'changed original contract')
+    elif fault=='origin_fit':
+        state.origin['model_fit_count']=1;save(state.original_work/'manifest.json',state.origin)
+        state.current['performance_origin']['manifest']=ref(state.original_work/'manifest.json')
+        state.contract['performance_origin']=state.current['performance_origin'];save(state.work/'evaluation_contract.json',state.contract)
+        state.current['evaluation_contract']=ref(state.work/'evaluation_contract.json')
+    else:state.current['outputs']['rankings']=state.origin['outputs']['rankings']
+    save(state.work/'manifest.json',state.current)
+    with pytest.raises(ValueError):reader.load_overview(reference=ref(state.work/'manifest.json'))

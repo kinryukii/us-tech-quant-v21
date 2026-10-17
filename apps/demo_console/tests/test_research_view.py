@@ -168,8 +168,9 @@ def test_execution_tab_is_append_only_localized_and_preserves_legacy_routes_and_
         app.run()
         assert not app.exception and not app.error
         assert app.get("tab_container")[0].proto.tab_container.default_tab_index == index
-        assert _charts(app)["execution"][1] == original
+        assert "execution" not in _charts(app)
     _switch_tab(app, "Execution frictions")
+    assert _charts(app)["execution"][1] == original
     app.selectbox(key="research_range").select("63 execution days").run()
     assert not app.exception and not app.error
     assert app.get("tab_container")[0].proto.tab_container.default_tab_index == 4
@@ -216,6 +217,11 @@ def research_app(terminal_app, monkeypatch, benchmark_stub):
     # guard ensures later refactoring cannot accidentally reach the real reader.
     monkeypatch.setattr(research, "read_performance", synthetic_performance)
     monkeypatch.setattr(performance_reader, "read_performance", forbidden_real_reader)
+    # These legacy payload cases explicitly inspect the optional analysis panels.
+    app.session_state["research_raw_drawdown"] = True
+    app.session_state["research_rolling_windows"] = True
+    app.session_state["research_month_detail"] = True
+    app.session_state["_research_month_detail_open"] = True
     yield state
     assert asdict(archive) == before
 
@@ -237,13 +243,35 @@ def _charts(app):
                 else "year" if "series" in first else "execution" if "turnover" in first else "distribution")
         assert kind not in charts
         charts[kind] = (spec, records)
-    required = {"wealth", "drawdown", "month", "year", "month_detail", "execution", "distribution"}
-    if min(row["drawdown"] for row in charts["wealth"][1]) < -1e-12:
-        required.add("episode")
-    if len(charts["wealth"][1]) >= 63:
-        required.add("rolling")
-    assert set(charts) == required
+    source = app.session_state.filtered_state.get("_localized_tabs:research_tabs", "Performance path")
+    if source == "Performance path":
+        assert {"wealth", "month", "year"} <= set(charts) <= {"wealth", "drawdown", "month", "year", "month_detail"}
+    elif source == "Execution frictions":
+        assert set(charts) == {"execution"}
+    elif source == "Consistency & concentration":
+        assert "distribution" in charts and set(charts) <= {"distribution", "rolling"}
+    elif source == "Drawdown & recovery":
+        assert set(charts) <= {"episode"}
+    elif source == "Evidence & method":
+        assert not charts
     return charts
+
+
+def _select_research_tab(app, source):
+    from apps.demo_console.tests.test_localized_tabs import _switch_tab
+    _switch_tab(app, _label(source, app.session_state.filtered_state.get("language", "en")), key="research_tabs")
+    assert not app.exception and not app.error
+
+
+def _research_records_from_tab(app, source, metric):
+    """Read genuine visible output after a native event, then restore selection."""
+    original = app.session_state.filtered_state.get("_localized_tabs:research_tabs", "Performance path")
+    if original != source:
+        _select_research_tab(app, source)
+    records = _charts(app)[metric][1]
+    if original != source:
+        _select_research_tab(app, original)
+    return records
 
 
 def _economic_payload(app):
@@ -280,13 +308,21 @@ def _assert_cutoff(state, decision_date):
     expected_execution = state.models[decision_date].provenance.execution_date
     assert app.selectbox(key="decision_date").value == decision_date
     assert state.calls[-1] == expected_execution
-    records = _charts(app)["wealth"][1]
+    visible = _charts(app)
+    for _, records in visible.values():
+        for row in records:
+            assert all(value <= expected_execution for field in ("execution_date", "end_date")
+                       if (value := row.get(field)) is not None)
+    if "wealth" not in visible:
+        return
+    records = visible["wealth"][1]
     assert records[-1]["execution_date"] == expected_execution
     assert all(row["execution_date"] <= expected_execution for row in records)
     assert "2025-12-04" not in {row["execution_date"] for row in records}
-    detail = _charts(app)["month_detail"][1]
-    assert all(row["execution_date"] <= expected_execution for row in detail)
-    assert {row["execution_date"] for row in detail} <= {row["execution_date"] for row in records}
+    if "month_detail" in visible:
+        detail = visible["month_detail"][1]
+        assert all(row["execution_date"] <= expected_execution for row in detail)
+        assert {row["execution_date"] for row in detail} <= {row["execution_date"] for row in records}
     if "episode" in _charts(app):
         episode = _charts(app)["episode"][1]
         full_drawdown = {row["execution_date"]: row["drawdown"] for row in records}
@@ -372,11 +408,16 @@ def test_reference_failure_preserves_a2_and_full_provenance_is_opt_in(research_a
     assert all(value == "N/A" for value in _period_table(app)["Frozen A control"])
     before = _economic_payload(app)
     assert all(secret not in _content(app) for secret in (_PATH, _HASH, _DEBUG, _REFERENCE_DEBUG))
+    assert _HASH[:12] not in _content(app), "Closed evidence tab does not serialize identities"
+    _select_research_tab(app, "Evidence & method")
     assert _HASH[:12] in _content(app), "Presentation mode may show shortened artifact identity"
+    _select_research_tab(app, "Performance path")
 
     app.toggle(key="presentation_mode").set_value(False).run()
     _assert_cutoff(state, "2025-12-02")
+    _select_research_tab(app, "Evidence & method")
     assert all(secret in _content(app) for secret in (_PATH, _HASH, _DEBUG))
+    _select_research_tab(app, "Performance path")
     assert _economic_payload(app) == before
     app.toggle(key="presentation_mode").set_value(True).run()
     assert all(secret not in _content(app) for secret in (_PATH, _HASH, _DEBUG, _REFERENCE_DEBUG))
@@ -398,6 +439,7 @@ def test_rolling_table_matches_chart_for_windows_languages_and_short_history(res
         return rolling_table().value.copy(deep=True)
 
     app.radio(key="workspace").set_value("Research").run()
+    _select_research_tab(app, "Consistency & concentration")
     full = assert_consistent()
     assert len(full) > 1
     app.selectbox(key="research_range").select("63 execution days").run()
@@ -413,7 +455,7 @@ def test_rolling_table_matches_chart_for_windows_languages_and_short_history(res
             assert config[field]["label"] == _label(source, language)
         panel = next(expander for expander in app.expander
                      if expander.label == _label("Inspect fixed 63-day windows", language))
-        assert panel.proto.expanded is False
+        assert panel.proto.expanded is True  # This case explicitly opened the rolling panel.
         assert len(panel.dataframe) == 1
 
     app.selectbox(key="research_range").select("All days through selected execution").run()
@@ -485,7 +527,7 @@ def test_drawdown_episode_selection_preserves_window_coordinates_and_repairs_rem
         entry = next(row for row in ledger().to_dict("records")
                      if row["first_underwater_date"] == selected)
         _, points = _charts(app)["episode"]
-        full = _charts(app)["wealth"][1]
+        full = _research_records_from_tab(app, "Performance path", "wealth")
         full_dates = {row["execution_date"] for row in full}
         start = entry["peak_date"] if entry["peak_date"] in full_dates else full[0]["execution_date"]
         expected = [{"execution_date": row["execution_date"], "drawdown": row["drawdown"]}
@@ -499,6 +541,7 @@ def test_drawdown_episode_selection_preserves_window_coordinates_and_repairs_rem
         return points
 
     app.radio(key="workspace").set_value("Research").run()
+    _select_research_tab(app, "Drawdown & recovery")
     assert app.selectbox(key="research_drawdown_episode").value == ledger().iloc[-1]["first_underwater_date"]
     first = ledger().iloc[0]["first_underwater_date"]
     assert first == "2024-12-31"
@@ -554,7 +597,7 @@ def test_custom_calendar_range_controls_all_paths_and_uses_previous_actual_execu
         assert state.benchmarks.calls[-1] == (expected_dates, baseline)
         charts = _charts(app)
         assert charts["wealth"][1] == [asdict(point) for point in summary.wealth]
-        assert tuple(row["execution_date"] for row in charts["execution"][1]) == expected_dates
+        assert tuple(row["execution_date"] for row in _research_records_from_tab(app, "Execution frictions", "execution")) == expected_dates
         assert {row["execution_date"] for row in charts["month_detail"][1]} <= set(expected_dates)
         assert sum(row["observations"] for row in charts["month"][1]) == len(expected)
         assert sum(row["observations"] for row in charts["year"][1] if row["series"] == "Raw A2") == len(expected)
@@ -590,7 +633,7 @@ def test_custom_range_cutoff_clips_visible_end_and_empty_interval_clears_results
     prior = max(point.execution_date for point in state.archive.points if point.execution_date < expected_dates[0])
     assert state.benchmarks.calls[-1] == (expected_dates, prior)
     assert tuple(row["execution_date"] for row in _charts(app)["wealth"][1]) == expected_dates
-    assert all(row["execution_date"] <= "2025-12-02" for row in _charts(app)["execution"][1])
+    assert all(row["execution_date"] <= "2025-12-02" for row in _research_records_from_tab(app, "Execution frictions", "execution"))
     assert state.calls[-1] == "2025-12-02"
     # A calendar gap has no fabricated return or retained chart from the old range.
     calls = list(state.benchmarks.calls)
@@ -650,3 +693,33 @@ def test_page_four_series_sharpe_and_window_baselines(benchmark_stub):
         assert any(value.startswith('SPY') for value in table['series'])
         if mode=='Single':assert table.annualized_sharpe.isna().all()
         else:assert all(value==pytest.approx(expected) for value in table.annualized_sharpe)
+
+
+def test_research_only_builds_selected_analytical_tab_and_every_view_remains_available(research_app, monkeypatch):
+    from apps.demo_console.pages import research
+    state, app = research_app, research_app.app
+    calls = []
+    def counted(name, function):
+        def render(*args, **kwargs):
+            calls.append(name)
+            return function(*args, **kwargs)
+        return render
+    for name in ("_performance", "_consistency", "_method", "render_drawdown_episodes", "render_execution_quality"):
+        monkeypatch.setattr(research, name, counted(name, getattr(research, name)))
+    for key in ("research_raw_drawdown", "research_rolling_windows", "research_month_detail", "_research_month_detail_open"):
+        app.session_state[key] = False
+    app.radio(key="workspace").set_value("Research").run()
+    assert calls == ["_performance"]
+    assert set(_charts(app)) == {"wealth", "month", "year"}
+    for source, renderer, charts in (("Drawdown & recovery", "render_drawdown_episodes", {"episode"}),
+            ("Consistency & concentration", "_consistency", {"distribution"}),
+            ("Evidence & method", "_method", set()), ("Execution frictions", "render_execution_quality", {"execution"}),
+            ("Performance path", "_performance", {"wealth", "month", "year"})):
+        calls.clear()
+        _select_research_tab(app, source)
+        assert calls == [renderer]
+        assert set(_charts(app)) == charts
+        _assert_cutoff(state, "2025-12-02")
+        assert app.selectbox(key="decision_date").value == "2025-12-02"
+        assert _INDEPENDENCE_NOTE in _content(app)
+        assert "Sharpe is a descriptive annualized ratio." in _content(app)

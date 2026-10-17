@@ -492,6 +492,76 @@ class PartialPaperExecutionTests(unittest.TestCase):
         self.assertEqual(self.engine.db.execute("SELECT count(*) FROM paper_batches").fetchone()[0], 0)
 
 
+class ObservedPaperValuationTests(unittest.TestCase):
+    CLOCK = datetime(2026, 9, 29, 15, 0, tzinfo=timezone.utc)
+    OLD = datetime(2026, 9, 29, 13, 30, tzinfo=timezone.utc)
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        with patch("moomoo_component.core.now_iso", return_value=self.OLD.isoformat()):
+            self.engine = Engine(Path(self.temp.name), paper_only=True)
+        self.addCleanup(self.engine.close)
+        self.engine._set("paper", dict(cash=9000, fees=2, positions={"US.AAPL": 5, "US.MSFT": 5}))
+        self.engine.paper_mark({code: dict(price=100, asof=self.OLD.isoformat(), source="MOOMOO_OPEND")
+            for code in ("US.AAPL", "US.MSFT")}, day="2026-09-29")
+
+    def quote(self, **changes):
+        return dict(price=120, asof=(self.CLOCK - timedelta(seconds=3)).isoformat(), source="MOOMOO_OPEND",
+            currency="USD", market="US", tradable=True, **changes)
+
+    def test_partial_nav_retains_actual_old_marks_and_excludes_sold_marks_from_times(self):
+        marks = self.engine._get("paper_marks", {})
+        marks["US.SOLD"] = dict(price=999, asof=(self.CLOCK + timedelta(days=1)).isoformat(),
+            source="MOOMOO_OPEND", basis="MOOMOO_REALTIME")
+        self.engine._set("paper_marks", marks)
+        ledger = deepcopy(self.engine._get("paper", {}))
+        book = self.engine.paper_mark({"US.AAPL": self.quote()}, day="2026-09-29",
+            observed_at_utc=self.CLOCK.isoformat(), failed_quotes={"US.MSFT": "source older than 30s"})
+        row = self.engine.paper_nav_history()[-1]
+        self.assertEqual(row["equity"], 10100)
+        self.assertEqual(row["basis"], "OBSERVED_MIXED_MARKS")
+        self.assertEqual(row["asof"], self.OLD.isoformat())
+        self.assertEqual(row["held_asof_min"], self.OLD.isoformat())
+        self.assertEqual(row["held_asof_max"], self.quote()["asof"])
+        self.assertEqual(row["observed_at_utc"], self.CLOCK.isoformat())
+        self.assertFalse(row["complete_live_coverage"])
+        self.assertEqual(row["fresh_held_count"], 1)
+        self.assertEqual(self.engine._get("paper", {}), ledger)
+        self.assertEqual(self.engine._get("paper_marks", {})["US.MSFT"], marks["US.MSFT"])
+        self.assertEqual(self.engine._get("paper_marks", {})["US.AAPL"]["basis"], "MOOMOO_REALTIME")
+        self.assertTrue(book["valuation"]["nav_recorded"])
+
+    def test_zero_fresh_or_missing_true_mark_cannot_record_nav(self):
+        old = deepcopy(self.engine.paper_nav_history())
+        result = self.engine.paper_mark({}, day="2026-09-29", observed_at_utc=self.CLOCK.isoformat(),
+            failed_quotes={"US.AAPL": "failed", "US.MSFT": "failed"})
+        self.assertFalse(result["valuation"]["nav_recorded"])
+        self.assertEqual(self.engine.paper_nav_history(), old)
+        marks = self.engine._get("paper_marks", {}); marks.pop("US.MSFT"); self.engine._set("paper_marks", marks)
+        result = self.engine.paper_mark({"US.AAPL": self.quote()}, day="2026-09-29", observed_at_utc=self.CLOCK.isoformat())
+        self.assertEqual(self.engine.paper_nav_history(), old)
+        self.assertEqual(result["valuation"]["unmarked_codes"], ["US.MSFT"])
+
+    def test_complete_fresh_nav_has_real_source_times_and_no_mix_label(self):
+        self.engine.paper_mark({code: self.quote() for code in ("US.AAPL", "US.MSFT")},
+            day="2026-09-29", observed_at_utc=self.CLOCK.isoformat())
+        row = self.engine.paper_nav_history()[-1]
+        self.assertEqual(row["basis"], "MOOMOO_REALTIME")
+        self.assertTrue(row["complete_live_coverage"])
+        self.assertEqual(row["held_asof_min"], self.quote()["asof"])
+        self.assertNotEqual(row["asof"], row["observed_at_utc"])
+
+    def test_engine_boundary_rejects_stale_future_and_nontradable_quotes(self):
+        for change in ({"asof": (self.CLOCK - timedelta(seconds=31)).isoformat()},
+                       {"asof": (self.CLOCK + timedelta(seconds=1)).isoformat()}, {"tradable": False}):
+            with self.subTest(change=change):
+                quote = self.quote(); quote.update(change)
+                old = deepcopy(self.engine._get("paper_marks", {}))
+                with self.assertRaisesRegex(ValueError, "30秒"):
+                    self.engine.paper_mark({"US.AAPL": quote}, day="2026-09-29", observed_at_utc=self.CLOCK.isoformat())
+                self.assertEqual(self.engine._get("paper_marks", {}), old)
+
+
 class PartialBrokerFixture(BrokerFixture):
     def snapshot_partial(self, codes):
         result = self.snapshot(codes)
@@ -609,6 +679,518 @@ class PartialBrokerExecutionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             engine.step(allow_partial_quotes=True)
         self.assertEqual(len(broker.submissions), 1)
+
+
+
+class ResetOrderIdentityTests(unittest.TestCase):
+    setUp = EngineSafetyTests.setUp
+    close_engines = EngineSafetyTests.close_engines
+    engine = EngineSafetyTests.engine
+    ready = EngineSafetyTests.ready
+
+    def prepared(self):
+        import hashlib
+        engine, broker = self.ready(PartialBrokerFixture())
+        now = datetime.now(timezone.utc)
+        plan = dict(reset_id="reset-test", source_hash="frozen-reset-source")
+        metadata = dict(next_open_utc=(now - timedelta(seconds=1)).isoformat(),
+            signal_close_utc="2026-10-02T20:00:00Z")
+        fingerprint = lambda v: hashlib.sha256(json.dumps(v, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        record = dict(reset_id="reset-test", account_id="sim-one", signal_date="2026-10-02",
+            stage="ARMED", post_liquidation_baseline=None, unused_cash=0,
+            plan_sha256=fingerprint(plan), metadata_sha256=fingerprint(metadata))
+        engine._set("best_plan", dict(plan=plan, metadata=metadata))
+        engine._set("best_capital", dict(account_id="sim-one", budget=10000, unused_cash=0))
+        engine._set("best_full_liquidation_reset", record)
+        source = dict(kind="AUTHORIZED_MOOMOO_SIMULATE_EXECUTION_PLAN", reset_id="reset-test",
+            signal_date="2026-10-02", phase="SELL", source_hash=plan["source_hash"],
+            budget=10000, **metadata)
+        return engine, broker, source, record, now
+
+    def install(self, engine, source, stamp, target):
+        engine.import_strategy(manifest(strategy_id="HGB_DIAG_5", asof=stamp,
+            targets=[dict(code="US.AAPL", target_qty=target)], source=json.dumps(source)))
+        engine.switch("HGB_DIAG_5")
+
+    def confirmed(self, engine, record, now):
+        record.update(stage="REBUYING", post_liquidation_baseline=dict(reset_id="reset-test",
+            account_id="sim-one", cash=10000, equity=10000, positions={},
+            asof=now.isoformat(), valuation_basis="ACTUAL_POST_LIQUIDATION_CASH"))
+        engine._set("best_full_liquidation_reset", record)
+
+    def test_confirmed_reset_sell_and_buy_same_clock_have_distinct_ids(self):
+        engine, broker, source, record, now = self.prepared()
+        stamp = now.isoformat()
+        broker.positions["US.AAPL"] = dict(qty=1, sellable=1, market_value=200)
+        self.install(engine, source, stamp, 0)
+        sell = engine.preview(allow_partial_quotes=True)["orders"][0]
+        broker.positions = {}
+        self.confirmed(engine, record, now)
+        source["phase"] = "BUY"
+        self.install(engine, source, stamp, 1)
+        buy = engine.preview(allow_partial_quotes=True)["orders"][0]
+        self.assertNotEqual(sell["id"], buy["id"])
+        self.assertEqual((sell["side"], buy["side"]), ("SELL", "BUY"))
+        self.assertEqual(broker.submissions, [])
+
+    def test_reset_origin_without_matching_original_account_is_rejected(self):
+        engine, broker, source, record, now = self.prepared()
+        record["account_id"] = "another-sim"
+        engine._set("best_full_liquidation_reset", record)
+        self.install(engine, source, now.isoformat(), 0)
+        with self.assertRaisesRegex(ValueError, "SIMULATE_RESET_ORDER_IDENTITY_MISMATCH"):
+            engine.preview(allow_partial_quotes=True)
+        self.assertEqual(broker.submissions, [])
+
+    def test_buy_before_flat_and_sell_after_baseline_are_rejected(self):
+        engine, broker, source, record, now = self.prepared()
+        source["phase"] = "BUY"
+        self.install(engine, source, now.isoformat(), 1)
+        with self.assertRaisesRegex(ValueError, "BUY_REQUIRES_CONFIRMED_LIQUIDATION"):
+            engine.preview(allow_partial_quotes=True)
+        self.confirmed(engine, record, now)
+        source["phase"] = "SELL"
+        self.install(engine, source, now.isoformat(), 0)
+        with self.assertRaisesRegex(ValueError, "SELL_REQUIRES_UNFINISHED_FULL_LIQUIDATION"):
+            engine.preview(allow_partial_quotes=True)
+        self.assertEqual(broker.submissions, [])
+
+    def test_changed_source_and_nonzero_liquidation_target_are_rejected(self):
+        engine, broker, source, record, now = self.prepared()
+        self.install(engine, source, now.isoformat(), 1)
+        with self.assertRaisesRegex(ValueError, "SELL_REQUIRES_UNFINISHED_FULL_LIQUIDATION"):
+            engine.preview(allow_partial_quotes=True)
+        source["source_hash"] = "changed"
+        self.install(engine, source, now.isoformat(), 0)
+        with self.assertRaisesRegex(ValueError, "SOURCE_BINDING_CHANGED"):
+            engine.preview(allow_partial_quotes=True)
+        self.assertEqual(broker.submissions, [])
+
+    def test_paper_batch_identity_is_unique_across_restarted_epochs(self):
+        engine = self.engine()
+        original = engine._paper_batch_id("HGB_DIAG_5", "2026-10-02", "2026-10-05")
+        engine._set("paper_epoch_id", "reset-one")
+        first = engine._paper_batch_id("HGB_DIAG_5", "2026-10-02", "2026-10-05")
+        engine._set("paper_epoch_id", "reset-two")
+        second = engine._paper_batch_id("HGB_DIAG_5", "2026-10-02", "2026-10-05")
+        self.assertEqual(len({original, first, second}), 3)
+        self.assertEqual(second, engine._paper_batch_id("HGB_DIAG_5", "2026-10-02", "2026-10-05"))
+
+
+class AutomaticPaperCompletionTests(unittest.TestCase):
+    """Standing completion uses only synthetic ledgers and original paper batches."""
+    setUp = PartialPaperExecutionTests.setUp
+    def quotes(self, codes, clock=None, **changes):
+        values=PartialPaperExecutionTests.quotes(self,codes,clock)
+        for quote in values.values():quote.update(changes)
+        return values
+
+    rebalance = PartialPaperExecutionTests.rebalance
+    OPEN = PartialPaperExecutionTests.OPEN
+    CLOSE = PartialPaperExecutionTests.CLOSE
+
+    def automatic(self, **changes):
+        self.OPEN = datetime(2026, 9, 29, 13, 30, tzinfo=timezone.utc)
+        self.auto_close = datetime(2026, 9, 29, 20, 0, tzinfo=timezone.utc)
+        self.auto_primary = dict(schema_version=1, enabled=True, policy_id="synthetic_auto_20260929",
+            reason="USER_EXPLICIT_DAILY_AUTO_COMPLETION", authorized_at_utc=self.CLOSE.isoformat(),
+            effective_execution_date="2026-09-29", evaluation_end_exclusive="2027-01-01",
+            priority_window_seconds=600, close_buffer_seconds=600, one_tick_spread=True,
+            normal_spread_bps=50, max_single_tick_spread_bps=200, quote_max_age_seconds=30,
+            price_deviation_fraction=.02, active_strategy_ids=["HGB_DIAG_5","HGB_FACTOR_5"],
+            broker_account_id="3604", broker_budget=10000, **{})
+        self.auto_primary.update(changes)
+        self.engine.automatic_completion_policy_provider = lambda: self.auto_primary
+        self.engine._set("automatic_completion_policy", self.auto_primary)
+        self.engine.db.execute("INSERT INTO audit VALUES (?,?,?)",
+            (self.auto_primary["authorized_at_utc"],"AUTOMATIC_COMPLETION_POLICY_AUTHORIZED",
+             json.dumps(self.auto_primary)))
+        self.engine.db.commit()
+        return self.auto_primary
+
+    def auto_rebalance(self, quotes, *, clock=None, errors=None, plan=None, **changes):
+        options=dict(now=clock or self.OPEN+timedelta(seconds=10), next_open_utc=self.OPEN.isoformat(),
+            signal_date="2026-09-28",execution_date="2026-09-29",signal_close_utc=self.CLOSE.isoformat(),
+            source_refs={"manifest":"a"*64},allow_partial_quotes=True,quote_errors=errors,
+            execution_window_seconds=600,automatic_completion_policy=self.auto_primary,
+            next_close_utc=self.auto_close.isoformat())
+        options.update(changes)
+        return self.engine.paper_rebalance("HGB_DIAG_5",plan or self.plan,quotes,**options)
+
+    def test_automatic_afternoon_quote_resumes_original_batch_and_preserves_fills(self):
+        self.automatic()
+        first=self.auto_rebalance(self.quotes(["US.AAPL"]),errors={"US.MSFT":"missing"})
+        old=deepcopy(self.engine.paper_trades())
+        clock=self.OPEN+timedelta(hours=4)
+        resumed=self.auto_rebalance(self.quotes(["US.MSFT"],clock),clock=clock)
+        self.assertEqual(resumed["status"],"EXECUTED")
+        self.assertEqual((resumed["batch_id"],resumed["source_plan_sha256"],resumed["pretrade_equity"]),
+                         (first["batch_id"],first["source_plan_sha256"],first["pretrade_equity"]))
+        self.assertEqual(self.engine.paper_trades()[0],old[0])
+        self.assertEqual(self.engine.paper_trades()[-1]["filled_at"],clock.isoformat())
+        again=self.auto_rebalance(self.quotes(["US.MSFT"],clock),clock=clock)
+        self.assertEqual(again["new_fill_count"],0)
+        self.assertEqual(len(self.engine.paper_trades()),2)
+        self.assertIsNone(self.engine._get("paper_same_day_catchup",None))
+
+    def test_automatic_first_qualified_quotes_can_arrive_after_priority_window(self):
+        self.automatic()
+        clock=self.OPEN+timedelta(hours=1)
+        result=self.auto_rebalance(self.quotes(["US.AAPL","US.MSFT"],clock),clock=clock)
+        self.assertEqual(result["status"],"EXECUTED")
+        self.assertEqual(result["pretrade_equity"],10000)
+        self.assertEqual(result["source_plan"],self.plan)
+        self.assertTrue(all(row["filled_at"]==clock.isoformat() for row in self.engine.paper_trades()))
+
+    def test_automatic_early_close_and_exclusive_close_buffer(self):
+        self.automatic()
+        self.auto_close=datetime(2026,9,29,17,0,tzinfo=timezone.utc)
+        cutoff=self.auto_close-timedelta(seconds=600)
+        result=self.auto_rebalance(self.quotes(["US.AAPL"],cutoff-timedelta(seconds=1)),
+                                   clock=cutoff-timedelta(seconds=1))
+        self.assertEqual(result["new_fill_count"],1)
+        before=deepcopy(self.engine._get("paper",{}))
+        with self.assertRaisesRegex(ValueError,"WINDOW_CLOSED"):
+            self.auto_rebalance(self.quotes(["US.MSFT"],cutoff),clock=cutoff)
+        self.assertEqual(self.engine._get("paper",{}),before)
+        self.assertEqual(len(self.engine.paper_trades()),1)
+
+    def test_automatic_one_actual_tick_can_pass_above_50bp(self):
+        self.automatic()
+        quote=self.quotes(["US.AAPL"],price=1.605,bid=1.60,ask=1.61,price_tick=.01)
+        result=self.auto_rebalance(quote)
+        self.assertIn("US.AAPL",result["processed_codes"])
+        self.assertEqual(self.engine.paper_trades()[0]["quote_price_tick"],.01)
+
+    def test_automatic_wide_multitick_stale_deviation_and_bad_security_never_fill(self):
+        self.automatic()
+        cases=[
+            dict(price=1.605,bid=1.60,ask=1.61),
+            dict(price=1.605,bid=1.60,ask=1.61,price_tick=.005),
+            dict(price=1.605,bid=1.60,ask=1.61,price_tick=.01,tick_size=.02),
+            dict(price=.405,bid=.40,ask=.41,price_tick=.01),
+            dict(price=1.60,bid=1.70,ask=1.70,price_tick=.01),
+            dict(asof=(self.OPEN-timedelta(seconds=1)).isoformat()),
+            dict(asof=(self.OPEN+timedelta(seconds=100)).isoformat()),
+            dict(tradable=False),dict(currency="HKD"),dict(lot_size=100)]
+        for changes in cases:
+            with self.subTest(changes=changes):
+                result=self.auto_rebalance(self.quotes(["US.AAPL"],**changes))
+                self.assertEqual(result["new_fill_count"],0)
+                self.assertEqual(self.engine.paper_trades(),[])
+                self.assertNotIn("US.AAPL",result["processed_codes"])
+        self.assertEqual(self.engine._get("paper",{})["cash"],10000)
+
+    def test_automatic_one_tick_opt_out_uses_normal_spread(self):
+        self.automatic(one_tick_spread=False)
+        result=self.auto_rebalance(self.quotes(["US.AAPL"],price=1.605,bid=1.60,ask=1.61,price_tick=.01))
+        self.assertEqual(result["new_fill_count"],0)
+        self.assertEqual(self.engine.paper_trades(),[])
+
+    def test_automatic_cash_wait_keeps_fixed_target_then_sale_funds_residual_buy(self):
+        self.automatic()
+        self.engine._set("paper",dict(cash=1000,positions={"US.MSFT":90},fees=0))
+        self.engine.paper_mark({"US.MSFT":dict(price=100,asof=self.CLOSE.isoformat(),
+            source="CANONICAL_RAW_USD_CLOSE")},basis="SIGNAL_CLOSE")
+        plan=dict(source_date="2026-09-28",target_cash_weight=.5,
+            rows=[dict(code="US.AAPL",target_weight=.5),dict(code="US.MSFT",target_weight=0)])
+        first=self.auto_rebalance(self.quotes(["US.AAPL"]),errors={"US.MSFT":"sale waiting"},plan=plan)
+        self.assertEqual(first["pending_targets"]["US.AAPL"],49)
+        self.assertEqual(first["processed_codes"],[])
+        self.assertEqual(first["status"],"PARTIALLY_EXECUTED")
+        self.assertEqual(self.engine._get("paper",{})["positions"]["US.AAPL"],9)
+        old=deepcopy(self.engine.paper_trades())
+        clock=self.OPEN+timedelta(hours=2)
+        quotes=self.quotes(["US.MSFT"],clock)
+        quotes.update(self.quotes(["US.AAPL"],clock,price=50,bid=49.95,ask=50.05))
+        result=self.auto_rebalance(quotes,clock=clock,plan=plan)
+        self.assertEqual(result["status"],"EXECUTED")
+        self.assertEqual(result["pending_targets"]["US.AAPL"],49,"fresh lower price cannot increase fixed shares")
+        self.assertEqual(self.engine._get("paper",{})["positions"],{"US.AAPL":49})
+        self.assertGreaterEqual(self.engine._get("paper",{})["cash"],0)
+        self.assertEqual(result["code_fill_counts"],{"US.AAPL":2,"US.MSFT":1})
+        fills=self.engine.paper_trades()
+        self.assertEqual(fills[0],old[0])
+        self.assertEqual(len({row["id"] for row in fills}),3)
+        self.assertEqual([row["side"] for row in fills[1:]],["SELL","BUY"])
+        self.assertEqual(result["pretrade_equity"],10000)
+        again=self.auto_rebalance(quotes,clock=clock,plan=plan)
+        self.assertEqual(again["new_fill_count"],0)
+        self.assertEqual(self.engine.paper_trades(),fills)
+
+    def test_automatic_final_cash_shortfall_is_not_reported_executed(self):
+        self.automatic()
+        plan=dict(source_date="2026-09-28",target_cash_weight=0,
+            rows=[dict(code="US.AAPL",target_weight=1)])
+        quotes=self.quotes(["US.AAPL"],price=100,bid=100,ask=100)
+        first=self.auto_rebalance(quotes,plan=plan)
+        self.assertEqual(first["pending_targets"]["US.AAPL"],100)
+        self.assertEqual(self.engine._get("paper",{})["positions"]["US.AAPL"],99)
+        self.assertEqual(first["processed_codes"],[])
+        self.assertEqual(first["status"],"PARTIALLY_EXECUTED")
+        self.assertIn("CASH_CONSTRAINT",first["reason"])
+        second=self.auto_rebalance(quotes,plan=plan)
+        self.assertEqual(second["new_fill_count"],0)
+        self.assertEqual(second["status"],"PARTIALLY_EXECUTED")
+        self.assertEqual(len(self.engine.paper_trades()),1)
+
+    def test_automatic_restart_retains_targets_counts_and_prior_fills(self):
+        self.automatic()
+        first=self.auto_rebalance(self.quotes(["US.AAPL"]))
+        old=deepcopy(self.engine.paper_trades())
+        self.engine.close()
+        with patch("moomoo_component.core.now_iso",return_value=self.CLOSE.isoformat()):
+            self.engine=Engine(self.folder,paper_only=True,paper_account_id="partial-paper")
+        self.engine.automatic_completion_policy_provider=lambda:self.auto_primary
+        clock=self.OPEN+timedelta(hours=2)
+        result=self.auto_rebalance(self.quotes(["US.MSFT"],clock),clock=clock)
+        self.assertEqual(result["batch_id"],first["batch_id"])
+        self.assertEqual(self.engine.paper_trades()[0],old[0])
+        self.assertEqual(result["code_fill_counts"],{"US.AAPL":1,"US.MSFT":1})
+
+    def test_automatic_policy_projection_audit_and_owner_mismatch_block_without_fills(self):
+        self.automatic()
+        old=self.engine._get("paper",{"cash":10000,"positions":{}})
+        for change in ("projection","audit","owner"):
+            with self.subTest(change=change):
+                if change=="projection":
+                    self.engine._set("automatic_completion_policy",{**self.auto_primary,"enabled":False})
+                elif change=="audit":
+                    self.engine._set("automatic_completion_policy",self.auto_primary)
+                    self.engine.db.execute("DELETE FROM audit WHERE event='AUTOMATIC_COMPLETION_POLICY_AUTHORIZED'")
+                    self.engine.db.commit()
+                else:
+                    self.engine.automatic_completion_policy_provider=lambda:None
+                with self.assertRaisesRegex(ValueError,"AUTOMATIC_COMPLETION"):
+                    self.auto_rebalance(self.quotes(["US.AAPL"]))
+                self.assertEqual(self.engine.paper_trades(),[])
+                self.assertEqual(self.engine._get("paper",{"cash":10000,"positions":{}}),old)
+
+    def test_automatic_source_plan_session_and_signal_changes_do_not_create_extra_fills(self):
+        self.automatic()
+        self.auto_rebalance(self.quotes(["US.AAPL"]))
+        old=deepcopy(self.engine.paper_trades())
+        clock=self.OPEN+timedelta(hours=1)
+        for change in ("source","plan","session","future"):
+            with self.subTest(change=change):
+                options=dict(clock=clock)
+                if change=="source":options["source_refs"]={"manifest":"b"*64}
+                elif change=="plan":
+                    options["plan"]={**self.plan,"evidence":"changed"}
+                elif change=="session":options["next_close_utc"]=(self.auto_close-timedelta(hours=1)).isoformat()
+                else:options["execution_date"]="2027-01-01"
+                with self.assertRaises(ValueError):
+                    self.auto_rebalance(self.quotes(["US.MSFT"],clock),**options)
+                self.assertEqual(self.engine.paper_trades(),old)
+
+    def test_automatic_commit_wait_rechecks_quote_age_deadline_and_policy(self):
+        self.automatic()
+        for kind in ("quote","deadline","owner"):
+            with self.subTest(kind=kind):
+                clock=self.OPEN+timedelta(seconds=10)
+                elapsed=31 if kind=="quote" else 2
+                if kind=="deadline":clock=self.auto_close-timedelta(seconds=601)
+                values=iter([0.0,float(elapsed)])
+                if kind=="owner":
+                    calls=[0]
+                    primary=self.auto_primary
+                    def provider():
+                        calls[0]+=1
+                        return primary if calls[0]==1 else None
+                    self.engine.automatic_completion_policy_provider=provider
+                with patch("moomoo_component.core.time.monotonic",side_effect=lambda:next(values)):
+                    with self.assertRaisesRegex(ValueError,"AUTOMATIC_COMPLETION"):
+                        self.auto_rebalance(self.quotes(["US.AAPL"],clock),clock=clock)
+                self.assertEqual(self.engine.paper_trades(),[])
+                self.assertEqual(self.engine.db.execute("SELECT count(*) FROM paper_batches").fetchone()[0],0)
+                self.assertEqual(self.engine._get("paper",{"cash":10000})["cash"],10000)
+
+    def test_automatic_commit_plan_or_source_mutation_rolls_back_all_fills(self):
+        self.automatic()
+        for field in ("plan","source"):
+            with self.subTest(field=field):
+                plan=deepcopy(self.plan)
+                refs={"manifest":"a"*64}
+                calls=[0]
+                def monotonic():
+                    calls[0]+=1
+                    if calls[0]==2:
+                        if field=="plan":plan["evidence"]="changed after validation"
+                        else:refs["manifest"]="b"*64
+                    return float(calls[0]-1)
+                with patch("moomoo_component.core.time.monotonic",side_effect=monotonic):
+                    with self.assertRaisesRegex(ValueError,"EXPIRED_BEFORE_COMMIT"):
+                        self.auto_rebalance(self.quotes(["US.AAPL"]),plan=plan,source_refs=refs)
+                self.assertEqual(self.engine.paper_trades(),[])
+                self.assertEqual(self.engine.db.execute("SELECT count(*) FROM paper_batches").fetchone()[0],0)
+                self.assertEqual(self.engine._get("paper",{"cash":10000})["cash"],10000)
+
+    def test_legacy_cash_constraint_keeps_original_one_decision_behavior(self):
+        self.automatic()
+        self.engine._set("paper",dict(cash=1000,positions={"US.MSFT":90},fees=0))
+        self.engine.paper_mark({"US.MSFT":dict(price=100,asof=self.CLOSE.isoformat(),
+            source="CANONICAL_RAW_USD_CLOSE")},basis="SIGNAL_CLOSE")
+        plan=dict(source_date="2026-09-28",target_cash_weight=.5,
+            rows=[dict(code="US.AAPL",target_weight=.5),dict(code="US.MSFT",target_weight=0)])
+        result=self.rebalance(self.quotes(["US.AAPL"]),plan=plan)
+        self.assertIn("US.AAPL",result["processed_codes"])
+        self.assertNotIn("pending_targets",result)
+        self.assertEqual(len(self.engine.paper_trades()),1)
+
+    def test_automatic_priority_clock_accepts_legacy_open_and_ten_only(self):
+        policy=self.automatic();before=self.engine._get('automatic_completion_policy',None)
+        for minutes in (0,30):
+            with self.subTest(minutes=minutes):
+                opening=self.OPEN+timedelta(minutes=minutes)
+                ending=self.engine._paper_automatic_completion_end(policy,strategy_id='HGB_DIAG_5',
+                    clock=opening+timedelta(seconds=10),opening=opening,closing=self.CLOSE,
+                    signal_date='2026-09-28',execution_date='2026-09-29',next_close_utc=self.auto_close.isoformat(),
+                    source_refs={'manifest':'a'*64},execution_window_seconds=600)
+                self.assertEqual(ending,self.auto_close-timedelta(seconds=600))
+        for minutes in (1,31):
+            with self.subTest(rejected_minutes=minutes),self.assertRaisesRegex(ValueError,'SESSION_BINDING'):
+                opening=self.OPEN+timedelta(minutes=minutes)
+                self.engine._paper_automatic_completion_end(policy,strategy_id='HGB_DIAG_5',
+                    clock=opening+timedelta(seconds=10),opening=opening,closing=self.CLOSE,
+                    signal_date='2026-09-28',execution_date='2026-09-29',next_close_utc=self.auto_close.isoformat(),
+                    source_refs={'manifest':'a'*64},execution_window_seconds=600)
+        self.assertEqual(self.engine._get('automatic_completion_policy',None),before)
+        self.assertEqual(self.engine.paper_trades(),[])
+
+    def test_schema_two_priority_accepts_only_0955_and_1500_without_policy_mutation(self):
+        policy=self.automatic(schema_version=2,execution_delay_minutes=25,priority_window_seconds=1500)
+        before=deepcopy(policy)
+        for minutes,window in ((0,1500),(30,1500),(25,600),(25,1501)):
+            opening=self.OPEN+timedelta(minutes=minutes)
+            with self.subTest(minutes=minutes,window=window),self.assertRaisesRegex(ValueError,"SESSION_BINDING"):
+                self.engine._paper_automatic_completion_end(policy,strategy_id="HGB_DIAG_5",
+                    clock=opening+timedelta(seconds=10),opening=opening,closing=self.CLOSE,
+                    signal_date="2026-09-28",execution_date="2026-09-29",next_close_utc=self.auto_close.isoformat(),
+                    source_refs={"manifest":"a"*64},execution_window_seconds=window)
+        opening=self.OPEN+timedelta(minutes=25)
+        end=self.engine._paper_automatic_completion_end(policy,strategy_id="HGB_DIAG_5",
+            clock=opening+timedelta(seconds=10),opening=opening,closing=self.CLOSE,
+            signal_date="2026-09-28",execution_date="2026-09-29",next_close_utc=self.auto_close.isoformat(),
+            source_refs={"manifest":"a"*64},execution_window_seconds=1500)
+        self.assertEqual(end,opening+timedelta(seconds=1500))
+        for too_early_close in (opening+timedelta(seconds=1499),opening+timedelta(seconds=1500)):
+            with self.subTest(session_close=too_early_close),self.assertRaisesRegex(ValueError,"SESSION_BINDING"):
+                self.engine._paper_automatic_completion_end(policy,strategy_id="HGB_DIAG_5",
+                    clock=opening+timedelta(seconds=10),opening=opening,closing=self.CLOSE,
+                    signal_date="2026-09-28",execution_date="2026-09-29",next_close_utc=too_early_close.isoformat(),
+                    source_refs={"manifest":"a"*64},execution_window_seconds=1500)
+        self.assertEqual(self.engine._get("automatic_completion_policy",None),before)
+        for sid in ("RAW_A2","R10_DIRECT_MEAN4_ELASTICNET_MID","R10_DIRECT_H5_RIDGE_MID","R7_GROSS_LINEAR"):
+            with self.subTest(strategy_id=sid):
+                self.assertIsNone(self.engine._automatic_completion_policy(opening,sid,execution_date="2026-09-29"))
+        self.assertEqual(self.engine.paper_trades(),[])
+
+    def test_schema_two_real_paper_rebalance_keeps_fills_inside_hard_window(self):
+        self.automatic(schema_version=2,execution_delay_minutes=25,priority_window_seconds=1500)
+        self.OPEN+=timedelta(minutes=25)
+        before=deepcopy(self.auto_primary)
+        early=self.OPEN-timedelta(seconds=1)
+        with self.assertRaisesRegex(ValueError,"WINDOW_CLOSED"):
+            self.auto_rebalance(self.quotes(["US.AAPL"],early),clock=early,execution_window_seconds=1500)
+        first=self.auto_rebalance(self.quotes(["US.AAPL"]),execution_window_seconds=1500)
+        old=deepcopy(self.engine.paper_trades())
+        clock=self.OPEN+timedelta(seconds=1499)
+        result=self.auto_rebalance(self.quotes(["US.MSFT"],clock),clock=clock,execution_window_seconds=1500)
+        self.assertEqual(result["status"],"EXECUTED")
+        self.assertEqual(result["batch_id"],first["batch_id"])
+        self.assertEqual(self.engine.paper_trades()[0],old[0])
+        self.assertEqual(self.engine.paper_trades()[-1]["filled_at"],clock.isoformat())
+        self.assertEqual(self.auto_primary,before)
+        self.assertIsNone(self.engine._get("paper_same_day_catchup",None))
+
+    def test_schema_two_hard_deadline_blocks_unfilled_targets_at_1020_and_1100(self):
+        self.automatic(schema_version=2,execution_delay_minutes=25,priority_window_seconds=1500)
+        self.OPEN+=timedelta(minutes=25)
+        first=self.auto_rebalance(self.quotes(["US.AAPL"]),execution_window_seconds=1500)
+        before=deepcopy(self.engine.paper_trades())
+        self.assertEqual(len(before),1)
+        for clock in (self.OPEN+timedelta(seconds=1500),self.OPEN+timedelta(minutes=65)):
+            with self.subTest(clock=clock),self.assertRaisesRegex(ValueError,"WINDOW_CLOSED"):
+                self.auto_rebalance(self.quotes(["US.MSFT"],clock),clock=clock,execution_window_seconds=1500)
+            self.assertEqual(self.engine.paper_trades(),before)
+            frozen=self.engine.db.execute("SELECT payload FROM paper_batches WHERE id=?",(first["batch_id"],)).fetchone()
+            self.assertEqual(json.loads(frozen[0])["processed_codes"],["US.AAPL"])
+        self.assertIsNone(self.engine._get("paper_same_day_catchup",None))
+
+    def test_ten_priority_clock_never_transfers_hgb_afternoon_permission(self):
+        self.automatic();opening=self.OPEN+timedelta(minutes=30)
+        for sid in ('RAW_A2','R10_DIRECT_MEAN4_ELASTICNET_MID','R10_DIRECT_H5_RIDGE_MID','R7_GROSS_LINEAR'):
+            with self.subTest(strategy_id=sid):
+                self.assertIsNone(self.engine._automatic_completion_policy(opening,sid,execution_date='2026-09-29'))
+                clock=opening+timedelta(seconds=600)
+                with self.assertRaisesRegex(ValueError,'MISSED_OPEN'):
+                    self.engine.paper_rebalance(sid,self.plan,self.quotes(['US.AAPL'],clock),now=clock,
+                        next_open_utc=opening.isoformat(),signal_date='2026-09-28',execution_date='2026-09-29',
+                        signal_close_utc=self.CLOSE.isoformat(),source_refs={'manifest':'a'*64},allow_partial_quotes=True,
+                        execution_window_seconds=600,automatic_completion_policy=self.auto_primary,
+                        next_close_utc=self.auto_close.isoformat())
+        self.assertEqual(self.engine.paper_trades(),[])
+
+    def test_automatic_ineffective_policy_and_legacy_path_keep_original_windows_and_50bp(self):
+        self.automatic(effective_execution_date="2026-09-30")
+        quote=self.quotes(["US.AAPL"],price=1.605,bid=1.60,ask=1.61,price_tick=.01)
+        result=self.auto_rebalance(quote)
+        self.assertEqual(result["new_fill_count"],0)
+        clock=self.OPEN+timedelta(minutes=11)
+        with self.assertRaisesRegex(ValueError,"MISSED_OPEN"):
+            self.auto_rebalance(self.quotes(["US.AAPL"],clock),clock=clock)
+        result=self.rebalance(quote)
+        self.assertEqual(result["new_fill_count"],0)
+        self.assertEqual(self.engine.paper_trades(),[])
+
+
+
+class OrdinaryTwentyFiveMinuteWindowTests(unittest.TestCase):
+    quotes = PartialPaperExecutionTests.quotes
+
+    def test_real_paper_window_is_0955_to_exclusive_1020_across_dst(self):
+        from zoneinfo import ZoneInfo
+        ny=ZoneInfo("America/New_York")
+        for signal,execution,opening_text,closing_text in (
+            ("2026-10-29","2026-10-30","2026-10-30T13:55:00+00:00","2026-10-29T20:00:00+00:00"),
+            ("2026-10-30","2026-11-02","2026-11-02T14:55:00+00:00","2026-10-30T20:00:00+00:00")):
+            with self.subTest(execution_date=execution),tempfile.TemporaryDirectory() as folder:
+                opening=datetime.fromisoformat(opening_text);closing=datetime.fromisoformat(closing_text)
+                self.OPEN=opening
+                self.assertEqual((opening.astimezone(ny).hour,opening.astimezone(ny).minute),(9,55))
+                end=opening+timedelta(seconds=1500)
+                self.assertEqual((end.astimezone(ny).hour,end.astimezone(ny).minute),(10,20))
+                with patch("moomoo_component.core.now_iso",return_value=closing.isoformat()):
+                    engine=Engine(Path(folder)/"ordinary",paper_only=True,paper_account_id="synthetic-ordinary")
+                try:
+                    plan=dict(source_date=signal,target_cash_weight=0,
+                        rows=[dict(code="US.AAPL",target_weight=.4),dict(code="US.MSFT",target_weight=.6)])
+                    def execute(clock,window=1500,scheduled=None):
+                        return engine.paper_rebalance("R10_DIRECT_H5_RIDGE_MID",plan,self.quotes(["US.AAPL","US.MSFT"],clock),
+                            now=clock,next_open_utc=(scheduled or opening).isoformat(),signal_date=signal,execution_date=execution,
+                            signal_close_utc=closing.isoformat(),source_refs={"manifest":"a"*64},
+                            allow_partial_quotes=True,execution_window_seconds=window)
+                    for rejected in (opening-timedelta(seconds=1),end):
+                        with self.subTest(rejected=rejected),self.assertRaisesRegex(ValueError,"MISSED_OPEN"):
+                            execute(rejected)
+                    for bad_window in (0,601,1499,1501,3600,3601,True,1500.0):
+                        with self.subTest(bad_window=bad_window),self.assertRaises(ValueError):
+                            execute(opening+timedelta(seconds=1),bad_window)
+                    for delta in (-25,5):
+                        wrong_opening=opening+timedelta(minutes=delta)
+                        with self.subTest(wrong_opening=wrong_opening),self.assertRaisesRegex(ValueError,"CLOCK_PAIR"):
+                            execute(wrong_opening+timedelta(seconds=1),scheduled=wrong_opening)
+                    self.assertEqual(engine.paper_trades(),[])
+                    clock=end-timedelta(seconds=1)
+                    result=execute(clock)
+                    self.assertEqual(result["status"],"EXECUTED")
+                    self.assertEqual(result["new_fill_count"],2)
+                    self.assertTrue(all(row["filled_at"]==clock.isoformat() for row in engine.paper_trades()))
+                    before=deepcopy(engine.paper_trades())
+                    with self.assertRaisesRegex(ValueError,"MISSED_OPEN"):execute(end)
+                    self.assertEqual(engine.paper_trades(),before)
+                finally:
+                    engine.close()
 
 
 if __name__ == "__main__":

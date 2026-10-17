@@ -197,6 +197,24 @@ class LocalHttpTests(unittest.TestCase):
         self.assertEqual(self.request('POST', '/api/applied/start', '{}', headers)[0], 200)
         self.assertEqual(cohort.starts, 1)
 
+    def test_applied_mark_is_csrf_protected_empty_body_and_only_calls_valuation(self):
+        class MarkOnly:
+            calls = 0
+            def mark_current_books(self):
+                self.calls += 1
+                return {"valuation_only": True, "books": {}}
+            def __getattr__(self, name):
+                raise AssertionError("mark route touched another owner: " + name)
+        cohort = MarkOnly(); self.server.cohort = cohort
+        headers = {"Content-Type": "application/json", "X-CSRF-Token": self.server.token}
+        self.assertEqual(self.request("POST", "/api/applied/mark", "{}", {"Content-Type": "application/json"})[0], 403)
+        self.assertEqual(self.request("POST", "/api/applied/mark", '{"now":"future"}', headers)[0], 400)
+        self.assertEqual(cohort.calls, 0)
+        status, body = self.request("POST", "/api/applied/mark", "{}", headers)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["data"]["valuation_only"])
+        self.assertEqual(cohort.calls, 1)
+
     def test_only_pages_allow_exact_demo_origins_for_embedding(self):
         for path in ('/paper?embed=1', '/live?embed=1', '/api/state'):
             client = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=3)

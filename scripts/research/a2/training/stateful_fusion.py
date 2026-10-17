@@ -7,7 +7,7 @@ the value worker ACK protocol and the sole run FIT_LOG.
 from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
-import importlib, json, sys, warnings
+import importlib, json, math, sys, warnings
 from pathlib import Path
 import joblib
 import numpy as np
@@ -24,9 +24,10 @@ NATIVE=values.REPO/'scripts/research/a2/retained/a2_predict_then_optimize_202609
 COMMON=NATIVE.with_name('common.py')
 METHODS={32:'equal',33:'median',34:'fixed_weight',35:'nnls',36:'convex',37:'stack_ridge',38:'stack_elastic',39:'stack_hgb',40:'stack_mlp',41:'gate_linear',42:'gate_mlp',43:'residual_first_hgb',44:'residual_last_ridge'}
 FIXED_WEIGHTS=np.array([.5,.25,.25])
+NNLS_ZERO_ABSTAIN="nnls_zero_abstain"  # Explicit new research identity, never M035.
 
 def method_name(method):
-    if isinstance(method,str) and method in METHODS.values():return method
+    if isinstance(method,str) and (method in METHODS.values() or method==NNLS_ZERO_ABSTAIN):return method
     try:key=int(str(method).lstrip('M'))
     except ValueError as exc:raise ValueError('UNREGISTERED_FUSION_METHOD') from exc
     if key not in METHODS:raise ValueError('UNREGISTERED_FUSION_METHOD')
@@ -35,13 +36,16 @@ def method_name(method):
 def packet_for(method):
     return ('ridge','lgb','hgb') if method_name(method)=='residual_last_ridge' else ('ridge','hgb','lgb')
 
-def fixed_prediction(method,x):
+def fixed_prediction(method,x,*,packet_width=3):
     x=np.asarray(x,float)
-    if x.ndim!=2 or x.shape[1]!=3 or not np.isfinite(x).all():raise ValueError('INVALID_THREE_EXPERT_PACKET')
+    if type(packet_width) is not int or packet_width not in (3,5,29,38):raise ValueError('UNAUTHORIZED_FUSION_PACKET_WIDTH')
+    if x.ndim!=2 or x.shape[1]!=packet_width or not np.isfinite(x).all():raise ValueError('INVALID_THREE_EXPERT_PACKET' if packet_width==3 else 'INVALID_DECLARED_EXPERT_PACKET')
     method=method_name(method)
     if method=='equal':return x.mean(axis=1)
     if method=='median':return np.median(x,axis=1)
-    if method=='fixed_weight':return x@FIXED_WEIGHTS
+    if method=='fixed_weight':
+        if packet_width!=3:raise ValueError('EXPLICIT_FIXED_FUSION_WEIGHTS_REQUIRED')
+        return x@FIXED_WEIGHTS
     raise ValueError('FUSION_REQUIRES_FITTED_MODEL')
 
 def meta_eligible(frame,cutoff):
@@ -103,17 +107,62 @@ def _native_starts(native,started):
 class FixedFusion:
     method:str
     weights:np.ndarray|None=None
+    packet_width:int=3
+    zero_abstention_certificate:dict|None=None
     def predict(self,x,state):
-        return np.asarray(x,float)@self.weights if self.weights is not None else fixed_prediction(self.method,x)
+        return np.asarray(x,float)@self.weights if self.weights is not None else fixed_prediction(self.method,x,packet_width=self.packet_width)
 
-def _fit_arrays(method,x,y,state,weights,started,dependencies=()):
+def _nnls_zero_certificate(x,y):
+    """Certify the strict zero optimum using training OOF only, never a fallback."""
+    with np.errstate(over='ignore',invalid='ignore'):
+        products=x*y[:,None]
+    if not np.isfinite(products).all():
+        raise ValueError('NNLS_ZERO_KKT_NOT_CERTIFIED')
+    try:
+        xty=np.array([math.fsum(map(float,products[:,j])) for j in range(x.shape[1])])
+        absolute=np.array([math.fsum(map(float,np.abs(products[:,j]))) for j in range(x.shape[1])])
+    except (OverflowError,ValueError) as exc:
+        raise ValueError('NNLS_ZERO_KKT_NOT_CERTIFIED') from exc
+    # fsum limits cancellation error; include product rounding and underflow.
+    error=32*np.finfo(float).eps*absolute+len(y)*np.nextafter(0.,1.)
+    if not np.isfinite(xty).all() or not np.isfinite(error).all() or not np.all(xty < -error):
+        raise ValueError('NNLS_ZERO_KKT_NOT_CERTIFIED')
+    return dict(role='CERTIFIED_ZERO_EDGE_ABSTENTION_NOT_MEMBER_SUBSTITUTION',
+        criterion='ALL_XTY_STRICTLY_BELOW_NEGATIVE_CONSERVATIVE_ERROR',
+        zero_coefficients_exact=True,unique_zero_optimum=True,training_rows=len(y),
+        packet_width=x.shape[1],xty=xty.tolist(),xty_error_bound=error.tolist(),
+        half_sse_gradient_at_zero=(-xty).tolist(),input_role='PAST_TRAINING_OOF_ONLY')
+
+
+def _fit_nnls(method,x,y,started,packet_width):
+    started('FUSION_NNLS')
+    coef=np.asarray(nnls(x,y)[0],float)
+    with np.errstate(over='ignore',invalid='ignore'):
+        total=float(coef.sum())
+    if (coef.shape!=(packet_width,) or not np.isfinite(coef).all()
+            or np.any(coef<0) or not np.isfinite(total)):
+        raise ValueError('NNLS_ZERO_OR_INVALID_SUM_NO_SUBSTITUTE')
+    if total>0:
+        return FixedFusion(method,coef/total,packet_width=packet_width)
+    if method!=NNLS_ZERO_ABSTAIN or not np.equal(coef,0.).all():
+        raise ValueError('NNLS_ZERO_OR_INVALID_SUM_NO_SUBSTITUTE')
+    certificate=_nnls_zero_certificate(x,y)
+    return FixedFusion(method,np.zeros(packet_width),packet_width=packet_width,
+        zero_abstention_certificate=certificate)
+
+
+def _fit_arrays(method,x,y,state,weights,started,dependencies=(),*,packet_width=3,fixed_weights=None):
     method=method_name(method);x=np.asarray(x,float);y=np.asarray(y,float)
-    if x.shape!=(len(y),3) or len(y)<2 or not np.isfinite(x).all() or not np.isfinite(y).all():raise ValueError('INVALID_PAST_OOF_TRAINING_PACKET')
-    if method in ('equal','median','fixed_weight'):return FixedFusion(method)
-    if method=='nnls':
-        started('FUSION_NNLS');coef=nnls(x,y)[0]
-        if not np.isfinite(coef).all() or coef.sum()<=0:raise ValueError('NNLS_ZERO_OR_INVALID_SUM_NO_SUBSTITUTE')
-        return FixedFusion(method,coef/coef.sum())
+    if type(packet_width) is not int or packet_width not in (3,5,29,38):raise ValueError('UNAUTHORIZED_FUSION_PACKET_WIDTH')
+    if x.shape!=(len(y),packet_width) or len(y)<2 or not np.isfinite(x).all() or not np.isfinite(y).all():raise ValueError('INVALID_PAST_OOF_TRAINING_PACKET')
+    if method in ('equal','median','fixed_weight'):
+        if method=='fixed_weight' and packet_width!=3:
+            fw=np.asarray(fixed_weights,float)
+            if fw.shape!=(packet_width,) or not np.isfinite(fw).all() or np.any(fw<0) or not np.isclose(fw.sum(),1):raise ValueError('EXPLICIT_FIXED_FUSION_WEIGHTS_REQUIRED')
+            return FixedFusion(method,fw,packet_width)
+        return FixedFusion(method,packet_width=packet_width)
+    if method in ('nnls',NNLS_ZERO_ABSTAIN):
+        return _fit_nnls(method,x,y,started,packet_width)
     state=np.asarray(state,float);weights=np.asarray(weights,float)
     if state.shape!=(len(y),4) or not np.isfinite(state).all() or weights.shape!=(len(y),) or not np.isfinite(weights).all() or np.any(weights<=0):raise ValueError('INVALID_FUSION_STATE_OR_WEIGHTS')
     native=_native(dependencies)
@@ -126,7 +175,11 @@ def _fusion_worker(pipe,operation,model_id,x,y,dates,quantile,dependencies,featu
     try:
         with threadpool_limits(limits=1),warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter('always')
-            model=_fit_arrays(model_id,x,y,dates,quantile,started,dependencies)
+            if observed is None:model=_fit_arrays(model_id,x,y,dates,quantile,started,dependencies)
+            else:
+                if not isinstance(observed,dict) or set(observed)!={'packet_width','fixed_weights'} or observed['packet_width'] not in (5,29,38):raise ValueError('UNAUTHORIZED_FUSION_WORKER_PACKET')
+                if quantile is not None:raise ValueError('CONSENSUS_FUSION_UNIFORM_ROW_WEIGHTS_REQUIRED')
+                model=_fit_arrays(model_id,x,y,dates,np.ones(len(y)),started,dependencies,**observed)
         records=[dict(category=w.category.__name__,message=str(w.message)) for w in caught]
         fixed_epochs_completed=False
         if model_id=='stack_mlp':

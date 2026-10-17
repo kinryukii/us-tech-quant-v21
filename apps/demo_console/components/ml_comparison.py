@@ -199,6 +199,6 @@ def render_model_comparison(model: DecisionOverview, presentation=True) -> None:
     render_chart(comparison_chart(history, primary, secondary, _METRICS[metric]),
                  width="stretch", height=300 if presentation else 270,
                  theme=None, key="ml_comparison_chart")
-    st.caption(tr("本次 Top40 排名历史截至 {date}；缺失排名与分数不补造。" if workspace_reader.is_updated(model) else "Recorded Top20 history through {date}. Gaps mean outside Top20 or unavailable evidence; no rank or score is filled in.",
+    st.caption(tr("Recorded Top40 ranking history through {date}. Missing ranks and scores are not filled in." if workspace_reader.is_updated(model) else "Recorded Top20 history through {date}. Gaps mean outside Top20 or unavailable evidence; no rank or score is filled in.",
                   date=model.decision_date))
-    st.caption("所选股票来自当前排名范围。个股路径不代表完整股票池的预测能力。" if workspace_reader.is_updated(model) else tr("This pair is selected from the current decision date's Top20. Its historical paths describe these names; they do not measure full-universe predictive skill."))
+    st.caption(tr("The selected stocks come from the current ranking scope. Their individual paths do not measure full-universe predictive skill." if workspace_reader.is_updated(model) else "This pair is selected from the current decision date's Top20. Its historical paths describe these names; they do not measure full-universe predictive skill."))

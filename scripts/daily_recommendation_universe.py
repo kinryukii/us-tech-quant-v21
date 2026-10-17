@@ -80,20 +80,129 @@ class _SecReader:
         return response.content
 
 
+def _submission_reference(reader, url: str) -> dict | None:
+    receipts = getattr(reader, "receipts", None)
+    if not isinstance(receipts, list):
+        return None
+    matches = [row for row in receipts if row.get("url") == url and row.get("status") == 200]
+    if len(matches) != 1 or not matches[0].get("raw_path"):
+        return None
+    row = matches[0]
+    return {"path": row["raw_path"], "sha256": row["sha256"], "url": url,
+            "observed_at": row["observed_at"], "status": row["status"]}
+
+
+def _reconcile_acceptance(payload: bytes, filing: dict, prior_reference: dict,
+                          metadata_reference: dict | None, cutoff: pd.Timestamp) -> tuple[dict, dict | None]:
+    """Reuse a verified prior event time for one exact metadata timezone revision.
+
+    The current response remains bound evidence. This does not relax the raw
+    parser, accept a time tolerance, or substitute file modification times.
+    """
+    text = payload.decode("utf-8")
+    header = text.split("</SEC-HEADER>", 1)[0]
+    clocks = re.findall(r"<ACCEPTANCE-DATETIME>(\d{14})", header)
+    if len(clocks) != 1:
+        raise ValueError("13F_RECONCILIATION_HEADER_TIME_AMBIGUOUS")
+    accepted = pd.Timestamp(pd.to_datetime(clocks[0], format="%Y%m%d%H%M%S")).tz_localize(
+        "America/New_York", ambiguous="raise", nonexistent="raise").tz_convert("UTC")
+    new = pd.Timestamp(filing["accepted_at"])
+    if new == accepted:
+        return filing, None
+    if (not text.startswith("<SEC-DOCUMENT>") or text.count("</SEC-HEADER>") != 1
+            or not text.rstrip().endswith("</SEC-DOCUMENT>")):
+        raise ValueError("13F_RECONCILIATION_INCOMPLETE_RAW")
+    fields = ((r"ACCESSION NUMBER:\s*([^\r\n]+)", filing["accession"]),
+              (r"CONFORMED SUBMISSION TYPE:\s*([^\r\n]+)", filing["form"]),
+              (r"CONFORMED PERIOD OF REPORT:\s*(\d{8})", filing["report_date"].replace("-", "")),
+              (r"FILED AS OF DATE:\s*(\d{8})", filing["filed_date"].replace("-", "")))
+    for pattern, expected in fields:
+        values = re.findall(pattern, header)
+        if len(values) != 1 or values[0].strip() != expected:
+            raise ValueError("13F_RECONCILIATION_RAW_METADATA_MISMATCH")
+    ciks = re.findall(r"CENTRAL INDEX KEY:\s*(\d+)", header)
+    if len(ciks) != 1 or int(ciks[0]) != int(filing["cik"]):
+        raise ValueError("13F_RECONCILIATION_RAW_CIK_MISMATCH")
+    prior_path = _verified(prior_reference)
+    prior_document = json.loads(prior_path.read_text(encoding="utf-8"))
+    matches = [row for row in prior_document.get("verified_filings", [])
+               if row.get("accession") == filing["accession"]]
+    if len(matches) != 1:
+        raise ValueError("13F_RECONCILIATION_PRIOR_VERIFIED_METADATA_MISSING")
+    old = matches[0]
+    exact = ("source_url", "accession", "cik", "manager_id", "manager_name", "form", "report_date", "filed_date")
+    if any(old.get(key) != filing.get(key) for key in exact):
+        raise ValueError("13F_RECONCILIATION_PRIOR_METADATA_CHANGED")
+    expected_url = (f"https://www.sec.gov/Archives/edgar/data/{int(filing['cik'])}/"
+                    f"{filing['accession'].replace('-', '')}/{filing['accession']}.txt")
+    digest = hashlib.sha256(payload).hexdigest()
+    raw_reference = {"path": old.get("raw_path", ""), "sha256": old.get("source_sha256", "")}
+    if filing["source_url"] != expected_url or digest != raw_reference["sha256"]:
+        raise ValueError("13F_RECONCILIATION_RAW_SOURCE_CHANGED")
+    _verified(raw_reference)
+    old_sources = [row for row in prior_document.get("sources", [])
+                   if row.get("url") == expected_url and row.get("http_status") == 200]
+    if (len(old_sources) != 1 or old_sources[0].get("sha256") != digest
+            or old_sources[0].get("raw_path") != old.get("raw_path")
+            or old_sources[0].get("observed_at_utc") != old.get("observed_at_utc")):
+        raise ValueError("13F_RECONCILIATION_PRIOR_REQUEST_UNBOUND")
+    prior_time, prior_observed = pd.Timestamp(old["accepted_at"]), pd.Timestamp(old["observed_at_utc"])
+    if any(value.tzinfo is None or pd.isna(value) for value in (new, prior_time, prior_observed, cutoff)):
+        raise ValueError("13F_RECONCILIATION_TIMEZONE_MISSING")
+    if prior_time != accepted or any(value > cutoff for value in (new, prior_time, prior_observed)):
+        raise ValueError("13F_RECONCILIATION_PRIOR_OR_CURRENT_AFTER_CUTOFF")
+    repeated = accepted.tz_localize(None).tz_localize(
+        "America/New_York", ambiguous="raise", nonexistent="raise").tz_convert("UTC")
+    if new != repeated:
+        raise ValueError("13F_RECONCILIATION_NOT_EXACT_DOUBLE_ZONE_CONVERSION")
+    if not metadata_reference or metadata_reference.get("status") != 200:
+        raise ValueError("13F_RECONCILIATION_CURRENT_METADATA_UNBOUND")
+    metadata_path = _verified(metadata_reference)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    url = metadata_reference.get("url", "")
+    if (not re.fullmatch(r"https://data\.sec\.gov/submissions/CIK\d{10}(?:-submissions-\d+)?\.json", url)
+            or not url.startswith(f"https://data.sec.gov/submissions/CIK{int(filing['cik']):010d}")):
+        raise ValueError("13F_RECONCILIATION_CURRENT_METADATA_URL_INVALID")
+    if "cik" in metadata and int(metadata["cik"]) != int(filing["cik"]):
+        raise ValueError("13F_RECONCILIATION_CURRENT_CIK_CHANGED")
+    arrays = metadata.get("filings", {}).get("recent", metadata)
+    indices = [i for i, value in enumerate(arrays.get("accessionNumber", [])) if value == filing["accession"]]
+    if len(indices) != 1:
+        raise ValueError("13F_RECONCILIATION_CURRENT_ACCESSION_UNBOUND")
+    i = indices[0]
+    if any(arrays[key][i] != filing[field] for key, field in
+           (("form", "form"), ("reportDate", "report_date"), ("filingDate", "filed_date"))):
+        raise ValueError("13F_RECONCILIATION_CURRENT_METADATA_CHANGED")
+    if pd.Timestamp(arrays["acceptanceDateTime"][i]) != new:
+        raise ValueError("13F_RECONCILIATION_CURRENT_TIME_UNBOUND")
+    observed = pd.Timestamp(metadata_reference["observed_at"])
+    if observed.tzinfo is None or pd.isna(observed) or not prior_observed <= observed <= pd.Timestamp(datetime.now(timezone.utc)):
+        raise ValueError("13F_RECONCILIATION_CURRENT_OBSERVATION_INVALID")
+    proof = {"schema_version": 1, "reason": "EXACT_SUBMISSIONS_DOUBLE_TIMEZONE_VINTAGE_RECONCILIATION",
+             "prior_acquisition": prior_reference, "raw_filing": raw_reference,
+             "current_submission_metadata": metadata_reference, "header_acceptance_ny": clocks[0],
+             "accepted_at_preserved": accepted.isoformat(), "current_summary_accepted_at": new.isoformat(),
+             "prior_observed_at": prior_observed.isoformat(), "signal_close_cutoff": cutoff.isoformat(),
+             "raw_bytes_unchanged": True, "ordinary_discovery_asof_changed": False}
+    return {**filing, "accepted_at": accepted.isoformat()}, proof
+
+
 def _submission_records(manager: dict, document: dict, reader: _SecReader, minimum_period: str, as_of: pd.Timestamp) -> list[dict]:
     cik = int(manager["cik"])
     if int(document.get("cik", -1)) != cik:
         raise ValueError("13F_SUBMISSIONS_CIK_MISMATCH")
-    arrays_list = [document.get("filings", {}).get("recent", {})]
+    arrays_list = [(document.get("filings", {}).get("recent", {}),
+                    _submission_reference(reader, f"https://data.sec.gov/submissions/CIK{cik:010d}.json"))]
     for descriptor in document.get("filings", {}).get("files", []):
         if str(descriptor.get("filingTo", "")) < minimum_period:
             continue
         name = descriptor.get("name", "")
         if not re.fullmatch(r"CIK\d{10}-submissions-\d+\.json", name):
             raise ValueError("13F_UNEXPECTED_HISTORY_MEMBER")
-        arrays_list.append(json.loads(reader.get(f"https://data.sec.gov/submissions/{name}")))
+        url = f"https://data.sec.gov/submissions/{name}"
+        arrays_list.append((json.loads(reader.get(url)), _submission_reference(reader, url)))
     found = {}
-    for arrays in arrays_list:
+    for arrays, metadata_reference in arrays_list:
         count = len(arrays.get("accessionNumber", []))
         if any(len(arrays.get(name, [])) != count for name in ("form", "reportDate", "filingDate", "acceptanceDateTime")):
             raise ValueError("13F_SUBMISSIONS_ARRAY_LENGTH_MISMATCH")
@@ -116,7 +225,9 @@ def _submission_records(manager: dict, document: dict, reader: _SecReader, minim
                    "form": form, "accession": accession, "filed_date": arrays["filingDate"][index],
                    "accepted_at": accepted.isoformat(),
                    "source_url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}/{accession}.txt"}
-            if accession in found and found[accession] != row:
+            if metadata_reference is not None:
+                row["submission_metadata_reference"] = metadata_reference
+            if accession in found and {k: v for k, v in found[accession].items() if k != "submission_metadata_reference"} != {k: v for k, v in row.items() if k != "submission_metadata_reference"}:
                 raise ValueError("13F_CONFLICTING_ACCESSION_METADATA")
             found[accession] = row
     return list(found.values())
@@ -426,6 +537,51 @@ def _remember_identity_report(paths, report_path, prior_references=()):
     _save(path, {"role": "VERIFIED_CURRENT_IDENTITY_EVIDENCE_REFERENCES", "reports": references})
 
 
+def _reviewed_transport_alias(cusip, ticker, code, reference, context):
+    """Exact reviewed same-class transport repair; no historical identity claim."""
+    from scripts.research.a2.inference.current_native_prices import (
+        REVIEWED_TRANSPORT_ALIASES, validate_explicit_alias,
+    )
+    # SQ retains its established owner path; only the three reviewed repairs
+    # have this primary-proof schema and current-universe metadata authority.
+    if ticker not in ("BGNE", "BLDE", "BSIG") or context is None:
+        raise ValueError("CURRENT_TRANSPORT_ALIAS_NOT_REVIEWED")
+    alias = REVIEWED_TRANSPORT_ALIASES[ticker]
+    validate_explicit_alias(alias, ticker, code, [cusip])
+    proof = json.loads(_verified(reference).read_text(encoding="utf-8"))
+    if (proof.get("schema") != "USTQ_EXISTING_CUSIP_RENAMED_TRANSPORT_PRIMARY_PROOF_V1"
+            or proof.get("universe_mutations") != 0 or proof.get("model_fit_calls") != 0):
+        raise ValueError("CURRENT_TRANSPORT_PRIMARY_PROOF_INVALID")
+    if not isinstance(proof.get("observation_as_of"), str) or not re.fullmatch(r"20\d{2}-\d{2}-\d{2}", proof["observation_as_of"]):
+        raise ValueError("CURRENT_TRANSPORT_PROOF_OBSERVATION_REQUIRES_DATE_ONLY")
+    observed, now = pd.Timestamp(proof["observation_as_of"]), pd.Timestamp(context.get("identity_checked_at", context["latest_disclosures_checked_at"]))
+    if now.tzinfo is None or observed.date() > now.tz_convert("UTC").date():
+        raise ValueError("CURRENT_TRANSPORT_PROOF_NOT_YET_AVAILABLE")
+    old_file = _verified(proof["old_universe"])
+    old = json.loads(old_file.read_text(encoding="utf-8"))
+    if (old.get("status") != "READY" or not old.get("current") or old.get("quarter") != context["quarter"]
+            or any(old.get(key, {}).get("sha256") != context[key]["sha256"] for key in ("registry", "identity_source"))):
+        raise ValueError("CURRENT_TRANSPORT_PROOF_BASE_CHANGED")
+    for key in ("registry", "identity_source"):
+        _verified(old[key])
+    members = pd.read_parquet(_verified({"path": str(old_file.parent / "mapped_members.parquet"),
+        "sha256": old["universe_members_sha256"]}))
+    match = members.loc[members.security_id.eq(cusip)]
+    declared = proof.get("old_member_rows", {}).get(ticker, {})
+    if (len(match) != 1 or match.iloc[0].ticker != ticker or match.iloc[0].moomoo_symbol != "US." + ticker
+            or any(declared.get(key) != match.iloc[0].get(key) for key in ("security_id", "ticker", "moomoo_symbol"))):
+        raise ValueError("CURRENT_TRANSPORT_ORIGINAL_MEMBER_NOT_BOUND")
+    entries = [row for row in proof.get("aliases", []) if row.get("ticker") == ticker]
+    if (len(entries) != 1 or entries[0].get("security_id") != cusip
+            or entries[0].get("provider_symbol") != alias["source_ticker"]
+            or entries[0].get("symbol_effective_from") != alias["symbol_effective_from"]
+            or entries[0].get("kind") != "SAME_CUSIP_RENAMED_TRANSPORT"
+            or entries[0].get("urls") != [alias["evidence_url"], alias["identity_evidence_url"]]
+            or context["target_date"] < alias["symbol_effective_from"]):
+        raise ValueError("CURRENT_TRANSPORT_EXACT_PRIMARY_BINDING_INVALID")
+    return alias
+
+
 def _prior_identity_evidence(paths, universe, root, context, *, prior_reports=None):
     """Reuse exact positive evidence; never infer identity from a network error.
 
@@ -434,7 +590,7 @@ def _prior_identity_evidence(paths, universe, root, context, *, prior_reports=No
     registries. Static transport validation is reused only on the same UTC day
     and target; later targets still require the existing current OpenD check.
     """
-    result = {"openfigi": {}, "overlay": {}, "validation": {}, "sources": [], "issues": []}
+    result = {"openfigi": {}, "overlay": {}, "validation": {}, "transport_aliases": {}, "sources": [], "issues": []}
     if context is None:
         return result
     current_path = root / "openfigi_exact_cusip.json"
@@ -442,7 +598,7 @@ def _prior_identity_evidence(paths, universe, root, context, *, prior_reports=No
     static_path = root / "identity_transport_validation.parquet"
     current_static = pd.read_parquet(static_path) if static_path.exists() else pd.DataFrame()
     targets, conflicts = set(universe.cusip.astype(str)), set()
-    now = pd.Timestamp(context["latest_disclosures_checked_at"])
+    now = pd.Timestamp(context.get("identity_checked_at", context["latest_disclosures_checked_at"]))
     valid_ticker = lambda value: isinstance(value, str) and bool(re.fullmatch(r"[A-Z0-9][A-Z0-9._/-]*", value))
     for reference in _identity_report_references(paths, root, prior_reports):
         try:
@@ -456,7 +612,7 @@ def _prior_identity_evidence(paths, universe, root, context, *, prior_reports=No
                 continue
             for key in ("registry", "identity_source"):
                 _verified(report[key])
-            observed = pd.Timestamp(report["latest_disclosures_checked_at"])
+            observed = pd.Timestamp(report.get("identity_checked_at", report["latest_disclosures_checked_at"]))
             if observed.tzinfo is None or now.tzinfo is None or observed > now:
                 continue
             directory = report_path.parent
@@ -489,6 +645,29 @@ def _prior_identity_evidence(paths, universe, root, context, *, prior_reports=No
                 cusip, ticker, code = str(row["cusip"]), row["ticker"], row["moomoo_transport_code"]
                 row_observed = pd.Timestamp(row.get("identity_observed_at"))
                 if pd.isna(row_observed) or row_observed.tzinfo is None or row_observed > now:
+                    continue
+                if row.get("mapping_source") == "REVIEWED_SAME_CUSIP_TRANSPORT_PLUS_CURRENT_MOOMOO_STATIC":
+                    if not {"overlay", "validation"}.issubset(artifact_refs):
+                        raise ValueError("CURRENT_TRANSPORT_PRIOR_ARTIFACTS_UNBOUND")
+                    reference = {"path": row.get("identity_evidence_path"), "sha256": row.get("identity_evidence_sha256")}
+                    alias = _reviewed_transport_alias(cusip, ticker, code, reference, context)
+                    member = member_map.get(cusip, {})
+                    live_exact = _exact_us_composite(current.get(cusip, {}), valid_ticker)
+                    checks = current_static.loc[current_static.moomoo_transport_code.eq(code)] if not current_static.empty else pd.DataFrame()
+                    if (cusip not in targets or code not in hits or member.get("ticker") != ticker
+                            or member.get("moomoo_symbol") != code or row.get("identity_valid_from") != alias["symbol_effective_from"]
+                            or (live_exact is not None and live_exact["ticker"] not in (ticker, alias["source_ticker"]))
+                            or (not checks.empty and not (checks.request_status.eq("PASS") & checks.direct_static_hit.eq(True)).all())):
+                        continue
+                    accepted, gaps = _map_universe(pd.DataFrame([{"cusip": cusip}]), pd.DataFrame([row]), as_of=context["target_date"])
+                    if not accepted or gaps:
+                        continue
+                    # Later targets reuse only primary proof, never prior static PASS.
+                    result["transport_aliases"][cusip] = row
+                    if same_day and row_observed.tz_convert("UTC").date() == now.tz_convert("UTC").date():
+                        result["overlay"][cusip] = row
+                        result["validation"][code] = hits[code]
+                    used.append(cusip)
                     continue
                 if str(row.get("mapping_source", "")).startswith("PRIMARY_CUSIP_"):
                     primary = _verified_primary_candidate(cusip, row.get("identity_evidence_path"), row.get("identity_evidence_sha256"))
@@ -635,7 +814,7 @@ def recover_current_identity(paths, current_report_path, prior_report_paths, out
 
 
 def complete_identity_mapping(paths, universe: pd.DataFrame, identity: pd.DataFrame, root: Path,
-                              *, context=None, reusable_evidence=None) -> tuple[pd.DataFrame, dict]:
+                              *, context=None, reusable_evidence=None, transport_alias_evidence=None) -> tuple[pd.DataFrame, dict]:
     """Extend this run's copy with exact CUSIP + US FIGI + current OpenD evidence."""
     prior = reusable_evidence if reusable_evidence is not None else _prior_identity_evidence(paths, universe, root, context)
     if prior["overlay"]:
@@ -654,12 +833,32 @@ def complete_identity_mapping(paths, universe: pd.DataFrame, identity: pd.DataFr
     if cache and not cache_path.exists():
         _save(cache_path, cache)
     _, gaps = _map_universe(universe, identity, as_of=(context or {}).get("target_date"))
-    if not gaps:
+    transport = dict(prior.get("transport_aliases", {}))
+    if transport_alias_evidence is not None:
+        from scripts.research.a2.inference.current_native_prices import REVIEWED_TRANSPORT_ALIASES
+        for ticker in ("BGNE", "BLDE", "BSIG"):
+            alias = REVIEWED_TRANSPORT_ALIASES[ticker]
+            cusip, code = alias["security_id"], alias["provider_code"]
+            if cusip not in set(universe.cusip.astype(str)):
+                continue
+            _reviewed_transport_alias(cusip, ticker, code, transport_alias_evidence, context)
+            existing = identity.loc[identity.cusip.astype(str).eq(cusip)]
+            if (len(existing) != 1 or existing.iloc[0].ticker != ticker
+                    or existing.iloc[0].moomoo_transport_code not in ("US." + ticker, code)):
+                raise ValueError("CURRENT_TRANSPORT_CANNOT_REPLACE_DIFFERENT_SECURITY")
+            transport[cusip] = {"ticker": ticker, "moomoo_transport_code": code,
+                "identity_evidence_path": str(transport_alias_evidence["path"]),
+                "identity_evidence_sha256": transport_alias_evidence["sha256"],
+                "identity_valid_from": alias["symbol_effective_from"]}
+    # A same-day validated overlay needs no repeated request. Every later
+    # target re-enters the existing direct-static owner even if already mapped.
+    transport = {cusip: row for cusip, row in transport.items() if cusip not in prior["overlay"]}
+    if not gaps and not transport:
         return identity, {"requested": 0, "added_or_updated": 0, "reused_verified_same_day": len(prior["overlay"]),
                           "prior_evidence_sources": prior["sources"], "prior_evidence_issues": prior["issues"],
                           "raw_evidence_sha256": _hash(cache_path) if cache_path.exists() else None}
     targets = sorted({row["cusip"] for row in gaps})
-    summary = {"requested": len(targets), "added_or_updated": 0, "openfigi_requests": 0,
+    summary = {"requested": len(targets), "transport_repairs_requested": len(transport), "added_or_updated": 0, "openfigi_requests": 0,
                "reused_verified_same_day": len(prior["overlay"]), "prior_evidence_sources": prior["sources"],
                "prior_evidence_issues": prior["issues"],
                "mapping_rule": "EXACT_CUSIP_US_COMPOSITE_SHARE_CLASS_OR_EXPLICIT_PRIMARY_ORDINARY_SHARE_DECLARATION_PLUS_CURRENT_OPEND_STATIC_HIT"}
@@ -681,9 +880,16 @@ def complete_identity_mapping(paths, universe: pd.DataFrame, identity: pd.DataFr
         if row is not None:
             candidates[cusip] = row
     summary["exact_us_candidates"] = len(candidates)
-    primary = _primary_identity_candidates(paths, [cusip for cusip in targets if cusip not in candidates], root)
+    primary_targets = [cusip for cusip in targets if cusip not in candidates]
+    primary = _primary_identity_candidates(paths, primary_targets, root) if primary_targets else {}
     candidates.update(primary)
     summary["primary_source_candidates"] = len(primary)
+    for cusip, row in transport.items():
+        _reviewed_transport_alias(cusip, row["ticker"], row["moomoo_transport_code"],
+            {"path": row["identity_evidence_path"], "sha256": row["identity_evidence_sha256"]}, context)
+    candidates.update(transport)
+    if transport and not cache_path.exists():
+        _save(cache_path, cache)
     if not candidates:
         summary["unresolved"] = targets
         _save(root / "identity_completion.json", summary)
@@ -696,7 +902,7 @@ def complete_identity_mapping(paths, universe: pd.DataFrame, identity: pd.DataFr
         summary["transport_status"] = str(reason)
         _save(root / "identity_completion.json", summary)
         return identity, summary
-    codes = ["US." + row["ticker"] for row in candidates.values()]
+    codes = [row.get("moomoo_transport_code", "US." + row["ticker"]) for row in candidates.values()]
     validation, count = helper.validate_transport_codes(codes, profile.host, profile.port, root / "identity_sdk_logs")
     validation = pd.concat([validation, pd.DataFrame(prior["validation"].values())], ignore_index=True).drop_duplicates("moomoo_transport_code", keep="first")
     validation.to_parquet(root / "identity_transport_validation.parquet", index=False)
@@ -704,8 +910,17 @@ def complete_identity_mapping(paths, universe: pd.DataFrame, identity: pd.DataFr
     hits = set(validation.loc[validation.direct_static_hit.eq(True) & validation.request_status.eq("PASS"), "moomoo_transport_code"])
     overlay = [row for cusip, row in prior["overlay"].items() if cusip not in candidates]
     for cusip, row in candidates.items():
-        code = "US." + row["ticker"]
+        code = row.get("moomoo_transport_code", "US." + row["ticker"])
         if code not in hits:
+            continue
+        if cusip in transport:
+            overlay.append({"cusip": cusip, "ticker": row["ticker"], "moomoo_transport_code": code,
+                "mapping_status": "RESOLVED", "transport_static_validated": True,
+                "transport_alias_status": "REVIEWED_SAME_CUSIP_TRANSPORT_VALIDATED",
+                "transport_interval_status": "CURRENT_SNAPSHOT_ONLY_NOT_HISTORICAL_INTERVAL_AUTHORITY",
+                "mapping_source": "REVIEWED_SAME_CUSIP_TRANSPORT_PLUS_CURRENT_MOOMOO_STATIC",
+                "identity_observed_at": datetime.now(timezone.utc).isoformat(),
+                **{key: row[key] for key in ("identity_evidence_path", "identity_evidence_sha256", "identity_valid_from")}})
             continue
         overlay.append({"cusip": cusip, "ticker": row["ticker"], "moomoo_transport_code": code,
                         "mapping_status": "RESOLVED", "transport_static_validated": True,
@@ -726,6 +941,7 @@ def complete_identity_mapping(paths, universe: pd.DataFrame, identity: pd.DataFr
     _, remaining = _map_universe(universe, completed, as_of=(context or {}).get("target_date"))
     summary.update(added_or_updated=len(overlay), remaining_gaps=len(remaining),
                    unresolved=[row["cusip"] for row in remaining],
+                   unresolved_transport_repairs=sorted(cusip for cusip, row in transport.items() if row["moomoo_transport_code"] not in hits),
                    original_registry_changed=False, raw_evidence_sha256=_hash(cache_path))
     _save(root / "identity_completion.json", summary)
     return completed, summary
@@ -782,9 +998,11 @@ def refresh_universe(paths, target, run_dir: Path, execute: bool = True) -> dict
         originals = {row["url"]: {"path": row["path"], "sha256": row["sha256"]} for row in baseline["raw_filings"]}
         later = paths.results_root / "13f_intake/13f_personal_contact_20260914/acquisition.json"
         if later.exists():
-            prior = json.loads(later.read_text(encoding="utf-8"))
+            prior_reference = {"path": str(later), "sha256": _hash(later)}
+            prior = json.loads(_verified(prior_reference).read_text(encoding="utf-8"))
             for row in prior.get("verified_filings", []):
-                originals[row["source_url"]] = {"path": row["raw_path"], "sha256": row["source_sha256"]}
+                originals[row["source_url"]] = {"path": row["raw_path"], "sha256": row["source_sha256"],
+                    "prior_acquisition": prior_reference}
         if not execute:
             result["reason"] = "13F_LATEST_DISCLOSURES_NOT_CHECKED_DRY_RUN"
             return result
@@ -815,6 +1033,8 @@ def refresh_universe(paths, target, run_dir: Path, execute: bool = True) -> dict
         parser = import_source(parser_path, "daily_current_13f_parser")
         selection = import_source(selection_path, "daily_current_13f_selection")
         records, issues, evidence = [], [], []
+        clock_reconciliations = []
+        close_cutoff = pd.Timestamp(target_date + "T16:00:00").tz_localize("America/New_York").tz_convert("UTC")
         for filing in filings.to_dict("records"):
             url = filing["source_url"]
             if url in originals:
@@ -822,12 +1042,23 @@ def refresh_universe(paths, target, run_dir: Path, execute: bool = True) -> dict
                 payload = original.read_bytes()
             else:
                 payload = reader.get(url)
+            prior_ref = originals.get(url, {}).get("prior_acquisition")
+            if prior_ref is not None:
+                filing, clock_proof = _reconcile_acceptance(payload, filing, prior_ref,
+                    filing.get("submission_metadata_reference"), close_cutoff)
+                if clock_proof is not None:
+                    clock_reconciliations.append({"accession": filing["accession"], "manager_id": filing["manager_id"], **clock_proof})
             rows, details = _inspect_filing(payload, filing, parser)
             records.append((filing, rows, details))
             evidence.append({**filing, **details, "source_sha256": hashlib.sha256(payload).hexdigest()})
             if not details["source_value_total_reconciled"]:
                 issues.append({"manager_id": filing["manager_id"], "accession": filing["accession"],
                                "reason": "SOURCE_COVER_DETAIL_VALUE_DIFFERENCE", "difference": details["detail_minus_cover"]})
+        if clock_reconciliations:
+            clock_path = root / "acceptance_metadata_reconciliation.json"
+            _save(clock_path, {"reconciliations": clock_reconciliations})
+            result["acceptance_metadata_reconciliation"] = {"path": str(clock_path), "sha256": _hash(clock_path),
+                "count": len(clock_reconciliations)}
         raw, effective_filings = _apply_filings(records)
         selected, universe = build_quarter(raw, effective_filings, selection, parser)
         universe["manager_roster_sha256"] = roster["roster_sha256"]

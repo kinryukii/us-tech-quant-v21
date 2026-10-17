@@ -7,7 +7,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 from scipy.stats import rankdata
 from scripts.common.storage_paths import resolve
-from scripts.research.a2.evaluation.selector_account_compare import score_panel,pre2026,sha,readj
+from scripts.research.a2.evaluation.selector_account_compare import score_panel,score_path,pre2026,sha,readj
 
 REPO=Path(__file__).resolve().parents[4]
 RAW="RAW_A2_SCORE_IN_COMMON_13F_UNIVERSE"
@@ -63,7 +63,7 @@ def replacement_edge(target,raw_selected,new_selected):
 def shared_max_t(edges,positions,complete,rule):
     """Fixed bootstrap-SE standardization, conditional recentering, shared draws."""
     x=np.asarray(edges,float);n,p=x.shape
-    assert p==rule["family_candidates"]==53 and np.isfinite(x).all()
+    assert p==rule["family_candidates"] and np.isfinite(x).all()
     assert len(positions)==n and np.all(np.diff(positions)>0) and len(complete)==p
     length=20;starts=np.array([i for i in range(n-length+1)
         if np.all(np.diff(positions[i:i+length])==1)],dtype=int)
@@ -122,18 +122,20 @@ def run(run_directory):
     cfg=readj(root/"run_config.json");out=(root/"diagnostics/selector_evidence").resolve()
     results=Path(cfg["results_directory"]).resolve()
     assert out.is_relative_to(paths.backtest_root) and results.is_relative_to(paths.results_root)
-    assert results==(paths.results_root/"V24/C_SELECTOR").resolve() and cfg["research_line"]=="C_SELECTOR"
+    expected_results=paths.results_root/("V24/C_SELECTOR/R2" if cfg.get("research_round")=="R2" else "V24/C_SELECTOR")
+    assert results==expected_results.resolve() and cfg["research_line"]=="C_SELECTOR"
     destination=results/"SELECTION_EVIDENCE.json"
     if destination.exists() or (out/"SELECTION_EVIDENCE.json").exists():raise FileExistsError("PRESERVE_EXISTING_SELECTION_EVIDENCE")
     freeze=root/"DESIGN_FREEZE.json";freeze_hash=sha(freeze)
     assert freeze_hash==readj(root/"DESIGN_FREEZE_SHA.json")["sha256"]==cfg["design_freeze_sha256"]
     design=readj(freeze);ids=design["candidates"];rule=design["selection_rule"];boot_rule=rule["bootstrap"]
     assert design["version"]=="V24" and design["line"]=="C_SELECTOR"
-    assert len(ids)==len(set(ids))==53 and design["primary_eval_years"]==[2023,2024,2025]
+    family=91 if cfg.get("research_round")=="R2" else 53
+    assert len(ids)==len(set(ids))==family and design["primary_eval_years"]==[2023,2024,2025]
     assert design["target"]=="MEAN_ER_3D_5D_10D_20D" and design["budget"]["max_finalists"]<=3
     assert boot_rule["method"]=="shared noncircular 20-session moving blocks; centered studentized one-sided maxT simultaneous lower"
     assert rule["primary"]=="TOP20_REPLACEMENT_EDGE=(sum matured labels entrants - sum matured labels exits)/20"
-    assert boot_rule["repeats"]==5000 and boot_rule["confidence"]==.95 and boot_rule["family_candidates"]==53
+    assert boot_rule["repeats"]==5000 and boot_rule["confidence"]==.95 and boot_rule["family_candidates"]==family
     assert design["controls"]["top_k"]==20 and design["controls"]["target_weight"]==.05
     assert rule["positive_years_min"]==2 and rule["pooled_edge_positive"] and rule["year2025_edge_positive"]
     activation=readj(root/"EVALUATION_CODE_ACTIVATION.json")
@@ -146,9 +148,9 @@ def run(run_directory):
     assert len(complete)==len(set(complete)) and assembly["forecast2026_rows"]==0
     training=design["inputs"]["training"];assert sha(training["path"])==training["sha256"],"FROZEN_TARGET_SOURCE_CHANGED"
     prove_label_boundary(training["path"],"target_end_date")
-    raw_path=root/f"predictions/scores_{RAW}_pre2026.parquet";prove_label_boundary(raw_path,"label_end_date",allow_null=True)
+    raw_path=score_path(root,RAW);prove_label_boundary(raw_path,"label_end_date",allow_null=True)
     reference,raw_hash=score_panel(root,RAW);validate_rank(reference)
-    labels=pre2026(root/f"predictions/scores_{RAW}_pre2026.parquet",KEY+["target","label_end_date"],"signal_date")
+    labels=pre2026(raw_path,KEY+["target","label_end_date"],"signal_date")
     labels["signal_date"]=pd.to_datetime(labels.signal_date)
     assert labels.loc[labels.label_end_date.isna(),"target"].isna().all(),"TARGET_WITH_UNKNOWN_LABEL_MATURITY"
     reference=reference.merge(labels,on=KEY,validate="one_to_one",how="left")
@@ -163,7 +165,7 @@ def run(run_directory):
     daily=pd.DataFrame([row for cid,(scores,ranks) in arrays.items()
         for row in diagnose(cid,reference,scores,ranks,arrays[RAW][1],mature,common)])
     all_dates=pd.DatetimeIndex(dates.signal_date);included=dates.included.to_numpy(bool)
-    matrix=np.zeros((int(included.sum()),53));edge_daily=daily.loc[daily.common_mature_date]
+    matrix=np.zeros((int(included.sum()),family));edge_daily=daily.loc[daily.common_mature_date]
     for j,cid in enumerate(ids):
         if cid in complete:
             matrix[:,j]=edge_daily.loc[edge_daily.candidate_id.eq(cid)].set_index("signal_date").replacement_edge.reindex(all_dates[included]).to_numpy(float)
@@ -188,7 +190,7 @@ def run(run_directory):
     receipt=dict(status="FINALIST_SELECTION_ONLY" if finalists else "FINALIST_NONE",finalists=finalists,
         financial_verified=False,economic_promotion_allowed=False,indicative_profit_used=False,
         design_freeze_sha256=freeze_hash,evaluation_source_sha256=sha(Path(__file__)),
-        score_assembly_sha256=sha(assembly_path),score_sha256=hashes,family_candidates=53,
+        score_assembly_sha256=sha(assembly_path),score_sha256=hashes,family_candidates=family,
         candidates=summaries,bootstrap=bootstrap,failed_columns="zero maxT matrix placeholders only; unmeasured report edges null",
         label_source_sha256=training["sha256"],label_boundary="source target_end and nullable score label_end physical pre2026 footers",common_mature_dates=int(included.sum()),
         common_year_dates={str(y):int((year_array==y).sum()) for y in (2023,2024,2025)},
@@ -197,7 +199,7 @@ def run(run_directory):
             "truth_top20":"whole-pool target descending with canonical UID ascending ties",
             "ic":"same mature whole-pool subset for all scores; undefined constant scores retained as null",
             "name_hhi":"20 equal positions at 0.05; score units are native and dispersion is diagnostic"},
-        exposure=design["exposure"],claim="Frozen53-family exploratory/stability selection evidence; prior effective trials UNKNOWN; 2025 already exposed; no financial or independent holdout claim",
+        exposure=design["exposure"],claim=f"Frozen{family}-family exploratory/stability selection evidence; prior effective trials UNKNOWN; 2025 already exposed; no financial or independent holdout claim",
         diagnostics_directory=str(out),run_directory=str(root),test2026_rows_read=0)
     out.mkdir(parents=True,exist_ok=True);dates.to_parquet(out/"COMMON_DATE_MATURITY.parquet",index=False)
     daily.to_parquet(out/"DAILY_DIAGNOSTICS.parquet",index=False)

@@ -110,20 +110,95 @@ def forecast_overlay(mode, value, sigma, vol5, raw_top20):
     value[~valid]=np.nan
     return value
 
+def _friction_rates(friction):
+    if friction is None:
+        return 0., 0.
+    if (friction.get("kind") != "FIXED_ADVERSE_OPEN_SLIPPAGE"
+            or friction.get("benchmark") != "NEXT_RAW_OPEN"
+            or friction.get("authority") != "HYPOTHETICAL_RESEARCH_SCENARIO"
+            or not friction.get("scenario_id") or "one_way_bps" not in friction):
+        raise ValueError("UNQUALIFIED_ACTION_FRICTION_SCENARIO")
+    rates = []
+    for field in ("one_way_bps", "fee_bps"):
+        value = friction.get(field, 0.)
+        if isinstance(value, bool) or not np.isscalar(value):
+            raise ValueError("INVALID_FRICTION_RATE")
+        value = float(value)
+        if not np.isfinite(value) or not 0 <= value < 10000:
+            raise ValueError("INVALID_FRICTION_RATE")
+        rates.append(value / 10000.)
+    return rates[0], rates[1]
+
+
+def action_friction_overlay(value, held, entrants, friction, *, mode="blind"):
+    """First-order per-unit action utility, never a changed return forecast.
+
+    A held stock avoids a sell leg when kept; a new entrant requires a buy leg.
+    Replacement carries both legs in the existing utility difference.
+    This local rule is not a portfolio optimizer or an exact expected-profit
+    test for unequal notionals. Planned dollar costs are quoted separately.
+    Gross continues to receive the original forecast.
+    """
+    if mode not in ("blind", "aware"):
+        raise ValueError("UNREGISTERED_ACTION_COST_MODE")
+    value = np.asarray(value, float).copy()
+    held, entrants = np.asarray(held, bool), np.asarray(entrants, bool)
+    if value.ndim != 1 or held.shape != value.shape or entrants.shape != value.shape:
+        raise ValueError("ACTION_FRICTION_SHAPE")
+    if np.any(held & entrants):
+        raise ValueError("HELD_IS_NOT_A_NEW_ENTRANT")
+    slip, fee = _friction_rates(friction)
+    if mode == "aware" and friction is None:
+        raise ValueError("COST_AWARE_REQUIRES_EXPLICIT_EXECUTION_SCENARIO")
+    if mode == "aware" and slip + fee:
+        value[held] += slip + fee
+        value[entrants] -= slip + fee
+    return value
+
+
+def quote_transition_cost(current, target, explicit, signal_nav, friction):
+    """Signal-time full-intent cost quote; no next Open or actual-fill claim."""
+    current, target = np.asarray(current, float), np.asarray(target, float)
+    explicit = np.asarray(explicit, bool)
+    if current.ndim != 1 or current.shape != target.shape or explicit.shape != current.shape:
+        raise ValueError("TRANSITION_COST_SHAPE")
+    if (not np.isfinite(current).all() or not np.isfinite(target).all()
+            or (current < -1e-12).any() or (target < -1e-12).any()
+            or not np.isfinite(signal_nav) or signal_nav <= 0):
+        raise ValueError("TRANSITION_COST_SIGNAL_STATE")
+    slip, fee = _friction_rates(friction)
+    difference = np.where(explicit, target - current, 0.)
+    buy = float(np.maximum(difference, 0.).sum()) * float(signal_nav)
+    sell = float(np.maximum(-difference, 0.).sum()) * float(signal_nav)
+    return {"planned_buy_notional_usd": buy, "planned_sell_notional_usd": sell,
+            "planned_slippage_usd": (buy + sell) * slip,
+            "planned_fee_usd": (buy + sell) * fee,
+            "planned_friction_usd": (buy + sell) * (slip + fee),
+            "cost_quote_role": "SIGNAL_TIME_FULL_INTENT_ESTIMATE_NOT_ACTUAL_FILL",
+            "future_open_used": False,
+            "input_time_qualification_verified": False,
+            "signal_mark_authority": "CALLER_SIGNAL_STATE_NOT_VERIFIED_BY_THIS_QUOTER"}
+
+
 class StatefulOverlay:
     """Own-state HOLD/SELL/REPLACE, with independent exposure and target controls.
 
     BUY/ADD/REDUCE remain common-engine execution semantics. No selector is fitted,
     and raw Top20 membership/ranking are never replaced by the value model.
     """
-    def __init__(self, candidates, value_packets, top20, qualified, vol5, risk_provider=None):
+    def __init__(self, candidates, value_packets, top20, qualified, vol5, risk_provider=None, *, descriptive_evaluation_authority=None):
         self.candidates, self.values = candidates, value_packets
         self.top20, self.qualified, self.vol5 = top20, qualified, vol5
         self.risk_provider, self.audit = risk_provider, []
+        self.descriptive_evaluation_authority = descriptive_evaluation_authority
         self.reference = reference_policy_class()
 
     def __call__(self, di, context):
-        if pd.Timestamp(context.signal_date) >= pd.Timestamp("2026-01-01"):
+        if self.descriptive_evaluation_authority is not None:
+            from scripts.research.a2.evaluation.frozen_test_authority import require_descriptive_decision
+            for candidate in self.candidates:
+                require_descriptive_decision(self.descriptive_evaluation_authority, context.signal_date, path_id=candidate["candidate_id"])
+        elif pd.Timestamp(context.signal_date) >= pd.Timestamp("2026-01-01"):
             raise ValueError("V24_DEVELOPMENT_POLICY_FORBIDS_LOCKED_TEST")
         shape = context.current_units.shape
         weights, explicit = np.zeros(shape), np.zeros(shape, bool)
@@ -140,7 +215,13 @@ class StatefulOverlay:
                 source_value[held] += sigma
             alias = "A" if candidate["action"] == "stateful" else "B"
             view = _OnePath(context, row, alias)
-            source = self.reference(_CurrentVector(di, source_value), packet["sigma"], None,
+            friction = candidate.get("execution_friction")
+            cost_mode = candidate.get("action_cost_mode", "blind")
+            if cost_mode == "aware" and candidate["action"] != "stateful":
+                raise ValueError("COST_AWARE_ACTION_REQUIRES_STATEFUL_POLICY")
+            entrants = self.top20[di] & self.qualified[di] & view.buy_allowed[0] & view.decision_mask[0] & ~held
+            action_value = action_friction_overlay(source_value, held, entrants, friction, mode=cost_mode)
+            source = self.reference(_CurrentVector(di, action_value), packet["sigma"], None,
                                     np.full(len(packet["sigma"]), np.nan), self.vol5,
                                     self.top20, self.qualified, packet["lineage"])
             decision = source(di, view)
@@ -181,12 +262,15 @@ class StatefulOverlay:
                     w[cannot_add] = np.maximum(0., view.current_weights[0, cannot_add])
             w, mask = apply_controls(w, mask, view.current_weights[0], float(view.nav[0]),
                                      control=candidate.get("control", "none"))
+            quote = quote_transition_cost(view.current_weights[0], w, mask, float(view.nav[0]), friction) if friction is not None else {}
             weights[row], explicit[row] = w, mask
             self.audit.append({"candidate_id": candidate["candidate_id"], "signal_date": str(context.signal_date.date()),
                                "value_model": candidate["value_model"], "gross_mode": gross_mode, "gross_target": gross,
                                "risk_status": risk_status, "own_cash": float(view.cash[0]), "own_nav": float(view.nav[0]),
                                "own_holding_count": int(held.sum()), "raw_entrant_count": int(self.top20[di].sum()),
-                               "control": candidate.get("control", "none"), "forecast_overlay": candidate.get("forecast", "none"), "forecast_overlay_fits": 0})
+                               "control": candidate.get("control", "none"), "forecast_overlay": candidate.get("forecast", "none"), "forecast_overlay_fits": 0,
+                               "action_cost_mode": cost_mode, "execution_friction_scenario": friction.get("scenario_id") if friction else None,
+                               "action_friction_is_return_forecast": False, "gross_uses_action_friction_bonus": False, **quote})
         return TargetDecision(weights, explicit_mask=explicit, raw_evidence_id="V24_FROZEN_RAW_STATEFUL_VALUE")
 
 def synthetic_check():

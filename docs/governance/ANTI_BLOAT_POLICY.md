@@ -122,10 +122,19 @@ authoritative, accessible, and covered by the required retention contract.
 
 ## Reuse before creation
 
-Search for an existing implementation, configuration, runner, test, and policy
-entrypoint before adding one. Extend the canonical implementation when its
-responsibility already matches the task. A parallel framework requires a clear
-architectural need and explicit integration/migration ownership.
+REUSE -> EXTEND -> ADAPT -> BUILD NEW. Search existing implementations, callers,
+configuration, tests, accepted identities, aliases, artifacts and failed/closed
+conclusions before adding a model framework, evaluator, simulator, registry, data
+pipeline, UID/artifact/report/calendar/execution system, optimizer, risk or agent
+framework. Extend the canonical owner when its responsibility matches.
+
+Before BUILD NEW, state the existing implementation, why it cannot reasonably be
+reused, the real gap and how one source of truth is preserved with explicit
+integration/migration ownership. Renaming a model or rerunning a closed mechanism
+is not a new scientific question. Reuse verified artifacts/negative conclusions
+and reduce related search budget under the existing research contract. A correct
+result may require zero new code; required engineering execution/validation still
+must finish. Minimum sufficient structure applies to governance too.
 
 ## Source-code bloat
 
@@ -195,6 +204,11 @@ broker, deletion, and source-modification counts when the task contract asks
 for them. A functional test pass cannot override a failed Anti-Bloat hard gate.
 
 ## Fail-closed behavior
+
+Fail closed at the risky operation, not the whole task. Root AGENTS.md and
+PROJECT_MAP.md own recovery, branch isolation and task-delivery statuses; this
+policy owns storage, preservation and Anti-Bloat gates. An ordinary engineering
+failure is recovery work, not authority to stop independent legal work.
 
 When destination, ownership, lineage, retention, deletion safety, policy
 meaning, or authorization is unknown, stop the risky operation and preserve the
